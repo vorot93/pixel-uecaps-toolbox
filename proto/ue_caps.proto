@@ -1,0 +1,102 @@
+syntax = "proto3";
+package uecaps;
+
+// Full per-carrier UE-capability schema for <CARRIER>_<NUMBER>.binarypb, merged
+// from the reverse-engineered definition. Fields 1 (version/fingerprint) and 9
+// (unknown/reference) are typed uint64 — the tool reads and prints them as plain
+// numbers, so the wider type avoids any truncation while staying value-identical.
+//
+// Although declared `proto3` for codegen ergonomics, this schema reconstructs a
+// proto2-origin wire format: repeated scalars are unpacked (see `[packed = false]`
+// on `plmns`) and some scalars carry explicit presence for their default value.
+// Such fields are marked `optional` so prost preserves the explicit value on
+// re-encode — plain proto3 would silently drop a default (e.g. a zero). Verified
+// against real Pixel dumps (mustang, cheetah).
+message UeCaps {
+  uint64 version = 1; // capability fingerprint -> family/tier
+  optional int32 id = 2;                                       // profile index
+  repeated ComboGroup combo_groups = 3; // band-combination payload; empty => reference stub
+  repeated ShannonFeatureSetDlPerCCNr dl_feature_per_cc_list = 6; // NR DL per-CC feature sets
+  repeated ShannonFeatureSetUlPerCCNr ul_feature_per_cc_list = 7; // NR UL per-CC feature sets
+  uint64 unknown = 9; // stub delegation reference
+}
+
+message ComboGroup {
+  message Nested1 {
+    optional uint32 bcs_nr = 1;
+    optional uint32 bcs_intra_endc = 2;
+    optional uint32 bcs_eutra = 3;
+    optional int32 power_class = 4;
+    optional int32 intra_band_en_dc_support = 5;
+  }
+  message Nested2 {
+    message ComboFeatures {
+      int32 band = 1;
+      optional int32 bw_class_dl = 2;
+      optional int32 bw_class_ul = 3;
+      optional int32 dl_feature_index = 4;
+      optional int32 ul_feature_index = 5;
+      optional bytes dl_feature_per_cc_ids = 6;
+      optional bytes ul_feature_per_cc_ids = 7;
+      optional int32 srstxswitch = 8;
+    }
+    repeated ComboFeatures cc = 1;
+    // Explicit presence: real files carry an explicit bitmask=0 that plain proto3
+    // would drop on re-encode, so it is `optional`. Unsigned: a bitmask is never
+    // negative (verified: max 32575 across real dumps, no value sets bit 31).
+    optional uint32 bitmask = 2;
+  }
+
+  Nested1 combo_header = 1;
+  repeated Nested2 combo = 2;
+}
+
+message ShannonFeatureSetDlPerCCNr {
+  optional int32 max_scs = 1;
+  optional int32 max_mimo = 2;
+  optional int32 max_bw = 3;
+  optional int32 max_mod_order = 4;
+  optional bool bw_90mhz_supported = 5;
+}
+
+message ShannonFeatureSetUlPerCCNr {
+  optional int32 max_scs = 1;
+  optional int32 max_mimo_cb = 2;
+  optional int32 max_bw = 3;
+  optional int32 max_mod_order = 4;
+  optional bool bw_90mhz_supported = 5;
+  optional int32 max_mimo_non_cb = 6;
+}
+
+// LTE-only fallback files (lte_*.binarypb): a Shannon-format LTE UE-capability blob.
+// Field 1 = fingerprint/version, field 2 = repeated CA combinations, field 3 = a bitmask.
+// Schema + class/MIMO semantics per the Shannon LTE editor reference; opaque numeric fields
+// widened to uint64 (real files carry 64-bit values in unknown1). The four `optional` fields
+// carry explicit presence because real lte_*.binarypb files encode them as explicit zeros;
+// plain proto3 scalars would drop zeros on re-encode, producing a 4 KB-smaller file.
+message LteCaps {
+  uint64 fingerprint = 1;          // = version
+  repeated LteCombo combos = 2;
+  uint64 bitmask = 3;
+}
+message LteCombo {
+  repeated LteComponent components = 1;
+  optional uint64 bcs = 2;                 // bandwidth combination set
+  optional uint64 unknown1 = 3;            // opaque (64-bit on real data)
+  optional uint64 unknown2 = 4;            // opaque
+}
+message LteComponent {
+  int32 band = 1;
+  int32 bw_class_mimo_dl = 2;              // Shannon class+MIMO encoding; 0 = DL disabled
+  optional int32 bw_class_mimo_ul = 3;     // 0 = UL disabled (explicit-presence: preserved on re-encode)
+}
+
+// ap_plmn_mapping.binarypb: the PLMN -> carrier legend.
+message PlmnMap {
+  repeated Carrier carriers = 1;
+}
+message Carrier {
+  repeated uint64 plmns = 1 [packed = false]; // unpacked: required for bit-for-bit identity
+  uint64 index = 2; // internal index
+  string name = 3; // carrier-config name (== filename prefix)
+}
