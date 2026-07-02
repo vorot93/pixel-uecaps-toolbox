@@ -1,14 +1,12 @@
 //! The reconstruction engine: turn patch combos back into proto wire structures.
 
-use super::format::{NrPatch, SetEntry};
+use super::format::{NrPatch, PatchCc, SetEntry, set_entry_combos, set_entry_key};
 use crate::{
     proto::{
         ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps,
         combo_group::{Nested1, Nested2, nested2::ComboFeatures},
     },
-    report::combos::{
-        Cc, Combo, build_combos, combo_key, dl_mimo_code, mod_order_code, scs_code, ul_mimo_cb_code,
-    },
+    report::combos::{Combo, build_combos, combo_key},
 };
 use anyhow::Context;
 use prost::Message;
@@ -22,59 +20,6 @@ fn find_or_append<T: PartialEq>(list: &mut Vec<T>, item: T) -> usize {
         list.push(item);
         list.len() - 1
     }
-}
-
-/// Invert an optional resolved value via `f`, erroring (with a field name) when a
-/// present value has no inverse.
-fn invert<V: Copy + std::fmt::Debug>(
-    value: Option<V>,
-    f: impl Fn(V) -> Option<i32>,
-    field: &str,
-) -> anyhow::Result<Option<i32>> {
-    match value {
-        None => Ok(None),
-        Some(v) => f(v)
-            .map(Some)
-            .with_context(|| format!("{field} value {v:?} has no encoding")),
-    }
-}
-
-fn dl_feature_of(cc: &Cc) -> anyhow::Result<Option<ShannonFeatureSetDlPerCcNr>> {
-    let present = cc.dl_max_bw_mhz.is_some()
-        || cc.dl_scs_khz.is_some()
-        || cc.dl_mimo.is_some()
-        || cc.dl_mod_order.is_some()
-        || cc.dl_bw90mhz.is_some();
-    if !present {
-        return Ok(None);
-    }
-    Ok(Some(ShannonFeatureSetDlPerCcNr {
-        max_scs: invert(cc.dl_scs_khz, scs_code, "dl_scs_khz")?,
-        max_mimo: invert(cc.dl_mimo.as_deref(), dl_mimo_code, "dl_mimo")?,
-        max_bw: cc.dl_max_bw_mhz,
-        max_mod_order: invert(cc.dl_mod_order.as_deref(), mod_order_code, "dl_mod_order")?,
-        bw_90mhz_supported: cc.dl_bw90mhz,
-    }))
-}
-
-fn ul_feature_of(cc: &Cc) -> anyhow::Result<Option<ShannonFeatureSetUlPerCcNr>> {
-    let present = cc.ul_max_bw_mhz.is_some()
-        || cc.ul_scs_khz.is_some()
-        || cc.ul_mimo_cb.is_some()
-        || cc.ul_mimo_non_cb.is_some()
-        || cc.ul_mod_order.is_some()
-        || cc.ul_bw90mhz.is_some();
-    if !present {
-        return Ok(None);
-    }
-    Ok(Some(ShannonFeatureSetUlPerCcNr {
-        max_scs: invert(cc.ul_scs_khz, scs_code, "ul_scs_khz")?,
-        max_mimo_cb: invert(cc.ul_mimo_cb.as_deref(), ul_mimo_cb_code, "ul_mimo_cb")?,
-        max_bw: cc.ul_max_bw_mhz,
-        max_mod_order: invert(cc.ul_mod_order.as_deref(), mod_order_code, "ul_mod_order")?,
-        bw_90mhz_supported: cc.ul_bw90mhz,
-        max_mimo_non_cb: cc.ul_mimo_non_cb,
-    }))
 }
 
 /// Header (`Nested1`) for a patch combo, or `None` when every header field is absent.
@@ -104,18 +49,20 @@ pub(crate) fn reconstruct_set_entry(
     dl: &mut Vec<ShannonFeatureSetDlPerCcNr>,
     ul: &mut Vec<ShannonFeatureSetUlPerCcNr>,
 ) -> anyhow::Result<Vec<(Option<Nested1>, Nested2)>> {
+    let key = set_entry_key(entry)?;
     let mut out = Vec::with_capacity(entry.combo.len());
-    for combo in &entry.combo {
-        let cc = combo
+    for patch_combo in &entry.combo {
+        let combo_view = patch_combo.to_combo()?;
+        let cc = patch_combo
             .cc
             .iter()
-            .map(|c| reconstruct_cc(c, dl, ul).with_context(|| format!("set {:?}", entry.key)))
+            .map(|c| reconstruct_patch_cc(c, dl, ul).with_context(|| format!("set {key:?}")))
             .collect::<anyhow::Result<Vec<_>>>()?;
         out.push((
-            build_header(combo),
+            build_header(&combo_view),
             Nested2 {
                 cc,
-                bitmask: Some(combo.bit_mask),
+                bitmask: Some(patch_combo.bit_mask),
             },
         ));
     }
@@ -174,17 +121,29 @@ fn selector<T: PartialEq>(list: &mut Vec<T>, fs: Option<T>) -> anyhow::Result<Op
     Ok(Some(vec![idx as u8]))
 }
 
-/// Build a proto CC from a resolved `Cc`, appending/deduping any referenced feature
-/// set into `dl`/`ul` and pointing the 1-based selector byte at it.
-pub(crate) fn reconstruct_cc(
-    cc: &Cc,
+fn selector_or_raw<T: PartialEq>(
+    list: &mut Vec<T>,
+    fs: Option<T>,
+    raw: &Option<Vec<u8>>,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    match fs {
+        Some(fs) => selector(list, Some(fs)),
+        None => Ok(raw.clone()),
+    }
+}
+
+/// Build a proto CC from a patch component, appending/deduping any explicit raw
+/// feature set into `dl`/`ul` and pointing the selector byte at it.
+pub(crate) fn reconstruct_patch_cc(
+    cc: &PatchCc,
     dl: &mut Vec<ShannonFeatureSetDlPerCcNr>,
     ul: &mut Vec<ShannonFeatureSetUlPerCcNr>,
 ) -> anyhow::Result<ComboFeatures> {
-    let dl_ids = selector(dl, dl_feature_of(cc)?)?;
-    let ul_ids = selector(ul, ul_feature_of(cc)?)?;
+    cc.validate()?;
+    let dl_ids = selector_or_raw(dl, cc.dl_feature_set(), &cc.dl_feature_per_cc_ids)?;
+    let ul_ids = selector_or_raw(ul, cc.ul_feature_set(), &cc.ul_feature_per_cc_ids)?;
     Ok(ComboFeatures {
-        band: cc.band,
+        band: cc.raw_band(),
         bw_class_dl: cc.bw_class_dl,
         bw_class_ul: cc.bw_class_ul,
         dl_feature_index: cc.dl_feature_index,
@@ -370,7 +329,7 @@ fn self_verify(
     patch: &NrPatch,
     applied_set: &BTreeSet<String>,
     applied_delete: &BTreeSet<String>,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let resolved = build_combos(caps);
     let by_key = super::index_by_key(&resolved, combo_key);
     let mut failed: Vec<String> = applied_delete
@@ -379,19 +338,21 @@ fn self_verify(
         .cloned()
         .collect();
     for entry in &patch.set {
-        if !applied_set.contains(&entry.key) {
+        let key = set_entry_key(entry)?;
+        if !applied_set.contains(&key) {
             continue;
         }
-        let want = super::canon_variants(&entry.combo.iter().collect::<Vec<_>>());
+        let want_combos = set_entry_combos(entry)?;
+        let want = super::canon_variants(&want_combos.iter().collect::<Vec<_>>());
         let got = by_key
-            .get(&entry.key)
+            .get(&key)
             .map(|v| super::canon_variants(v))
             .unwrap_or_default();
         if want != got {
-            failed.push(entry.key.clone());
+            failed.push(key);
         }
     }
-    failed
+    Ok(failed)
 }
 
 /// One apply attempt, skipping `exclude` keys. Best-effort unless `strict`.
@@ -409,7 +370,8 @@ fn apply_once(
     let mut pending: Vec<(Option<Nested1>, Nested2)> = Vec::new();
     let mut set_keys: BTreeSet<String> = BTreeSet::new();
     for entry in &patch.set {
-        if exclude.contains(&entry.key) {
+        let key = set_entry_key(entry)?;
+        if exclude.contains(&key) {
             continue;
         }
         let dl_mark = caps.dl_feature_per_cc_list.len();
@@ -421,12 +383,12 @@ fn apply_once(
         ) {
             Ok(combos) => {
                 pending.extend(combos);
-                set_keys.insert(entry.key.clone());
+                set_keys.insert(key);
             }
             Err(e) => {
                 caps.dl_feature_per_cc_list.truncate(dl_mark);
                 caps.ul_feature_per_cc_list.truncate(ul_mark);
-                let msg = format!("set {:?}: {e:#}", entry.key);
+                let msg = format!("set {key:?}: {e:#}");
                 if strict {
                     anyhow::bail!("{msg}");
                 }
@@ -458,7 +420,7 @@ fn apply_once(
     append_grouped(&mut caps, pending);
 
     // 4. Self-verify.
-    let verify_failed = self_verify(&caps, patch, &set_keys, &delete_keys);
+    let verify_failed = self_verify(&caps, patch, &set_keys, &delete_keys)?;
 
     Ok(ApplyPass {
         caps,
@@ -502,23 +464,27 @@ pub(crate) fn apply_patch(
 
 #[cfg(test)]
 mod tests {
-    use super::super::format::Kind;
-    use super::*; // Cc and the reconstruction fns come via the glob
+    use super::{
+        super::format::{CcKind, Kind, PatchCc, PatchCombo},
+        *,
+    };
     use crate::proto::{ComboGroup, UeCaps, combo_group};
 
-    fn nr_cc() -> Cc {
-        Cc {
-            band: 10078,
+    fn nr_patch_cc() -> PatchCc {
+        PatchCc {
+            kind: CcKind::Nr,
+            band: 78,
             bw_class_dl: Some(1),
             bw_class_ul: Some(1),
-            dl_max_bw_mhz: Some(100),
-            dl_mimo: Some("4x4".to_string()),
-            dl_scs_khz: Some(30),
-            dl_mod_order: Some("QAM256".to_string()),
-            ul_max_bw_mhz: Some(100),
-            ul_mimo_cb: Some("Yes".to_string()),
-            ul_mimo_non_cb: Some(1),
-            ul_mod_order: Some("QAM256".to_string()),
+            dl_max_scs: Some(2),
+            dl_max_mimo: Some(2),
+            dl_max_bw: Some(100),
+            dl_max_mod_order: Some(2),
+            ul_max_scs: Some(2),
+            ul_max_mimo_cb: Some(2),
+            ul_max_mimo_non_cb: Some(1),
+            ul_max_bw: Some(100),
+            ul_max_mod_order: Some(2),
             ..Default::default()
         }
     }
@@ -527,16 +493,16 @@ mod tests {
     fn reconstruct_cc_builds_and_dedups_feature_sets() {
         let mut dl = Vec::new();
         let mut ul = Vec::new();
-        let f1 = reconstruct_cc(&nr_cc(), &mut dl, &mut ul).unwrap();
+        let f1 = reconstruct_patch_cc(&nr_patch_cc(), &mut dl, &mut ul).unwrap();
         // selector is 1-based into the per-direction list
         assert_eq!(f1.band, 10078);
         assert_eq!(f1.dl_feature_per_cc_ids, Some(vec![1]));
         assert_eq!(f1.ul_feature_per_cc_ids, Some(vec![1]));
         assert_eq!(dl.len(), 1);
-        assert_eq!(dl[0].max_scs, Some(2)); // 30 kHz -> code 2
-        assert_eq!(dl[0].max_mimo, Some(2)); // 4x4 -> 2
+        assert_eq!(dl[0].max_scs, Some(2));
+        assert_eq!(dl[0].max_mimo, Some(2));
         // a second identical CC dedups to the same index
-        let f2 = reconstruct_cc(&nr_cc(), &mut dl, &mut ul).unwrap();
+        let f2 = reconstruct_patch_cc(&nr_patch_cc(), &mut dl, &mut ul).unwrap();
         assert_eq!(f2.dl_feature_per_cc_ids, Some(vec![1]));
         assert_eq!(dl.len(), 1);
         assert_eq!(ul.len(), 1);
@@ -544,13 +510,14 @@ mod tests {
 
     #[test]
     fn reconstruct_cc_without_feature_set_has_no_selector() {
-        let cc = Cc {
+        let cc = PatchCc {
+            kind: CcKind::Lte,
             band: 1,
             ..Default::default()
-        }; // E-UTRA, no resolved caps
+        };
         let mut dl = Vec::new();
         let mut ul = Vec::new();
-        let f = reconstruct_cc(&cc, &mut dl, &mut ul).unwrap();
+        let f = reconstruct_patch_cc(&cc, &mut dl, &mut ul).unwrap();
         assert_eq!(f.band, 1);
         assert_eq!(f.dl_feature_per_cc_ids, None);
         assert_eq!(f.ul_feature_per_cc_ids, None);
@@ -558,16 +525,72 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_cc_rejects_uninvertible_label() {
-        let cc = Cc {
-            band: 10078,
-            dl_max_bw_mhz: Some(100),
-            dl_mimo: Some("(7)".to_string()), // not invertible
+    fn reconstruct_cc_without_feature_set_preserves_raw_selector_ids() {
+        let cc = PatchCc {
+            kind: CcKind::Nr,
+            band: 78,
+            bw_class_dl: Some(1),
+            bw_class_ul: Some(1),
+            dl_feature_per_cc_ids: Some(vec![3, 4]),
+            ul_feature_per_cc_ids: Some(vec![5]),
             ..Default::default()
         };
         let mut dl = Vec::new();
         let mut ul = Vec::new();
-        assert!(reconstruct_cc(&cc, &mut dl, &mut ul).is_err());
+
+        let f = reconstruct_patch_cc(&cc, &mut dl, &mut ul).unwrap();
+
+        assert_eq!(f.band, 10078);
+        assert_eq!(f.dl_feature_per_cc_ids, Some(vec![3, 4]));
+        assert_eq!(f.ul_feature_per_cc_ids, Some(vec![5]));
+        assert!(dl.is_empty());
+        assert!(ul.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_cc_prefers_resolved_feature_set_over_raw_selector_ids() {
+        let cc = PatchCc {
+            dl_feature_per_cc_ids: Some(vec![9]),
+            ul_feature_per_cc_ids: Some(vec![8]),
+            ..nr_patch_cc()
+        };
+        let mut dl = Vec::new();
+        let mut ul = Vec::new();
+
+        let f = reconstruct_patch_cc(&cc, &mut dl, &mut ul).unwrap();
+
+        assert_eq!(f.dl_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(f.ul_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(dl.len(), 1);
+        assert_eq!(ul.len(), 1);
+    }
+
+    #[test]
+    fn reconstruct_patch_cc_accepts_unknown_raw_feature_codes() {
+        let cc = PatchCc {
+            kind: CcKind::Nr,
+            band: 78,
+            bw_class_dl: Some(1),
+            bw_class_ul: Some(1),
+            dl_max_scs: Some(9),
+            dl_max_mimo: Some(7),
+            dl_max_bw: Some(100),
+            dl_max_mod_order: Some(8),
+            ..Default::default()
+        };
+        let mut dl = Vec::new();
+        let mut ul = Vec::new();
+
+        let f = reconstruct_patch_cc(&cc, &mut dl, &mut ul).unwrap();
+
+        assert_eq!(f.band, 10078);
+        assert_eq!(f.dl_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(dl.len(), 1);
+        assert_eq!(dl[0].max_scs, Some(9));
+        assert_eq!(dl[0].max_mimo, Some(7));
+        assert_eq!(dl[0].max_bw, Some(100));
+        assert_eq!(dl[0].max_mod_order, Some(8));
+        assert!(ul.is_empty());
     }
 
     fn base_caps() -> UeCaps {
@@ -634,12 +657,12 @@ mod tests {
             version: 1,
             delete: vec!["n41A".to_string()],
             set: vec![SetEntry {
-                key: "n2A".to_string(),
                 kind: Some("add".to_string()),
-                combo: vec![Combo {
+                combo: vec![PatchCombo {
                     bit_mask: 0,
-                    cc: vec![Cc {
-                        band: 10002,
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 2,
                         bw_class_dl: Some(1),
                         bw_class_ul: Some(1),
                         ..Default::default()
@@ -682,12 +705,12 @@ mod tests {
             version: 1,
             delete: vec![],
             set: vec![SetEntry {
-                key: "n2A".to_string(),
                 kind: None,
-                combo: vec![Combo {
+                combo: vec![PatchCombo {
                     bit_mask: 0,
-                    cc: vec![Cc {
-                        band: 10002,
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 2,
                         bw_class_dl: Some(1),
                         bw_class_ul: Some(1),
                         ..Default::default()
@@ -758,18 +781,18 @@ mod tests {
             version: 1,
             delete: vec![],
             set: vec![SetEntry {
-                key: "n78A".to_string(),
                 kind: Some("change".to_string()),
-                combo: vec![Combo {
+                combo: vec![PatchCombo {
                     bit_mask: 0,
-                    cc: vec![Cc {
-                        band: 10078,
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 78,
                         bw_class_dl: Some(1),
                         bw_class_ul: Some(1),
-                        dl_max_bw_mhz: Some(100),
-                        dl_mimo: Some("8x8".into()),
-                        dl_scs_khz: Some(30),
-                        dl_mod_order: Some("QAM256".into()),
+                        dl_max_scs: Some(2),
+                        dl_max_mimo: Some(3),
+                        dl_max_bw: Some(100),
+                        dl_max_mod_order: Some(2),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -792,41 +815,40 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_skips_uninvertible_label_best_effort_errors_strict() {
-        // A CC with dl_mimo="(7)" has no inverse encoding; reconstruction must fail.
+    fn apply_patch_preserves_unknown_raw_feature_codes() {
         let base = base_caps();
         let patch = NrPatch {
             kind: Kind::Nr,
             version: 1,
             delete: vec![],
             set: vec![SetEntry {
-                key: "n2A".to_string(),
                 kind: Some("add".to_string()),
-                combo: vec![Combo {
+                combo: vec![PatchCombo {
                     bit_mask: 0,
-                    cc: vec![Cc {
-                        band: 10002,
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 2,
                         bw_class_dl: Some(1),
                         bw_class_ul: Some(1),
-                        dl_max_bw_mhz: Some(100),
-                        dl_mimo: Some("(7)".into()), // no inverse
+                        dl_max_scs: Some(9),
+                        dl_max_mimo: Some(7),
+                        dl_max_bw: Some(100),
+                        dl_max_mod_order: Some(8),
                         ..Default::default()
                     }],
                     ..Default::default()
                 }],
             }],
         };
-        // Best-effort: succeeds but skips the bad entry; n2A absent from result.
+
         let (result, outcome) = apply_patch(&base, &patch, false).unwrap();
-        assert!(!outcome.skipped.is_empty(), "expected a skip entry");
-        let keys: std::collections::BTreeSet<String> =
-            build_combos(&result).iter().map(combo_key).collect();
-        assert!(!keys.contains("n2A"), "n2A must not be present after skip");
-        // Strict: fails immediately.
-        assert!(
-            apply_patch(&base, &patch, true).is_err(),
-            "strict mode must return Err for uninvertible label"
-        );
+
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.set, 1);
+        assert_eq!(result.dl_feature_per_cc_list.len(), 1);
+        assert_eq!(result.dl_feature_per_cc_list[0].max_scs, Some(9));
+        assert_eq!(result.dl_feature_per_cc_list[0].max_mimo, Some(7));
+        assert_eq!(result.dl_feature_per_cc_list[0].max_mod_order, Some(8));
     }
 
     #[test]

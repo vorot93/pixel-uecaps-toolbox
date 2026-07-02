@@ -253,11 +253,11 @@ pub fn compare(a: &Path, b: &Path, full: bool, show_common: bool) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::combos::{Cc, NR_BAND_OFFSET};
+    use crate::report::combos::Cc;
 
     fn nr_cc(band_n: i32, class: i32, mimo: &str) -> Cc {
         Cc {
-            band: NR_BAND_OFFSET + band_n,
+            band: format!("n{band_n}"),
             bw_class_dl: Some(class),
             bw_class_ul: Some(class),
             dl_max_bw_mhz: Some(100),

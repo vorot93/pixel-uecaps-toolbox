@@ -1,12 +1,9 @@
 //! `patch show` — render a combo patch (TOML) in human-readable form.
 
-use super::format::{self, LtePatch, NrPatch, Patch};
+use super::format::{self, LtePatch, NrPatch, Patch, lte_set_entry_key, set_entry_key};
 use crate::{
     proto::LteComponent,
-    report::{
-        combos::{band_label, fmt_cc_features},
-        lte::cc_detail,
-    },
+    report::{combos::fmt_cc_features, lte::cc_detail},
 };
 use std::{fmt::Write as _, path::Path};
 
@@ -92,12 +89,14 @@ fn render_nr(p: &NrPatch, full: bool, out: &mut String) {
     let (add, change) = count_kinds(p.set.iter().map(|e| e.kind.as_deref()));
     header_and_deletes(out, "nr", p.version, &p.delete, p.set.len(), add, change);
     for e in &p.set {
-        set_summary(out, e.kind.as_deref(), &e.key);
+        let key = set_entry_key(e).expect("validated nr set entry");
+        set_summary(out, e.kind.as_deref(), &key);
         if full {
             for combo in &e.combo {
                 for cc in &combo.cc {
-                    let label = band_label(cc.band);
-                    let _ = writeln!(out, "       {label:<5} {}", fmt_cc_features(cc));
+                    let raw = cc.to_cc().expect("validated nr component");
+                    let label = cc.band_label();
+                    let _ = writeln!(out, "       {label:<5} {}", fmt_cc_features(&raw));
                 }
             }
         }
@@ -108,7 +107,8 @@ fn render_lte(p: &LtePatch, full: bool, out: &mut String) {
     let (add, change) = count_kinds(p.set.iter().map(|e| e.kind.as_deref()));
     header_and_deletes(out, "lte", p.version, &p.delete, p.set.len(), add, change);
     for e in &p.set {
-        set_summary(out, e.kind.as_deref(), &e.key);
+        let key = lte_set_entry_key(e).expect("validated lte set entry");
+        set_summary(out, e.kind.as_deref(), &key);
         if full {
             for combo in &e.combo {
                 for comp in &combo.components {
@@ -127,9 +127,8 @@ fn render_lte(p: &LtePatch, full: bool, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        patch::format::{Kind, LtePatchCombo, LtePatchComponent, LteSetEntry, SetEntry},
-        report::combos::{Cc, Combo},
+    use crate::patch::format::{
+        CcKind, Kind, LtePatchCombo, LtePatchComponent, LteSetEntry, PatchCc, PatchCombo, SetEntry,
     };
 
     fn nr_patch() -> Patch {
@@ -139,28 +138,32 @@ mod tests {
             delete: vec!["n41A".into()],
             set: vec![
                 SetEntry {
-                    key: "n2A".into(),
                     kind: Some("add".into()),
-                    combo: vec![Combo {
-                        cc: vec![Cc {
-                            band: 10002,
-                            dl_max_bw_mhz: Some(40),
-                            dl_mimo: Some("4x4".into()),
-                            dl_mod_order: Some("QAM256".into()),
+                    combo: vec![PatchCombo {
+                        cc: vec![PatchCc {
+                            kind: CcKind::Nr,
+                            band: 2,
+                            bw_class_dl: Some(1),
+                            bw_class_ul: Some(1),
+                            dl_max_bw: Some(40),
+                            dl_max_mimo: Some(2),
+                            dl_max_mod_order: Some(2),
                             ..Default::default()
                         }],
                         ..Default::default()
                     }],
                 },
                 SetEntry {
-                    key: "n78A".into(),
                     kind: Some("change".into()),
-                    combo: vec![Combo {
-                        cc: vec![Cc {
-                            band: 10078,
-                            dl_max_bw_mhz: Some(100),
-                            dl_mimo: Some("8x8".into()),
-                            dl_mod_order: Some("QAM256".into()),
+                    combo: vec![PatchCombo {
+                        cc: vec![PatchCc {
+                            kind: CcKind::Nr,
+                            band: 78,
+                            bw_class_dl: Some(1),
+                            bw_class_ul: Some(1),
+                            dl_max_bw: Some(100),
+                            dl_max_mimo: Some(3),
+                            dl_max_mod_order: Some(2),
                             ..Default::default()
                         }],
                         ..Default::default()
@@ -176,10 +179,8 @@ mod tests {
             version: 1,
             delete: vec!["B5A↓".into()],
             set: vec![LteSetEntry {
-                key: "B7A↓".into(),
                 kind: Some("add".into()),
                 combo: vec![LtePatchCombo {
-                    bands: Some("B7A↓".into()),
                     components: vec![LtePatchComponent {
                         band: 7,
                         bw_class_mimo_dl: 32768,
@@ -226,6 +227,62 @@ mod tests {
     }
 
     #[test]
+    fn nr_full_shows_partial_raw_caps_without_bandwidth() {
+        let patch = Patch::Nr(NrPatch {
+            kind: Kind::Nr,
+            version: 1,
+            delete: vec![],
+            set: vec![SetEntry {
+                kind: Some("add".into()),
+                combo: vec![PatchCombo {
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 78,
+                        bw_class_dl: Some(1),
+                        bw_class_ul: Some(1),
+                        dl_max_mimo: Some(7),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }],
+        });
+
+        let s = render(&patch, true);
+
+        assert!(s.contains("DL — (7) —"), "{s}");
+        assert!(!s.contains("(no NR feature set)"), "{s}");
+    }
+
+    #[test]
+    fn nr_full_shows_unknown_raw_scs_without_bandwidth() {
+        let patch = Patch::Nr(NrPatch {
+            kind: Kind::Nr,
+            version: 1,
+            delete: vec![],
+            set: vec![SetEntry {
+                kind: Some("add".into()),
+                combo: vec![PatchCombo {
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 78,
+                        bw_class_dl: Some(1),
+                        bw_class_ul: Some(1),
+                        dl_max_scs: Some(9),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }],
+        });
+
+        let s = render(&patch, true);
+
+        assert!(s.contains("DL — — — · SCS (9)"), "{s}");
+        assert!(!s.contains("(no NR feature set)"), "{s}");
+    }
+
+    #[test]
     fn lte_summary_and_full() {
         let summary = render(&lte_patch(), false);
         assert!(
@@ -253,11 +310,13 @@ mod tests {
             version: 1,
             delete: vec![],
             set: vec![SetEntry {
-                key: "n1A".into(),
                 kind: None,
-                combo: vec![Combo {
-                    cc: vec![Cc {
-                        band: 10001,
+                combo: vec![PatchCombo {
+                    cc: vec![PatchCc {
+                        kind: CcKind::Nr,
+                        band: 1,
+                        bw_class_dl: Some(1),
+                        bw_class_ul: Some(1),
                         ..Default::default()
                     }],
                     ..Default::default()

@@ -229,7 +229,14 @@ patch's target, keeping the base's identity fields. Apply is best-effort — ent
 don't fit the base are warned and skipped (use `--strict` to fail instead). You can then
 `magisk` the patched file onto a device (next recipe). Exit codes: create `0`/`2`; apply
 `0` clean, `1` with skipped entries, `2` on error. `patch show [FILE]` (file or stdin) renders a patch's
-`delete`/`set` entries — add `--full` for per-component capabilities, like `inspect --full`. `patch filter include`/`exclude <BANDS>…` (file or stdin) keeps or drops the patch's combos by band — labels like `n77`/`B66`, any-match (or `include --only` for combos whose *every* band is listed) — writing a filtered patch. `patch` also works on `lte_*.binarypb` fallback files — `patch create lteA lteB` writes an
+`delete`/`set` entries — add `--full` for per-component capabilities, like `inspect --full`.
+Patch `set` labels are derived from their combo payload, so set entries do not carry
+duplicate `set.key` or `set.combo.bands` fields. In carrier/NR patches each flat
+`[[set.combo.cc]]` has `kind = "lte"` or `kind = "nr"` plus a plain band number
+(`band = 66`, `band = 78`); labels such as `B66` and `n78` are derived, and NR-only
+capability fields are valid only on `kind = "nr"` components. `delete` entries keep
+explicit keys because they have no combo payload.
+`patch filter include`/`exclude <BANDS>…` (file or stdin) keeps or drops the patch's combos by band — labels like `n77`/`B66`, any-match (or `include --only` for combos whose *every* band is listed) — writing a filtered patch. `patch` also works on `lte_*.binarypb` fallback files — `patch create lteA lteB` writes an
 `lte`-kind patch (the TOML leads with `kind = "lte"`) and `patch apply lteBASE` transplants the LTE
 combos and re-encodes a new `lte_*.binarypb`. Both files of a `create`, and the base of an `apply`,
 must be the same kind (you can't mix carrier and LTE).

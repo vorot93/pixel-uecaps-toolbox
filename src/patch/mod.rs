@@ -16,7 +16,7 @@ use std::{
     path::Path,
 };
 
-use self::format::{Kind, NrPatch, Patch, SetEntry};
+use self::format::{Kind, NrPatch, Patch, PatchCombo, SetEntry};
 use crate::{
     model::{Parsed, parse_name},
     proto::LteCaps,
@@ -29,28 +29,30 @@ fn load_lte(path: &Path) -> anyhow::Result<LteCaps> {
     LteCaps::decode(&bytes[..]).with_context(|| format!("decoding {}", path.display()))
 }
 
-/// Full-field canonical form of one CC: resolved caps + the non-selector modeled
-/// fields. Excludes `band_label`/`nr` (derived) and `*_feature_per_cc_ids` (the
-/// selector is reassigned on apply, so it is not part of combo identity).
+/// Full-field canonical form of one CC: resolved caps + modeled fields.
+/// Selector IDs are part of raw combos, but ignored once their feature fields
+/// have been resolved.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
 struct CanonCc {
-    band: i32,
+    band: String,
     bw_class_dl: Option<i32>,
     bw_class_ul: Option<i32>,
     dl_feature_index: Option<i32>,
     ul_feature_index: Option<i32>,
+    dl_feature_per_cc_ids: Option<Vec<u8>>,
+    ul_feature_per_cc_ids: Option<Vec<u8>>,
     srs_tx_switch: Option<i32>,
-    dl_scs_khz: Option<u32>,
-    dl_mimo: Option<String>,
-    dl_max_bw_mhz: Option<i32>,
-    dl_mod_order: Option<String>,
-    dl_bw90mhz: Option<bool>,
-    ul_scs_khz: Option<u32>,
-    ul_mimo_cb: Option<String>,
-    ul_mimo_non_cb: Option<i32>,
-    ul_max_bw_mhz: Option<i32>,
-    ul_mod_order: Option<String>,
-    ul_bw90mhz: Option<bool>,
+    dl_max_scs: Option<i32>,
+    dl_max_mimo: Option<i32>,
+    dl_max_bw: Option<i32>,
+    dl_max_mod_order: Option<i32>,
+    dl_bw_90mhz_supported: Option<bool>,
+    ul_max_scs: Option<i32>,
+    ul_max_mimo_cb: Option<i32>,
+    ul_max_bw: Option<i32>,
+    ul_max_mod_order: Option<i32>,
+    ul_bw_90mhz_supported: Option<bool>,
+    ul_max_mimo_non_cb: Option<i32>,
 }
 
 /// Full-field canonical form of one combo: header + bitmask + sorted CCs.
@@ -65,25 +67,84 @@ pub(crate) struct CanonCombo {
     cc: Vec<CanonCc>,
 }
 
+fn has_dl_feature_fields(x: &Cc) -> bool {
+    has_dl_raw_values(x)
+}
+
+fn has_ul_feature_fields(x: &Cc) -> bool {
+    has_ul_raw_values(x)
+}
+
+fn canon_dl_feature_per_cc_ids(x: &Cc) -> Option<Vec<u8>> {
+    if has_dl_feature_fields(x) {
+        None
+    } else {
+        x.dl_feature_per_cc_ids.clone()
+    }
+}
+
+fn canon_ul_feature_per_cc_ids(x: &Cc) -> Option<Vec<u8>> {
+    if has_ul_feature_fields(x) {
+        None
+    } else {
+        x.ul_feature_per_cc_ids.clone()
+    }
+}
+
+fn dl_raw(x: &Cc) -> Option<&crate::proto::ShannonFeatureSetDlPerCcNr> {
+    x.dl_feature_per_cc.as_ref()
+}
+
+fn ul_raw(x: &Cc) -> Option<&crate::proto::ShannonFeatureSetUlPerCcNr> {
+    x.ul_feature_per_cc.as_ref()
+}
+
+fn has_dl_raw_values(x: &Cc) -> bool {
+    let Some(f) = x.dl_feature_per_cc.as_ref() else {
+        return false;
+    };
+    f.max_scs.is_some()
+        || f.max_mimo.is_some()
+        || f.max_bw.is_some()
+        || f.max_mod_order.is_some()
+        || f.bw_90mhz_supported.is_some()
+}
+
+fn has_ul_raw_values(x: &Cc) -> bool {
+    let Some(f) = x.ul_feature_per_cc.as_ref() else {
+        return false;
+    };
+    f.max_scs.is_some()
+        || f.max_mimo_cb.is_some()
+        || f.max_bw.is_some()
+        || f.max_mod_order.is_some()
+        || f.bw_90mhz_supported.is_some()
+        || f.max_mimo_non_cb.is_some()
+}
+
 fn canon_cc(x: &Cc) -> CanonCc {
+    let dl = dl_raw(x);
+    let ul = ul_raw(x);
     CanonCc {
-        band: x.band,
+        band: x.band.clone(),
         bw_class_dl: x.bw_class_dl,
         bw_class_ul: x.bw_class_ul,
         dl_feature_index: x.dl_feature_index,
         ul_feature_index: x.ul_feature_index,
+        dl_feature_per_cc_ids: canon_dl_feature_per_cc_ids(x),
+        ul_feature_per_cc_ids: canon_ul_feature_per_cc_ids(x),
         srs_tx_switch: x.srs_tx_switch,
-        dl_scs_khz: x.dl_scs_khz,
-        dl_mimo: x.dl_mimo.clone(),
-        dl_max_bw_mhz: x.dl_max_bw_mhz,
-        dl_mod_order: x.dl_mod_order.clone(),
-        dl_bw90mhz: x.dl_bw90mhz,
-        ul_scs_khz: x.ul_scs_khz,
-        ul_mimo_cb: x.ul_mimo_cb.clone(),
-        ul_mimo_non_cb: x.ul_mimo_non_cb,
-        ul_max_bw_mhz: x.ul_max_bw_mhz,
-        ul_mod_order: x.ul_mod_order.clone(),
-        ul_bw90mhz: x.ul_bw90mhz,
+        dl_max_scs: dl.and_then(|f| f.max_scs),
+        dl_max_mimo: dl.and_then(|f| f.max_mimo),
+        dl_max_bw: dl.and_then(|f| f.max_bw),
+        dl_max_mod_order: dl.and_then(|f| f.max_mod_order),
+        dl_bw_90mhz_supported: dl.and_then(|f| f.bw_90mhz_supported),
+        ul_max_scs: ul.and_then(|f| f.max_scs),
+        ul_max_mimo_cb: ul.and_then(|f| f.max_mimo_cb),
+        ul_max_bw: ul.and_then(|f| f.max_bw),
+        ul_max_mod_order: ul.and_then(|f| f.max_mod_order),
+        ul_bw_90mhz_supported: ul.and_then(|f| f.bw_90mhz_supported),
+        ul_max_mimo_non_cb: ul.and_then(|f| f.max_mimo_non_cb),
     }
 }
 
@@ -138,9 +199,8 @@ pub(crate) fn build_patch(a: &[Combo], b: &[Combo]) -> NrPatch {
         };
         if differs {
             set.push(SetEntry {
-                key: k.clone(),
                 kind: Some(kind.to_string()),
-                combo: b_combos.iter().map(|c| (*c).clone()).collect(),
+                combo: b_combos.iter().map(|c| PatchCombo::from_combo(c)).collect(),
             });
         }
     }
@@ -265,17 +325,42 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*; // Cc, Combo, build_patch, format come via the glob
-    use crate::report::combos::NR_BAND_OFFSET;
 
-    fn nr_combo(band_n: i32, mimo: &str) -> Combo {
+    fn nr_combo(band_n: i32, dl_max_mimo: i32) -> Combo {
+        let dl_feature_per_cc = crate::proto::ShannonFeatureSetDlPerCcNr {
+            max_bw: Some(100),
+            max_mimo: Some(dl_max_mimo),
+            ..Default::default()
+        };
         Combo {
             bit_mask: 0,
             cc: vec![Cc {
-                band: NR_BAND_OFFSET + band_n,
+                band: format!("n{band_n}"),
                 bw_class_dl: Some(1),
                 bw_class_ul: Some(1),
+                dl_feature_per_cc: Some(dl_feature_per_cc),
                 dl_max_bw_mhz: Some(100),
-                dl_mimo: Some(mimo.to_string()),
+                dl_mimo: Some(match dl_max_mimo {
+                    1 => "2x2".to_string(),
+                    2 => "4x4".to_string(),
+                    3 => "8x8".to_string(),
+                    n => format!("({n})"),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn nr_combo_with_raw_ids(band_n: i32, dl_ids: Vec<u8>, ul_ids: Vec<u8>) -> Combo {
+        Combo {
+            bit_mask: 0,
+            cc: vec![Cc {
+                band: format!("n{band_n}"),
+                bw_class_dl: Some(1),
+                bw_class_ul: Some(1),
+                dl_feature_per_cc_ids: Some(dl_ids),
+                ul_feature_per_cc_ids: Some(ul_ids),
                 ..Default::default()
             }],
             ..Default::default()
@@ -284,37 +369,154 @@ mod tests {
 
     #[test]
     fn build_patch_classifies_add_change_delete() {
-        let a = vec![nr_combo(78, "4x4"), nr_combo(41, "4x4")];
-        let b = vec![nr_combo(78, "8x8"), nr_combo(2, "4x4")];
+        let a = vec![nr_combo(78, 2), nr_combo(41, 2)];
+        let b = vec![nr_combo(78, 3), nr_combo(2, 2)];
         let p = build_patch(&a, &b);
         assert_eq!(p.delete, vec!["n41A".to_string()]);
-        let keys: Vec<&str> = p.set.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, vec!["n2A", "n78A"]); // sorted
-        let by_key = |k: &str| p.set.iter().find(|s| s.key == k).unwrap();
+        let keys: Vec<String> = p
+            .set
+            .iter()
+            .map(|s| format::set_entry_key(s).unwrap())
+            .collect();
+        assert_eq!(keys, vec!["n2A".to_string(), "n78A".to_string()]); // sorted
+        let by_key = |k: &str| {
+            p.set
+                .iter()
+                .find(|s| format::set_entry_key(s).unwrap() == k)
+                .unwrap()
+        };
         assert_eq!(by_key("n2A").kind.as_deref(), Some("add"));
         assert_eq!(by_key("n78A").kind.as_deref(), Some("change"));
-        assert_eq!(
-            by_key("n78A").combo[0].cc[0].dl_mimo.as_deref(),
-            Some("8x8")
-        );
+        assert_eq!(by_key("n78A").combo[0].cc[0].dl_max_mimo, Some(3));
     }
 
     #[test]
     fn build_patch_detects_bitmask_only_change() {
         // Same key, same caps signature, different bit_mask -> still a `change`.
-        let mut a0 = nr_combo(78, "4x4");
+        let mut a0 = nr_combo(78, 2);
         a0.bit_mask = 1;
-        let b0 = nr_combo(78, "4x4"); // bit_mask 0
+        let b0 = nr_combo(78, 2); // bit_mask 0
         let p = build_patch(&[a0], &[b0]);
         assert!(p.delete.is_empty());
         assert_eq!(p.set.len(), 1);
-        assert_eq!(p.set[0].key, "n78A");
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
         assert_eq!(p.set[0].combo[0].bit_mask, 0);
     }
 
     #[test]
+    fn build_patch_detects_raw_feature_value_change() {
+        let mut a = nr_combo(78, 2);
+        let mut b = nr_combo(78, 3);
+        a.cc[0].dl_feature_per_cc_ids = Some(vec![1]);
+        b.cc[0].dl_feature_per_cc_ids = Some(vec![1]);
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert_eq!(p.set.len(), 1);
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
+        assert_eq!(p.set[0].combo[0].cc[0].dl_max_mimo, Some(3));
+    }
+
+    #[test]
+    fn build_patch_detects_unknown_raw_scs_change_when_display_is_none() {
+        let mut a = nr_combo(78, 2);
+        let mut b = nr_combo(78, 2);
+        a.cc[0].dl_feature_per_cc.as_mut().unwrap().max_scs = Some(7);
+        b.cc[0].dl_feature_per_cc.as_mut().unwrap().max_scs = Some(8);
+        a.cc[0].dl_scs_khz = None;
+        b.cc[0].dl_scs_khz = None;
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert_eq!(p.set.len(), 1);
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
+        assert_eq!(p.set[0].combo[0].cc[0].dl_max_scs, Some(8));
+    }
+
+    #[test]
+    fn build_patch_detects_raw_selector_only_change() {
+        let a = nr_combo_with_raw_ids(78, vec![1], vec![1]);
+        let b = nr_combo_with_raw_ids(78, vec![2], vec![1]);
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert_eq!(p.set.len(), 1);
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
+        assert_eq!(p.set[0].combo[0].cc[0].dl_feature_per_cc_ids, Some(vec![2]));
+    }
+
+    #[test]
+    fn build_patch_detects_selector_change_when_resolved_feature_set_is_empty() {
+        let mut a = nr_combo_with_raw_ids(78, vec![], vec![]);
+        let mut b = nr_combo_with_raw_ids(78, vec![1], vec![]);
+        a.cc[0].dl_feature_per_cc_ids = None;
+        a.cc[0].ul_feature_per_cc_ids = None;
+        b.cc[0].ul_feature_per_cc_ids = None;
+        b.cc[0].dl_feature_per_cc = Some(crate::proto::ShannonFeatureSetDlPerCcNr::default());
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert_eq!(p.set.len(), 1);
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
+        assert_eq!(p.set[0].combo[0].cc[0].dl_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(p.set[0].combo[0].cc[0].dl_feature_set(), None);
+    }
+
+    #[test]
+    fn build_patch_ignores_dl_selector_change_when_dl_resolved_features_match() {
+        let mut a = nr_combo(78, 2);
+        a.cc[0].dl_feature_per_cc_ids = Some(vec![1]);
+        a.cc[0].ul_feature_per_cc_ids = Some(vec![1]);
+        let mut b = a.clone();
+        b.cc[0].dl_feature_per_cc_ids = Some(vec![7]);
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert!(p.set.is_empty());
+    }
+
+    #[test]
+    fn build_patch_detects_ul_selector_change_when_ul_features_absent() {
+        let mut a = nr_combo(78, 2);
+        a.cc[0].dl_feature_per_cc_ids = Some(vec![1]);
+        a.cc[0].ul_feature_per_cc_ids = Some(vec![1]);
+        let mut b = a.clone();
+        b.cc[0].ul_feature_per_cc_ids = Some(vec![9]);
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert_eq!(p.set.len(), 1);
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
+        assert_eq!(p.set[0].combo[0].cc[0].ul_feature_per_cc_ids, Some(vec![9]));
+    }
+
+    #[test]
+    fn build_patch_ignores_ul_selector_change_when_ul_resolved_features_match() {
+        let mut a = nr_combo(78, 2);
+        a.cc[0].ul_max_bw_mhz = Some(100);
+        a.cc[0].ul_feature_per_cc = Some(crate::proto::ShannonFeatureSetUlPerCcNr {
+            max_bw: Some(100),
+            ..Default::default()
+        });
+        a.cc[0].ul_feature_per_cc_ids = Some(vec![1]);
+        let mut b = a.clone();
+        b.cc[0].ul_feature_per_cc_ids = Some(vec![9]);
+
+        let p = build_patch(&[a], &[b]);
+
+        assert!(p.delete.is_empty());
+        assert!(p.set.is_empty());
+    }
+
+    #[test]
     fn build_patch_identical_is_empty() {
-        let a = vec![nr_combo(78, "4x4")];
+        let a = vec![nr_combo(78, 2)];
         let p = build_patch(&a, &a);
         assert!(p.delete.is_empty());
         assert!(p.set.is_empty());
@@ -498,6 +700,6 @@ mod tests {
         };
         assert_eq!(p.delete, vec!["n78A".to_string()]);
         assert_eq!(p.set.len(), 1);
-        assert_eq!(p.set[0].key, "n2A");
+        assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n2A");
     }
 }

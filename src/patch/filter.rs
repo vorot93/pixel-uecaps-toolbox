@@ -1,7 +1,6 @@
 //! `patch filter include|exclude` — keep/drop a patch's combos by band.
 
 use super::format::{self, Patch};
-use crate::report::combos::band_label;
 use anyhow::Context;
 use std::{collections::HashSet, io::Write, path::Path};
 
@@ -106,7 +105,7 @@ fn filter_patch(patch: &mut Patch, mode: FilterMode, wanted: &HashSet<String>) {
                     .combo
                     .iter()
                     .flat_map(|c| c.cc.iter())
-                    .map(|cc| band_label(cc.band))
+                    .map(|cc| cc.band_label())
                     .collect();
                 keep(&bands, mode, wanted)
             });
@@ -137,25 +136,32 @@ const fn patch_is_empty(patch: &Patch) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        patch::format::{
-            Kind, LtePatch, LtePatchCombo, LtePatchComponent, LteSetEntry, NrPatch, SetEntry,
-        },
-        report::combos::{Cc, Combo},
+    use crate::patch::format::{
+        CcKind, Kind, LtePatch, LtePatchCombo, LtePatchComponent, LteSetEntry, NrPatch, PatchCc,
+        PatchCombo, SetEntry, lte_set_entry_key, set_entry_key,
     };
 
-    fn nr_set(key: &str, bands: &[i32]) -> SetEntry {
+    fn nr_set(_key: &str, bands: &[i32]) -> SetEntry {
         SetEntry {
-            key: key.into(),
             kind: Some("add".into()),
-            combo: vec![Combo {
+            combo: vec![PatchCombo {
+                group: 0,
+                index: 0,
                 cc: bands
                     .iter()
-                    .map(|&band| Cc {
-                        band,
+                    .map(|&band| PatchCc {
+                        kind: if band >= 10000 {
+                            CcKind::Nr
+                        } else {
+                            CcKind::Lte
+                        },
+                        band: if band >= 10000 { band - 10000 } else { band },
+                        bw_class_dl: Some(1),
+                        bw_class_ul: Some(1),
                         ..Default::default()
                     })
                     .collect(),
+                bit_mask: 0,
                 ..Default::default()
             }],
         }
@@ -174,18 +180,16 @@ mod tests {
         })
     }
 
-    fn lte_set(key: &str, bands: &[i32]) -> LteSetEntry {
+    fn lte_set(_key: &str, bands: &[i32]) -> LteSetEntry {
         LteSetEntry {
-            key: key.into(),
             kind: Some("add".into()),
             combo: vec![LtePatchCombo {
-                bands: None,
                 components: bands
                     .iter()
                     .map(|&band| LtePatchComponent {
                         band,
-                        bw_class_mimo_dl: 0,
-                        bw_class_mimo_ul: 0,
+                        bw_class_mimo_dl: 32768,
+                        bw_class_mimo_ul: 32768,
                     })
                     .collect(),
                 bcs: 0,
@@ -206,8 +210,12 @@ mod tests {
 
     fn set_keys(p: &Patch) -> Vec<String> {
         match p {
-            Patch::Nr(p) => p.set.iter().map(|e| e.key.clone()).collect(),
-            Patch::Lte(p) => p.set.iter().map(|e| e.key.clone()).collect(),
+            Patch::Nr(p) => p.set.iter().map(|e| set_entry_key(e).unwrap()).collect(),
+            Patch::Lte(p) => p
+                .set
+                .iter()
+                .map(|e| lte_set_entry_key(e).unwrap())
+                .collect(),
         }
     }
     fn deletes(p: &Patch) -> Vec<String> {

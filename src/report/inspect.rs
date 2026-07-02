@@ -569,15 +569,15 @@ mod tests {
                 intra_band_en_dc_support: None,
                 bit_mask: 0,
                 cc: vec![Cc {
-                    band: 10001,
-                    band_label: "n1".into(),
-                    nr: true,
+                    band: "n1".into(),
                     bw_class_dl: Some(1),
                     bw_class_ul: Some(1),
                     dl_feature_index: Some(1),
                     ul_feature_index: Some(1),
-                    dl_feature_per_cc_ids: Some("0b".into()),
-                    ul_feature_per_cc_ids: Some("07".into()),
+                    dl_feature_per_cc_ids: Some(vec![0x0b]),
+                    ul_feature_per_cc_ids: Some(vec![0x07]),
+                    dl_feature_per_cc: None,
+                    ul_feature_per_cc: None,
                     srs_tx_switch: None,
                     dl_scs_khz: Some(30),
                     dl_mimo: Some("4x4".into()),
@@ -598,14 +598,17 @@ mod tests {
         assert!(out.contains("fingerprint_status = \"ok\""));
         assert!(out.contains("[[combo.cc]]"));
         assert!(!out.contains("srs_tx_switch")); // None omitted
+        assert!(!out.contains("band_label"));
+        assert!(!out.contains("nr ="));
         let parsed: toml::Value = toml::from_str(&out).unwrap();
         assert_eq!(parsed["type"].as_str(), Some("carrier"));
-        assert_eq!(
-            parsed["combo"][0]["cc"][0]["band"].as_integer(),
-            Some(10001)
-        );
+        assert_eq!(parsed["combo"][0]["cc"][0]["band"].as_str(), Some("n1"));
         assert!(out.contains("dl_max_bw_mhz = 100"));
         assert!(out.contains("dl_mimo = \"4x4\""));
+        assert!(out.contains("dl_feature_per_cc_ids = [11]"), "{out}");
+        assert!(out.contains("ul_feature_per_cc_ids = [7]"), "{out}");
+        assert!(!out.contains("dl_feature_per_cc_ids = \"0b\""), "{out}");
+        assert!(!out.contains("ul_feature_per_cc_ids = \"07\""), "{out}");
         assert!(!out.contains("ul_bw90mhz")); // None omitted
         assert!(out.contains("model = \"Pixel 10 Pro XL\""));
         view.model = None;

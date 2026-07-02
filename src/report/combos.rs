@@ -1,6 +1,6 @@
 //! Band-combination model and rendering shared by `inspect`.
 
-use crate::proto::UeCaps;
+use crate::proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps};
 use std::collections::BTreeMap;
 
 /// Marker rendered for an absent / not-applicable capability value.
@@ -41,6 +41,24 @@ pub(crate) fn band_label(band: i32) -> String {
     }
 }
 
+/// Convert a canonical report band label (`n78` / `B66`) back to its protobuf band value.
+pub(crate) fn raw_band(label: &str) -> Option<i32> {
+    if let Some(n) = label.strip_prefix('n') {
+        n.parse::<i32>()
+            .ok()
+            .filter(|&n| n > 0)
+            .map(|n| NR_BAND_OFFSET + n)
+    } else if let Some(b) = label.strip_prefix('B') {
+        b.parse::<i32>().ok().filter(|&b| b > 0)
+    } else {
+        None
+    }
+}
+
+fn is_nr_band(label: &str) -> bool {
+    label.starts_with('n')
+}
+
 /// Render one component as `n<band><class>` (NR) / `B<band><class>` (E-UTRA).
 pub(crate) fn render_component(band: i32, dl: Option<i32>, ul: Option<i32>) -> String {
     format!("{}{}", band_label(band), cc_class(dl, ul))
@@ -49,7 +67,7 @@ pub(crate) fn render_component(band: i32, dl: Option<i32>, ul: Option<i32>) -> S
 /// Band+class label for a component, e.g. `n78A` / `B1` — the same per-component
 /// rendering the combo `bands` string uses. The combo identity key is built from these.
 pub(crate) fn cc_component_label(cc: &Cc) -> String {
-    render_component(cc.band, cc.bw_class_dl, cc.bw_class_ul)
+    format!("{}{}", cc.band, cc_class(cc.bw_class_dl, cc.bw_class_ul))
 }
 
 /// Order-normalized identity key: sorted band+class labels joined with " + ".
@@ -59,14 +77,9 @@ pub(crate) fn combo_key(combo: &Combo) -> String {
     parts.join(" + ")
 }
 
-/// Bytes -> lowercase hex (e.g. `[0x0b] -> "0b"`); None passes through.
-fn hex_bytes(b: Option<&[u8]>) -> Option<String> {
-    b.map(|v| v.iter().map(|x| format!("{x:02x}")).collect())
-}
-
 /// NR subcarrier-spacing code -> kHz. Unknown -> None.
 /// Decode tables cross-checked against the pixel-pb decoder: https://nxij.github.io/pixel-pb
-const fn scs_khz(v: i32) -> Option<u32> {
+pub(crate) const fn scs_khz(v: i32) -> Option<u32> {
     match v {
         1 => Some(15),
         2 => Some(30),
@@ -78,7 +91,7 @@ const fn scs_khz(v: i32) -> Option<u32> {
 }
 
 /// DL MIMO code -> label. 0 = not supported; unknown -> "(N)".
-fn dl_mimo_label(v: i32) -> String {
+pub(crate) fn dl_mimo_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "2x2".to_string(),
@@ -89,7 +102,7 @@ fn dl_mimo_label(v: i32) -> String {
 }
 
 /// UL codebook-MIMO support code -> label. 0 = not supported; unknown -> "(N)".
-fn ul_mimo_cb_label(v: i32) -> String {
+pub(crate) fn ul_mimo_cb_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "No".to_string(),
@@ -99,55 +112,12 @@ fn ul_mimo_cb_label(v: i32) -> String {
 }
 
 /// Modulation-order code -> label. 0 = not supported; unknown -> "(N)".
-fn mod_order_label(v: i32) -> String {
+pub(crate) fn mod_order_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "QAM64".to_string(),
         2 => "QAM256".to_string(),
         n => format!("({n})"),
-    }
-}
-
-/// kHz -> NR subcarrier-spacing code (inverse of `scs_khz`). Unknown -> None.
-pub(crate) const fn scs_code(khz: u32) -> Option<i32> {
-    match khz {
-        15 => Some(1),
-        30 => Some(2),
-        60 => Some(3),
-        120 => Some(4),
-        240 => Some(5),
-        _ => None,
-    }
-}
-
-/// DL MIMO label -> code (inverse of `dl_mimo_label`). Unknown -> None.
-pub(crate) fn dl_mimo_code(label: &str) -> Option<i32> {
-    match label {
-        NONE_MARK => Some(0),
-        "2x2" => Some(1),
-        "4x4" => Some(2),
-        "8x8" => Some(3),
-        _ => None,
-    }
-}
-
-/// UL codebook-MIMO label -> code (inverse of `ul_mimo_cb_label`). Unknown -> None.
-pub(crate) fn ul_mimo_cb_code(label: &str) -> Option<i32> {
-    match label {
-        NONE_MARK => Some(0),
-        "No" => Some(1),
-        "Yes" => Some(2),
-        _ => None,
-    }
-}
-
-/// Modulation-order label -> code (inverse of `mod_order_label`). Unknown -> None.
-pub(crate) fn mod_order_code(label: &str) -> Option<i32> {
-    match label {
-        NONE_MARK => Some(0),
-        "QAM64" => Some(1),
-        "QAM256" => Some(2),
-        _ => None,
     }
 }
 
@@ -163,9 +133,7 @@ fn feature_index(ids: Option<&[u8]>, len: usize) -> Option<usize> {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Default, Debug)]
 #[serde(default)]
 pub(crate) struct Cc {
-    pub(crate) band: i32,
-    pub(crate) band_label: String,
-    pub(crate) nr: bool,
+    pub(crate) band: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) bw_class_dl: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,9 +143,13 @@ pub(crate) struct Cc {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) ul_feature_index: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) dl_feature_per_cc_ids: Option<String>,
+    pub(crate) dl_feature_per_cc_ids: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ul_feature_per_cc_ids: Option<String>,
+    pub(crate) ul_feature_per_cc_ids: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub(crate) dl_feature_per_cc: Option<ShannonFeatureSetDlPerCcNr>,
+    #[serde(skip)]
+    pub(crate) ul_feature_per_cc: Option<ShannonFeatureSetUlPerCcNr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) srs_tx_switch: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,7 +207,6 @@ pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
             let cc: Vec<Cc> =
                 c.cc.iter()
                     .map(|x| {
-                        let nr = x.band >= NR_BAND_OFFSET;
                         // Resolution is byte-based per spec: a per-CC id of 0 (or absent /
                         // out-of-range) means no NR feature set. E-UTRA components carry id 0
                         // in the data, so they resolve to None without an explicit `nr` gate.
@@ -250,15 +221,15 @@ pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
                         )
                         .map(|i| &caps.ul_feature_per_cc_list[i]);
                         Cc {
-                            band: x.band,
-                            band_label: band_label(x.band),
-                            nr,
+                            band: band_label(x.band),
                             bw_class_dl: x.bw_class_dl,
                             bw_class_ul: x.bw_class_ul,
                             dl_feature_index: x.dl_feature_index,
                             ul_feature_index: x.ul_feature_index,
-                            dl_feature_per_cc_ids: hex_bytes(x.dl_feature_per_cc_ids.as_deref()),
-                            ul_feature_per_cc_ids: hex_bytes(x.ul_feature_per_cc_ids.as_deref()),
+                            dl_feature_per_cc_ids: x.dl_feature_per_cc_ids.clone(),
+                            ul_feature_per_cc_ids: x.ul_feature_per_cc_ids.clone(),
+                            dl_feature_per_cc: dl_fs.cloned(),
+                            ul_feature_per_cc: ul_fs.cloned(),
                             srs_tx_switch: x.srstxswitch,
                             dl_scs_khz: dl_fs.and_then(|f| f.max_scs).and_then(scs_khz),
                             dl_mimo: dl_fs.and_then(|f| f.max_mimo).map(dl_mimo_label),
@@ -299,40 +270,86 @@ pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
 /// Render a component's decoded NR feature set for `--full`. No feature set
 /// (E-UTRA component, or NR with id 0) yields a short marker. `srs:` is
 /// appended only when present, preserving today's datum.
+fn has_dl_feature_value(cc: &Cc) -> bool {
+    cc.dl_feature_per_cc.as_ref().is_some_and(|f| {
+        f.max_scs.is_some()
+            || f.max_mimo.is_some()
+            || f.max_bw.is_some()
+            || f.max_mod_order.is_some()
+            || f.bw_90mhz_supported.is_some()
+    }) || cc.dl_scs_khz.is_some()
+        || cc.dl_mimo.is_some()
+        || cc.dl_max_bw_mhz.is_some()
+        || cc.dl_mod_order.is_some()
+        || cc.dl_bw90mhz.is_some()
+}
+
+fn has_ul_feature_value(cc: &Cc) -> bool {
+    cc.ul_feature_per_cc.as_ref().is_some_and(|f| {
+        f.max_scs.is_some()
+            || f.max_mimo_cb.is_some()
+            || f.max_bw.is_some()
+            || f.max_mod_order.is_some()
+            || f.bw_90mhz_supported.is_some()
+            || f.max_mimo_non_cb.is_some()
+    }) || cc.ul_scs_khz.is_some()
+        || cc.ul_mimo_cb.is_some()
+        || cc.ul_mimo_non_cb.is_some()
+        || cc.ul_max_bw_mhz.is_some()
+        || cc.ul_mod_order.is_some()
+        || cc.ul_bw90mhz.is_some()
+}
+
+fn bw_text(mhz: Option<i32>) -> String {
+    mhz.map_or_else(|| NONE_MARK.to_string(), |bw| format!("{bw}MHz"))
+}
+
+fn scs_text(cc: &Cc) -> Option<String> {
+    if let Some(scs) = cc.dl_scs_khz.or(cc.ul_scs_khz) {
+        return Some(format!("SCS {scs}kHz"));
+    }
+    let raw = cc
+        .dl_feature_per_cc
+        .as_ref()
+        .and_then(|f| f.max_scs)
+        .or_else(|| cc.ul_feature_per_cc.as_ref().and_then(|f| f.max_scs));
+    raw.map(|n| format!("SCS ({n})"))
+}
+
 pub(crate) fn fmt_cc_features(cc: &Cc) -> String {
-    // `*_max_bw_mhz` is the presence proxy for a resolved feature set: it is always
-    // populated for a real NR feature set, so its absence means "no feature set here".
-    let base = if cc.dl_max_bw_mhz.is_none() && cc.ul_max_bw_mhz.is_none() {
-        if cc.nr {
+    let has_dl = has_dl_feature_value(cc);
+    let has_ul = has_ul_feature_value(cc);
+    let base = if !has_dl && !has_ul {
+        if is_nr_band(&cc.band) {
             "(no NR feature set)".to_string()
         } else {
             "E-UTRA — no NR feature set".to_string()
         }
     } else {
         let mut parts: Vec<String> = Vec::new();
-        if let Some(bw) = cc.dl_max_bw_mhz {
+        if has_dl {
             parts.push(format!(
-                "DL {}MHz {} {}",
-                bw,
+                "DL {} {} {}",
+                bw_text(cc.dl_max_bw_mhz),
                 cc.dl_mimo.as_deref().unwrap_or(NONE_MARK),
                 cc.dl_mod_order.as_deref().unwrap_or(NONE_MARK),
             ));
         }
-        if let Some(bw) = cc.ul_max_bw_mhz {
+        if has_ul {
             let noncb = cc
                 .ul_mimo_non_cb
                 .map_or_else(|| NONE_MARK.to_string(), |n| n.to_string());
             parts.push(format!(
-                "UL {}MHz cb:{} nonCb:{} {}",
-                bw,
+                "UL {} cb:{} nonCb:{} {}",
+                bw_text(cc.ul_max_bw_mhz),
                 cc.ul_mimo_cb.as_deref().unwrap_or(NONE_MARK),
                 noncb,
                 cc.ul_mod_order.as_deref().unwrap_or(NONE_MARK),
             ));
         }
         let mut tail = String::new();
-        if let Some(scs) = cc.dl_scs_khz.or(cc.ul_scs_khz) {
-            tail.push_str(&format!("SCS {scs}kHz"));
+        if let Some(scs) = scs_text(cc) {
+            tail.push_str(&scs);
         }
         if cc.dl_bw90mhz.or(cc.ul_bw90mhz).unwrap_or(false) {
             if !tail.is_empty() {
@@ -372,7 +389,7 @@ pub(crate) fn print_combos(combos: &[Combo], full: bool) {
         println!("  {:<6} {}", label, c.bands);
         if full {
             for x in &c.cc {
-                println!("       {:<5} {}", x.band_label, fmt_cc_features(x));
+                println!("       {:<5} {}", x.band, fmt_cc_features(x));
             }
         }
     }
@@ -384,15 +401,15 @@ mod tests {
 
     fn cc_base(nr: bool) -> Cc {
         Cc {
-            band: if nr { 10078 } else { 1 },
-            band_label: if nr { "n78".into() } else { "B1".into() },
-            nr,
+            band: if nr { "n78".into() } else { "B1".into() },
             bw_class_dl: None,
             bw_class_ul: None,
             dl_feature_index: None,
             ul_feature_index: None,
             dl_feature_per_cc_ids: None,
             ul_feature_per_cc_ids: None,
+            dl_feature_per_cc: None,
+            ul_feature_per_cc: None,
             srs_tx_switch: None,
             dl_scs_khz: None,
             dl_mimo: None,
@@ -434,6 +451,25 @@ mod tests {
             fmt_cc_features(&cc),
             "DL 100MHz 4x4 QAM256 · UL 100MHz cb:Yes nonCb:1 QAM256 · SCS 30kHz +90MHz"
         );
+    }
+
+    #[test]
+    fn format_features_partial_nr_without_bandwidth() {
+        let mut cc = cc_base(true);
+        cc.dl_mimo = Some("(7)".into());
+
+        assert_eq!(fmt_cc_features(&cc), "DL — (7) —");
+    }
+
+    #[test]
+    fn format_features_unknown_raw_scs_without_bandwidth() {
+        let mut cc = cc_base(true);
+        cc.dl_feature_per_cc = Some(crate::proto::ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(9),
+            ..Default::default()
+        });
+
+        assert_eq!(fmt_cc_features(&cc), "DL — — — · SCS (9)");
     }
 
     #[test]
@@ -503,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn build_combos_resolves_features() {
+    fn build_combos_resolves_feature_sets() {
         use crate::proto::{
             ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group,
         };
@@ -520,7 +556,7 @@ mod tests {
                 max_mimo_cb: Some(2),
                 max_bw: Some(100),
                 max_mod_order: Some(2),
-                bw_90mhz_supported: Some(true),
+                bw_90mhz_supported: None,
                 max_mimo_non_cb: Some(1),
             }],
             combo_groups: vec![ComboGroup {
@@ -547,7 +583,12 @@ mod tests {
         };
         let combos = build_combos(&caps);
         let cc = &combos[0].cc;
+        assert_eq!(cc[0].dl_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(cc[0].ul_feature_per_cc_ids, Some(vec![1]));
+        assert_eq!(cc[1].dl_feature_per_cc_ids, Some(vec![0]));
+        assert_eq!(cc[1].ul_feature_per_cc_ids, Some(vec![0]));
         // n78 (NR) resolves to DL/UL feature-set entry 1
+        assert_eq!(cc[0].band, "n78");
         assert_eq!(cc[0].dl_max_bw_mhz, Some(100));
         assert_eq!(cc[0].dl_mimo.as_deref(), Some("4x4"));
         assert_eq!(cc[0].dl_scs_khz, Some(30));
@@ -555,39 +596,40 @@ mod tests {
         assert_eq!(cc[0].dl_bw90mhz, Some(true));
         assert_eq!(cc[0].ul_mimo_cb.as_deref(), Some("Yes"));
         assert_eq!(cc[0].ul_mimo_non_cb, Some(1));
+        let dl_raw = cc[0]
+            .dl_feature_per_cc
+            .as_ref()
+            .expect("raw DL feature set is retained");
+        assert_eq!(dl_raw.max_scs, Some(2));
+        assert_eq!(dl_raw.max_mimo, Some(2));
+        assert_eq!(dl_raw.max_bw, Some(100));
+        assert_eq!(dl_raw.max_mod_order, Some(2));
+        assert_eq!(dl_raw.bw_90mhz_supported, Some(true));
+
+        let ul_raw = cc[0]
+            .ul_feature_per_cc
+            .as_ref()
+            .expect("raw UL feature set is retained");
+        assert_eq!(ul_raw.max_scs, Some(2));
+        assert_eq!(ul_raw.max_mimo_cb, Some(2));
+        assert_eq!(ul_raw.max_bw, Some(100));
+        assert_eq!(ul_raw.max_mod_order, Some(2));
+        assert_eq!(ul_raw.bw_90mhz_supported, None);
+        assert_eq!(ul_raw.max_mimo_non_cb, Some(1));
+        assert!(cc[1].dl_feature_per_cc.is_none());
+        assert!(cc[1].ul_feature_per_cc.is_none());
         // B1 (E-UTRA, id 0) resolves to nothing
+        assert_eq!(cc[1].band, "B1");
         assert_eq!(cc[1].dl_max_bw_mhz, None);
         assert_eq!(cc[1].dl_mimo, None);
         assert_eq!(cc[1].ul_mimo_cb, None);
     }
 
     #[test]
-    fn inverse_maps_round_trip() {
-        for code in 1..=5 {
-            assert_eq!(scs_code(scs_khz(code).unwrap()), Some(code));
-        }
-        for code in 0..=3 {
-            assert_eq!(dl_mimo_code(&dl_mimo_label(code)), Some(code));
-        }
-        for code in 0..=2 {
-            assert_eq!(ul_mimo_cb_code(&ul_mimo_cb_label(code)), Some(code));
-            assert_eq!(mod_order_code(&mod_order_label(code)), Some(code));
-        }
-    }
-
-    #[test]
-    fn inverse_maps_reject_unknown() {
-        assert_eq!(scs_code(17), None);
-        assert_eq!(dl_mimo_code("(7)"), None);
-        assert_eq!(ul_mimo_cb_code("maybe"), None);
-        assert_eq!(mod_order_code("QAM1024"), None);
-    }
-
-    #[test]
     fn cc_deserializes_partial_and_clones() {
         // Only `band` present; everything else falls back to Default via serde(default).
-        let cc: Cc = toml::from_str("band = 10078\n").unwrap();
-        assert_eq!(cc.band, 10078);
+        let cc: Cc = toml::from_str("band = \"n78\"\n").unwrap();
+        assert_eq!(cc.band, "n78");
         assert_eq!(cc.dl_mimo, None);
         let _ = cc; // Clone derive must exist
     }

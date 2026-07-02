@@ -4,10 +4,9 @@ use crate::{
     model::{PHONE_MODELS, PROFILES, Parsed, PhoneModel, fp_info, parse_name, phone_model},
     patch::{
         self,
-        format::{self, Patch},
+        format::{self, CcKind, Patch, PatchCc},
     },
     proto::{LteCaps, UeCaps},
-    report::combos::{Cc, NR_BAND_OFFSET},
 };
 use anyhow::Context;
 use pixel_bands::{Bands, PIXEL_BANDS};
@@ -236,7 +235,7 @@ fn lte_entry(
     let Patch::Lte(mut lp) = format::from_toml(patch_text)? else {
         anyhow::bail!("{source_label} expects a kind=\"lte\" patch");
     };
-    let band_warns = retain_lte_compatible(&mut lp.set, bands, m);
+    let band_warns = retain_lte_compatible(&mut lp.set, bands, m)?;
     let caps = LteCaps::decode(bytes).with_context(|| format!("decoding {name}"))?;
     let (result, outcome) = patch::lte::apply_lte_patch(&caps, &lp, strict)?;
     let skipped = band_warns.len() + outcome.skipped.len();
@@ -287,7 +286,7 @@ fn nr_entry(
     let Patch::Nr(mut np) = format::from_toml(patch_text)? else {
         anyhow::bail!("{source_label} expects a kind=\"nr\" patch");
     };
-    let band_warns = retain_nr_compatible(&mut np.set, bands, m);
+    let band_warns = retain_nr_compatible(&mut np.set, bands, m)?;
     let caps = patch::build::decode_base(bytes)?;
     let (result, outcome) = patch::build::apply_patch(&caps, &np, strict)?;
     let skipped = band_warns.len() + outcome.skipped.len();
@@ -307,15 +306,18 @@ fn legend_input(dir: &Path, carrier: &str, plmns: &[String]) -> anyhow::Result<(
 }
 
 /// `Some(label)` if this carrier/NR component's band is not supported by the model.
-/// An NR component (`band >= 10000`) is checked against `bands.nr`; otherwise an E-UTRA
-/// (LTE) component checked against `bands.lte`. Labels render as `n78` / `B66`.
-fn nr_cc_unsupported(cc: &Cc, bands: &Bands) -> Option<String> {
-    if cc.band >= NR_BAND_OFFSET {
-        let n = (cc.band - NR_BAND_OFFSET) as u16;
-        (!bands.nr.contains(&n)).then(|| format!("n{n}"))
-    } else {
-        let b = cc.band as u16;
-        (!bands.lte.contains(&b)).then(|| format!("B{b}"))
+/// An NR component is checked against `bands.nr`; otherwise an E-UTRA (LTE)
+/// component is checked against `bands.lte`. Labels render as `n78` / `B66`.
+fn nr_cc_unsupported(cc: &PatchCc, bands: &Bands) -> Option<String> {
+    match cc.kind {
+        CcKind::Nr => {
+            let n = cc.band as u16;
+            (!bands.nr.contains(&n)).then(|| format!("n{n}"))
+        }
+        CcKind::Lte => {
+            let b = cc.band as u16;
+            (!bands.lte.contains(&b)).then(|| format!("B{b}"))
+        }
     }
 }
 
@@ -336,9 +338,17 @@ fn retain_nr_compatible(
     set: &mut Vec<format::SetEntry>,
     bands: &Bands,
     m: &PhoneModel,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let mut warnings = Vec::new();
+    let mut err = None;
     set.retain(|e| {
+        let key = match format::set_entry_key(e) {
+            Ok(key) => key,
+            Err(e) => {
+                err = Some(e);
+                return false;
+            }
+        };
         let mut bad: Vec<String> = e
             .combo
             .iter()
@@ -350,10 +360,13 @@ fn retain_nr_compatible(
         if bad.is_empty() {
             return true;
         }
-        warnings.push(drop_warning(&e.key, &bad, m));
+        warnings.push(drop_warning(&key, &bad, m));
         false
     });
-    warnings
+    if let Some(err) = err {
+        return Err(err);
+    }
+    Ok(warnings)
 }
 
 /// Drop LTE `set` entries that reference any band the model lacks.
@@ -362,9 +375,17 @@ fn retain_lte_compatible(
     set: &mut Vec<format::LteSetEntry>,
     bands: &Bands,
     m: &PhoneModel,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let mut warnings = Vec::new();
+    let mut err = None;
     set.retain(|e| {
+        let key = match format::lte_set_entry_key(e) {
+            Ok(key) => key,
+            Err(e) => {
+                err = Some(e);
+                return false;
+            }
+        };
         let mut bad: Vec<String> = e
             .combo
             .iter()
@@ -377,10 +398,13 @@ fn retain_lte_compatible(
         if bad.is_empty() {
             return true;
         }
-        warnings.push(drop_warning(&e.key, &bad, m));
+        warnings.push(drop_warning(&key, &bad, m));
         false
     });
-    warnings
+    if let Some(err) = err {
+        return Err(err);
+    }
+    Ok(warnings)
 }
 
 /// Write the assembled module to `out` (a file) or stdout.
@@ -474,9 +498,12 @@ pub fn provision_in_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{
-        Carrier, ComboGroup, LteCombo, LteComponent, PlmnMap, combo_group,
-        combo_group::nested2::ComboFeatures,
+    use crate::{
+        proto::{
+            Carrier, ComboGroup, LteCombo, LteComponent, PlmnMap, combo_group,
+            combo_group::nested2::ComboFeatures,
+        },
+        report::combos::NR_BAND_OFFSET,
     };
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -1018,14 +1045,21 @@ mod tests {
     #[test]
     fn nr_cc_unsupported_flags_missing_bands() {
         let bands = PIXEL_BANDS.get("GUL82").unwrap();
-        let cc = |band| Cc {
+        let cc = |kind, band| PatchCc {
+            kind,
             band,
             ..Default::default()
         };
-        assert_eq!(nr_cc_unsupported(&cc(10078), bands), None); // n78 supported
-        assert_eq!(nr_cc_unsupported(&cc(10079), bands), Some("n79".into())); // n79 not
-        assert_eq!(nr_cc_unsupported(&cc(66), bands), None); // B66 supported
-        assert_eq!(nr_cc_unsupported(&cc(32), bands), Some("B32".into())); // B32 not
+        assert_eq!(nr_cc_unsupported(&cc(CcKind::Nr, 78), bands), None); // n78 supported
+        assert_eq!(
+            nr_cc_unsupported(&cc(CcKind::Nr, 79), bands),
+            Some("n79".into())
+        ); // n79 not
+        assert_eq!(nr_cc_unsupported(&cc(CcKind::Lte, 66), bands), None); // B66 supported
+        assert_eq!(
+            nr_cc_unsupported(&cc(CcKind::Lte, 32), bands),
+            Some("B32".into())
+        ); // B32 not
     }
 
     #[test]

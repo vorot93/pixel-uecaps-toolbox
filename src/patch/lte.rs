@@ -2,10 +2,12 @@
 
 use super::{
     build::Outcome,
-    format::{Kind, LtePatch, LtePatchCombo, LtePatchComponent, LteSetEntry},
+    format::{
+        self, Kind, LtePatch, LtePatchCombo, LtePatchComponent, LteSetEntry, lte_set_entry_key,
+    },
 };
 use crate::{
-    proto::{LteCaps, LteCombo, LteComponent},
+    proto::{LteCaps, LteCombo},
     report::lte::lte_combo_key,
 };
 use std::collections::BTreeSet;
@@ -42,7 +44,6 @@ fn canon_variants(combos: &[&LteCombo]) -> Vec<CanonLteCombo> {
 
 fn to_patch_combo(c: &LteCombo) -> LtePatchCombo {
     LtePatchCombo {
-        bands: Some(lte_combo_key(c)),
         components: c
             .components
             .iter()
@@ -55,23 +56,6 @@ fn to_patch_combo(c: &LteCombo) -> LtePatchCombo {
         bcs: c.bcs.unwrap_or(0),
         unknown1: c.unknown1.unwrap_or(0),
         unknown2: c.unknown2.unwrap_or(0),
-    }
-}
-
-fn from_patch_combo(p: &LtePatchCombo) -> LteCombo {
-    LteCombo {
-        components: p
-            .components
-            .iter()
-            .map(|x| LteComponent {
-                band: x.band,
-                bw_class_mimo_dl: x.bw_class_mimo_dl,
-                bw_class_mimo_ul: Some(x.bw_class_mimo_ul),
-            })
-            .collect(),
-        bcs: Some(p.bcs),
-        unknown1: Some(p.unknown1),
-        unknown2: Some(p.unknown2),
     }
 }
 
@@ -92,7 +76,6 @@ pub(crate) fn build_lte_patch(a: &[LteCombo], b: &[LteCombo]) -> LtePatch {
         };
         if differs {
             set.push(LteSetEntry {
-                key: k.clone(),
                 kind: Some(kind.to_string()),
                 combo: bc.iter().map(|c| to_patch_combo(c)).collect(),
             });
@@ -115,7 +98,11 @@ pub(crate) fn apply_lte_patch(
 ) -> anyhow::Result<(LteCaps, Outcome)> {
     let base_keys: BTreeSet<String> = base.combos.iter().map(lte_combo_key).collect();
     let del: BTreeSet<&str> = patch.delete.iter().map(String::as_str).collect();
-    let set_keys: BTreeSet<&str> = patch.set.iter().map(|e| e.key.as_str()).collect();
+    let set_keys: BTreeSet<String> = patch
+        .set
+        .iter()
+        .map(lte_set_entry_key)
+        .collect::<anyhow::Result<_>>()?;
 
     let mut skipped = Vec::new();
     let mut deleted = 0;
@@ -146,7 +133,7 @@ pub(crate) fn apply_lte_patch(
         patch
             .set
             .iter()
-            .flat_map(|e| e.combo.iter().map(from_patch_combo)),
+            .flat_map(|e| e.combo.iter().map(format::lte_combo_from_patch)),
     );
     let result = LteCaps {
         fingerprint: base.fingerprint,
@@ -166,6 +153,7 @@ pub(crate) fn apply_lte_patch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::LteComponent;
 
     fn combo(band: i32, ul: i32) -> LteCombo {
         LteCombo {
@@ -190,12 +178,16 @@ mod tests {
         let b2 = combo(7, 0); // B7A↓ -> add
         let p = build_lte_patch(&[a1, a2], &[b1, b2]);
         assert_eq!(p.delete, vec!["B5A↓".to_string()]);
-        let keys: Vec<&str> = p.set.iter().map(|e| e.key.as_str()).collect();
-        assert_eq!(keys, vec!["B1A", "B7A↓"]); // sorted
+        let keys: Vec<String> = p
+            .set
+            .iter()
+            .map(|e| lte_set_entry_key(e).unwrap())
+            .collect();
+        assert_eq!(keys, vec!["B1A".to_string(), "B7A↓".to_string()]); // sorted
         assert_eq!(
             p.set
                 .iter()
-                .find(|e| e.key == "B1A")
+                .find(|e| lte_set_entry_key(e).unwrap() == "B1A")
                 .unwrap()
                 .kind
                 .as_deref(),
@@ -204,7 +196,7 @@ mod tests {
         assert_eq!(
             p.set
                 .iter()
-                .find(|e| e.key == "B7A↓")
+                .find(|e| lte_set_entry_key(e).unwrap() == "B7A↓")
                 .unwrap()
                 .kind
                 .as_deref(),
