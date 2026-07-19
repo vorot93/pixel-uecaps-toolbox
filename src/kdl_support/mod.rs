@@ -1,0 +1,469 @@
+//! Crate-level KDL toolkit: strict `NodeReader` combinator + writer helpers,
+//! shared by the compiler, patch, mapping, and inspect (de)serializers.
+
+use std::collections::BTreeSet;
+
+use anyhow::{Result, anyhow, bail};
+use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
+
+use crate::{compiler::schema::one_trailing_newline, raw_nr::SubBlockKind};
+
+// ---- component radio-kind codec (shared by compiler `cc` + patch `nr`/`lte`) ----
+/// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
+/// crate (compiler `nr.kdl`, NR-carrier patch, inspect `--kdl` NR view) emits it as the
+/// `nr`/`lte` node NAME; uniformly-LTE surfaces (compiler `lte.kdl`, LTE-fallback patch,
+/// inspect `--kdl` LTE view) use plain `cc` with no kind tag. One source of truth.
+pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
+    match k {
+        SubBlockKind::Nr => "nr",
+        SubBlockKind::Lte => "lte",
+    }
+}
+/// Parse a radio kind from its KDL spelling. `what` names the surface in the error message
+/// (e.g. `"NR/EN-DC component kind"` for the compiler `nr.kdl`/patch/inspect NR view),
+/// so each caller keeps its own phrasing.
+pub(crate) fn str_to_cckind(s: &str, what: &str) -> Result<SubBlockKind> {
+    match s {
+        "nr" => Ok(SubBlockKind::Nr),
+        "lte" => Ok(SubBlockKind::Lte),
+        other => bail!("unknown {what} `{other}` (expected `nr` or `lte`)"),
+    }
+}
+
+// ---- writer helpers ----
+pub(crate) fn opt_int_prop(node: &mut KdlNode, key: &str, v: Option<i128>) {
+    if let Some(v) = v {
+        node.push(KdlEntry::new_prop(key, v));
+    }
+}
+pub(crate) fn opt_str_prop(node: &mut KdlNode, key: &str, v: Option<&str>) {
+    if let Some(v) = v {
+        node.push(KdlEntry::new_prop(key, v));
+    }
+}
+pub(crate) fn opt_bool_prop(node: &mut KdlNode, key: &str, v: Option<bool>) {
+    if let Some(v) = v {
+        node.push(KdlEntry::new_prop(key, v));
+    }
+}
+/// Push one `key=value` property entry per value, preserving order (intentionally
+/// multi-valued — the `NodeReader::repeated_int` counterpart reads them back in order).
+pub(crate) fn push_repeated_int_prop(node: &mut KdlNode, key: &str, values: &[i128]) {
+    for &v in values {
+        node.push(KdlEntry::new_prop(key, v));
+    }
+}
+pub(crate) fn str_list_node(name: &str, items: &[String]) -> KdlNode {
+    let mut n = KdlNode::new(name);
+    for it in items {
+        n.push(KdlEntry::new(it.as_str()));
+    }
+    n
+}
+pub(crate) fn finish_doc(mut doc: KdlDocument) -> String {
+    doc.autoformat();
+    one_trailing_newline(doc.to_string())
+}
+
+// ---- reader combinator ----
+/// Reads one `KdlNode`, tracking which positional args, properties, and child-node
+/// names were consumed so `finish()` can reject anything unexpected (the strict
+/// `deny_unknown_fields` equivalent).
+pub(crate) struct NodeReader<'a> {
+    node: &'a KdlNode,
+    args_used: usize,
+    props_used: BTreeSet<String>,
+    children_used: BTreeSet<&'static str>,
+}
+
+impl<'a> NodeReader<'a> {
+    pub(crate) fn new(node: &'a KdlNode) -> Self {
+        Self {
+            node,
+            args_used: 0,
+            props_used: BTreeSet::new(),
+            children_used: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn positional(&self) -> Vec<&'a KdlValue> {
+        self.node
+            .entries()
+            .iter()
+            .filter(|e| e.name().is_none())
+            .map(|e| e.value())
+            .collect()
+    }
+
+    /// Next positional arg as an owned string (advances the arg cursor).
+    pub(crate) fn key_str(&mut self) -> Result<String> {
+        let args = self.positional();
+        let v = args.get(self.args_used).ok_or_else(|| {
+            anyhow!(
+                "`{}` is missing a required argument",
+                self.node.name().value()
+            )
+        })?;
+        self.args_used += 1;
+        Ok(v.as_string()
+            .ok_or_else(|| anyhow!("`{}` argument must be a string", self.node.name().value()))?
+            .to_string())
+    }
+
+    /// Next positional arg as a range-checked integer (advances the arg cursor).
+    pub(crate) fn key_int<T: TryFrom<i128>>(&mut self) -> Result<T> {
+        let args = self.positional();
+        let v = args.get(self.args_used).ok_or_else(|| {
+            anyhow!(
+                "`{}` is missing a required argument",
+                self.node.name().value()
+            )
+        })?;
+        self.args_used += 1;
+        let i = v
+            .as_integer()
+            .ok_or_else(|| anyhow!("`{}` argument must be an integer", self.node.name().value()))?;
+        T::try_from(i)
+            .map_err(|_| anyhow!("`{}` argument {i} out of range", self.node.name().value()))
+    }
+
+    /// All remaining positional args as strings (consumes them). For list nodes.
+    pub(crate) fn rest_strings(&mut self) -> Result<Vec<String>> {
+        let args = self.positional();
+        let mut out = Vec::new();
+        for v in &args[self.args_used..] {
+            out.push(
+                v.as_string()
+                    .ok_or_else(|| {
+                        anyhow!("`{}` arguments must be strings", self.node.name().value())
+                    })?
+                    .to_string(),
+            );
+        }
+        self.args_used = args.len();
+        Ok(out)
+    }
+
+    pub(crate) fn opt_str(&mut self, key: &str) -> Result<Option<String>> {
+        self.props_used.insert(key.to_string());
+        match self.node.get(key) {
+            None => Ok(None),
+            Some(v) => Ok(Some(
+                v.as_string()
+                    .ok_or_else(|| anyhow!("property `{key}` must be a string"))?
+                    .to_string(),
+            )),
+        }
+    }
+
+    pub(crate) fn req_str(&mut self, key: &str) -> Result<String> {
+        self.opt_str(key)?.ok_or_else(|| {
+            anyhow!(
+                "`{}` missing required property `{key}`",
+                self.node.name().value()
+            )
+        })
+    }
+
+    pub(crate) fn opt_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Option<T>> {
+        self.props_used.insert(key.to_string());
+        match self.node.get(key) {
+            None => Ok(None),
+            Some(v) => {
+                let i = v
+                    .as_integer()
+                    .ok_or_else(|| anyhow!("property `{key}` must be an integer"))?;
+                Ok(Some(T::try_from(i).map_err(|_| {
+                    anyhow!("property `{key}` value {i} out of range")
+                })?))
+            }
+        }
+    }
+
+    pub(crate) fn req_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<T> {
+        self.opt_int(key)?.ok_or_else(|| {
+            anyhow!(
+                "`{}` missing required property `{key}`",
+                self.node.name().value()
+            )
+        })
+    }
+
+    /// Collect every property entry named `key`, in document order, converting each to `T`.
+    /// Marks `key` consumed so `finish()` accepts the repeats (these props are intentionally
+    /// multi-valued — see DESIGN.md; every other prop stays last-wins).
+    pub(crate) fn repeated_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Vec<T>> {
+        self.props_used.insert(key.to_string());
+        let mut out = Vec::new();
+        for entry in self.node.entries() {
+            if entry.name().map(kdl::KdlIdentifier::value) == Some(key) {
+                let i = entry
+                    .value()
+                    .as_integer()
+                    .ok_or_else(|| anyhow!("property `{key}` must be an integer"))?;
+                out.push(
+                    T::try_from(i)
+                        .map_err(|_| anyhow!("property `{key}` value {i} out of range"))?,
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn opt_bool(&mut self, key: &str) -> Result<Option<bool>> {
+        self.props_used.insert(key.to_string());
+        match self.node.get(key) {
+            None => Ok(None),
+            Some(v) => {
+                Ok(Some(v.as_bool().ok_or_else(|| {
+                    anyhow!("property `{key}` must be a boolean")
+                })?))
+            }
+        }
+    }
+
+    /// All child nodes with this name (marks the name consumed).
+    pub(crate) fn children(&mut self, name: &'static str) -> Vec<&'a KdlNode> {
+        self.children_used.insert(name);
+        match self.node.children() {
+            None => Vec::new(),
+            Some(doc) => doc
+                .nodes()
+                .iter()
+                .filter(|n| n.name().value() == name)
+                .collect(),
+        }
+    }
+
+    /// Zero-or-one child node with this name.
+    pub(crate) fn opt_child(&mut self, name: &'static str) -> Result<Option<&'a KdlNode>> {
+        let mut kids = self.children(name);
+        if kids.len() > 1 {
+            bail!(
+                "`{}` has more than one `{name}` child",
+                self.node.name().value()
+            );
+        }
+        Ok(kids.pop())
+    }
+
+    /// Error on any positional arg, property, or child node not consumed above.
+    pub(crate) fn finish(self) -> Result<()> {
+        let total = self.positional().len();
+        if self.args_used < total {
+            bail!(
+                "`{}` has {} unexpected extra argument(s)",
+                self.node.name().value(),
+                total - self.args_used
+            );
+        }
+        for entry in self.node.entries() {
+            if let Some(name) = entry.name()
+                && !self.props_used.contains(name.value())
+            {
+                bail!(
+                    "`{}` has unknown property `{}`",
+                    self.node.name().value(),
+                    name.value()
+                );
+            }
+        }
+        if let Some(doc) = self.node.children() {
+            for child in doc.nodes() {
+                let cn = child.name().value();
+                if !self.children_used.contains(cn) {
+                    bail!(
+                        "`{}` has unknown child node `{cn}`",
+                        self.node.name().value()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read the single positional value of a scalar-list child (e.g. `bitmask-carriers "a" "b"`).
+pub(crate) fn read_str_list(node: &KdlNode) -> Result<Vec<String>> {
+    let mut r = NodeReader::new(node);
+    let list = r.rest_strings()?;
+    r.finish()?;
+    Ok(list)
+}
+
+// ---- plmn node codec ----
+use crate::mapping::Plmn;
+
+/// Parse a decimal-only MCC/MNC field into its integer value; `None` if it
+/// contains any non-decimal digit (e.g. the `ff` wildcard or a hex nibble).
+fn decimal_field(s: &str) -> Option<u32> {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        s.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Build a `plmn mcc=… mnc=…` node from a canonical `Plmn` string (`"mcc-mnc"`).
+/// Wildcard MNC (`ff`) omits `mnc=`; a leading-zero 3-digit MNC adds `mnc-digits=3`.
+pub(crate) fn plmn_to_node(plmn: &str) -> Result<KdlNode> {
+    let (mcc, mnc) = plmn
+        .split_once('-')
+        .ok_or_else(|| anyhow!("PLMN `{plmn}` is not `mcc-mnc`"))?;
+    let mcc_val =
+        decimal_field(mcc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MCC"))?;
+    let mut node = KdlNode::new("plmn");
+    node.push(KdlEntry::new_prop("mcc", i128::from(mcc_val)));
+    if !mnc.eq_ignore_ascii_case("ff") {
+        let mnc_val =
+            decimal_field(mnc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MNC"))?;
+        node.push(KdlEntry::new_prop("mnc", i128::from(mnc_val)));
+        if mnc.len() == 3 && mnc_val < 100 {
+            node.push(KdlEntry::new_prop("mnc-digits", 3i128));
+        }
+    }
+    Ok(node)
+}
+
+/// Read a `plmn` node back to its canonical `Plmn` string, validating via `Plmn::from_str`.
+pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
+    let mut r = NodeReader::new(node);
+    let mcc: u32 = r.req_int("mcc")?;
+    let mnc: Option<u32> = r.opt_int("mnc")?;
+    let mnc_digits: Option<u32> = r.opt_int("mnc-digits")?;
+    r.finish()?;
+    let mcc_s = format!("{mcc:03}");
+    let mnc_s = match mnc {
+        None => {
+            if mnc_digits.is_some() {
+                bail!("`plmn` has `mnc-digits` without `mnc`");
+            }
+            "ff".to_string()
+        }
+        Some(v) => {
+            let width = match mnc_digits {
+                None => {
+                    if v >= 100 {
+                        3
+                    } else {
+                        2
+                    }
+                }
+                Some(3) => 3,
+                Some(other) => bail!("`plmn` `mnc-digits` must be 3, got {other}"),
+            };
+            format!("{v:0width$}")
+        }
+    };
+    let s = format!("{mcc_s}-{mnc_s}");
+    s.parse::<Plmn>()
+        .map_err(|e| anyhow!("`plmn` reconstructs to invalid PLMN `{s}`: {e}"))?;
+    Ok(s)
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_int_collects_all_entries_in_order_and_finishes_clean() {
+        let doc: kdl::KdlDocument = "node dl-feature=5 dl-feature=8 dl-feature=2\n"
+            .parse()
+            .unwrap();
+        let node = doc.nodes().first().unwrap();
+        let mut r = NodeReader::new(node);
+        let got: Vec<i32> = r.repeated_int("dl-feature").unwrap();
+        assert_eq!(got, vec![5, 8, 2]);
+        r.finish().unwrap(); // all consumed
+    }
+
+    #[test]
+    fn autoformat_preserves_repeated_properties_bytewise() {
+        // The nr.kdl format relies on this under the pinned kdl 6.7.1.
+        let src = "node dl-feature=5 dl-feature=8\n";
+        let mut doc: kdl::KdlDocument = src.parse().unwrap();
+        doc.autoformat();
+        let once = doc.to_string();
+        let mut doc2: kdl::KdlDocument = once.parse().unwrap();
+        doc2.autoformat();
+        assert_eq!(
+            once,
+            doc2.to_string(),
+            "autoformat must be idempotent on repeated props"
+        );
+        assert_eq!(
+            once.matches("dl-feature").count(),
+            2,
+            "both entries survive: {once}"
+        );
+    }
+
+    #[test]
+    fn autoformat_keeps_leading_positional_arg() {
+        // The nr.kdl and patch formats emit `band` as the sole leading positional arg
+        // (`nr 78 dl-bw-class=2 …`); the pinned kdl 6.7.1 autoformatter must keep it
+        // leading and stay idempotent, or a reformatted source would misparse.
+        let src = "nr 78 dl-bw-class=2 dl-feature=1\n";
+        let mut doc: kdl::KdlDocument = src.parse().unwrap();
+        doc.autoformat();
+        let once = doc.to_string();
+        assert!(
+            once.contains("nr 78"),
+            "positional band stays leading: {once}"
+        );
+        let mut doc2: kdl::KdlDocument = once.parse().unwrap();
+        doc2.autoformat();
+        assert_eq!(
+            once,
+            doc2.to_string(),
+            "autoformat idempotent with a leading positional arg"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plmn_tests {
+    use super::*;
+
+    fn round_trip(plmn: &str) -> String {
+        let node = plmn_to_node(plmn).expect("to_node");
+        read_plmn(&node).expect("from_node")
+    }
+
+    #[test]
+    fn plmn_forms_round_trip() {
+        for p in [
+            "311-480", "310-260", "202-01", "310-04", "310-004", "334-030", "228-ff",
+        ] {
+            assert_eq!(round_trip(p), p, "round-trip {p}");
+        }
+    }
+
+    #[test]
+    fn wildcard_omits_mnc() {
+        let node = plmn_to_node("228-ff").unwrap();
+        assert!(node.get("mnc").is_none(), "wildcard must omit mnc=");
+        assert_eq!(node.get("mcc").unwrap().as_integer(), Some(228));
+    }
+
+    #[test]
+    fn leading_zero_three_digit_gets_marker() {
+        let node = plmn_to_node("310-004").unwrap();
+        assert_eq!(node.get("mnc").unwrap().as_integer(), Some(4));
+        assert_eq!(node.get("mnc-digits").unwrap().as_integer(), Some(3));
+    }
+
+    #[test]
+    fn two_digit_and_big_three_digit_omit_marker() {
+        assert!(plmn_to_node("310-04").unwrap().get("mnc-digits").is_none());
+        assert!(plmn_to_node("302-220").unwrap().get("mnc-digits").is_none());
+    }
+
+    #[test]
+    fn mnc_digits_without_mnc_is_rejected() {
+        let mut n = KdlNode::new("plmn");
+        n.push(KdlEntry::new_prop("mcc", 310i128));
+        n.push(KdlEntry::new_prop("mnc-digits", 3i128));
+        assert!(read_plmn(&n).is_err());
+    }
+}

@@ -1,0 +1,1700 @@
+//! `provision` — build a flashable Magisk package for one phone.
+
+use crate::{
+    magisk::ModuleEntry,
+    model::{
+        CapabilityLayout, PHONE_MODELS, PROFILES, Parsed, PhoneModel, fp_info, parse_name,
+        phone_model,
+    },
+    patch::{
+        self,
+        format::{self, Patch, PatchSubBlock, SubBlockKind},
+    },
+    proto::UeCaps,
+    report::combos::band_label_for,
+};
+use anyhow::Context;
+use pixel_bands::{Bands, PIXEL_BANDS};
+use prost::Message;
+use std::path::Path;
+
+/// Result of choosing which on-device files to pull: the basenames to fetch, plus
+/// any human-readable reasons selection could not complete. `to_pull` is empty when
+/// `errors` is non-empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub to_pull: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+const PROFILED_MODEL_REQUIRED: &str = "provision requires a profiled Exynos 5400 model";
+
+/// Given a model code, a target carrier, and the basenames present in the device's
+/// uecapconfig dir, return the LTE file (`lte_<id>.binarypb`) and the carrier's NR
+/// file (`<carrier>_<n>.binarypb` with `n` divisible by the model's `nr_anchor`).
+pub fn select_files(code: &str, carrier: &str, available: &[String]) -> Selection {
+    let mut errors = Vec::new();
+
+    let Some(m) = phone_model(code) else {
+        errors.push(format!("unknown model {code:?}"));
+        return Selection {
+            to_pull: Vec::new(),
+            errors,
+        };
+    };
+    let CapabilityLayout::Profiled { nr_anchor, lte_id } = m.layout else {
+        errors.push(PROFILED_MODEL_REQUIRED.to_string());
+        return Selection {
+            to_pull: Vec::new(),
+            errors,
+        };
+    };
+
+    // LTE file: deterministic name, must be present.
+    let lte_name = format!("lte_{lte_id}.binarypb");
+    if !available.contains(&lte_name) {
+        errors.push(format!("LTE file {lte_name} not found on device"));
+    }
+
+    // NR file: the carrier file whose number is divisible by the model's anchor prime.
+    let nr_name = match select_nr_file(
+        available.iter().map(|n| (n.clone(), ())),
+        carrier,
+        nr_anchor,
+    ) {
+        NrFile::Missing => {
+            errors.push(format!(
+                "no {carrier} file for this model (anchor {nr_anchor})"
+            ));
+            None
+        }
+        NrFile::One(name, ()) => Some(name),
+        NrFile::Ambiguous(names) => {
+            errors.push(format!("ambiguous {carrier} files: {}", names.join(", ")));
+            None
+        }
+    };
+
+    match nr_name {
+        Some(nr) if errors.is_empty() => Selection {
+            to_pull: vec![lte_name, nr],
+            errors,
+        },
+        _ => Selection {
+            to_pull: Vec::new(),
+            errors,
+        },
+    }
+}
+
+/// The result of choosing a carrier's NR file among candidate files for a model's anchor.
+enum NrFile<T> {
+    /// No candidate: no `carrier` file has a nonzero NUMBER divisible by the anchor.
+    Missing,
+    /// Exactly one — its basename and associated payload (e.g. its on-disk path; `()` when
+    /// only the name is needed).
+    One(String, T),
+    /// More than one (basenames, sorted) — the caller reports it as ambiguous.
+    Ambiguous(Vec<String>),
+}
+
+/// Select `carrier`'s NR file from `candidates` (`(basename, payload)` pairs): keep those whose
+/// basename is a `carrier` file with a **nonzero** NUMBER divisible by `nr_anchor` (0 divides
+/// every anchor — R13), sort by basename for determinism (M4), then classify none / unique /
+/// ambiguous. The one NR-file selector shared by `select_files` (web) and `run`'s CLI path,
+/// which differ only in candidate source and error wording (C-select).
+fn select_nr_file<T>(
+    candidates: impl IntoIterator<Item = (String, T)>,
+    carrier: &str,
+    nr_anchor: u64,
+) -> NrFile<T> {
+    let mut matches: Vec<(String, T)> = candidates
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(parse_name(name), Parsed::Carrier { carrier: c, number }
+                if c == carrier && number != 0 && number.is_multiple_of(nr_anchor))
+        })
+        .collect();
+    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    match matches.len() {
+        0 => NrFile::Missing,
+        1 => {
+            let (name, payload) = matches.pop().expect("exactly one match");
+            NrFile::One(name, payload)
+        }
+        _ => NrFile::Ambiguous(matches.into_iter().map(|(name, _)| name).collect()),
+    }
+}
+
+/// Build a Magisk module for `model` from files in `dir`, including only the pieces whose
+/// modifier flag is present. Returns the process exit code (0 ok / 1 patch-skipped).
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    model: &str,
+    dir: &Path,
+    carrier: Option<&str>,
+    lte_patch: Option<&Path>,
+    nr_patch: Option<&Path>,
+    add_plmn: &[String],
+    out: Option<&Path>,
+    dest: &str,
+    name: Option<&str>,
+    strict: bool,
+) -> anyhow::Result<i32> {
+    // 1. Validate the flag combination (clap also enforces ≥1 modifier and modifier⟹carrier).
+    if lte_patch.is_none() && nr_patch.is_none() && add_plmn.is_empty() {
+        anyhow::bail!("nothing to build; pass at least one of --lte-patch/--nr-patch/--add-plmn");
+    }
+    if (nr_patch.is_some() || !add_plmn.is_empty()) && carrier.is_none() {
+        anyhow::bail!("--add-plmn/--nr-patch require --carrier");
+    }
+    if carrier.is_some() && nr_patch.is_none() && add_plmn.is_empty() {
+        anyhow::bail!("--carrier has no effect without --add-plmn or --nr-patch");
+    }
+
+    // 2. Resolve the model.
+    let m = phone_model(model)
+        .ok_or_else(|| anyhow::anyhow!("unknown model {model:?}; known: {}", known_codes()))?;
+    let CapabilityLayout::Profiled { nr_anchor, lte_id } = m.layout else {
+        anyhow::bail!(PROFILED_MODEL_REQUIRED);
+    };
+
+    let bands = PIXEL_BANDS
+        .get(m.code)
+        .ok_or_else(|| anyhow::anyhow!("no band data for model {}", m.code))?;
+
+    // Precondition: a named carrier must have files in the dump.
+    if let Some(c) = carrier {
+        carrier_exists(dir, c)?;
+    }
+
+    // 3. Assemble inputs (each gated on its modifier).
+    let mut inputs: Vec<ModuleEntry> = Vec::new();
+    let mut skipped_total = 0usize;
+
+    if let Some(p) = lte_patch {
+        let name = format!("lte_{lte_id}.binarypb");
+        let path = dir.join(&name);
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("reading LTE file {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(p).with_context(|| format!("reading patch {}", p.display()))?;
+        let (entry, warnings, skipped) =
+            lte_entry(name, &bytes, m, &text, "--lte-patch", strict, bands)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
+        skipped_total += skipped;
+        inputs.push(entry);
+    }
+    if let Some(p) = nr_patch {
+        let c = carrier.expect("validated: --nr-patch implies --carrier");
+        // Gather every (basename, path) from the dump and let the shared selector filter (R13
+        // zero guard), sort (M4), and classify (C-select). Only the CLI wording below differs
+        // from `select_files`'s Selection errors.
+        let mut candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let entry = entry?;
+            let fname = entry.file_name();
+            let Some(fname) = fname.to_str() else {
+                continue;
+            };
+            candidates.push((fname.to_string(), entry.path()));
+        }
+        let (name, path) = match select_nr_file(candidates, c, nr_anchor) {
+            NrFile::Missing => anyhow::bail!(
+                "no NR file for carrier {c} at profile {} in {}",
+                nr_anchor,
+                dir.display()
+            ),
+            NrFile::One(name, path) => (name, path),
+            NrFile::Ambiguous(names) => anyhow::bail!(
+                "ambiguous NR files for carrier {c} at profile {}: {}",
+                nr_anchor,
+                names.join(", ")
+            ),
+        };
+        let bytes =
+            std::fs::read(&path).with_context(|| format!("reading NR file {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(p).with_context(|| format!("reading patch {}", p.display()))?;
+        let (entry, warnings, skipped) =
+            nr_entry(name, &bytes, m, &text, "--nr-patch", strict, bands)?;
+        for w in &warnings {
+            eprintln!("warning: {w}");
+        }
+        skipped_total += skipped;
+        inputs.push(entry);
+    }
+    if !add_plmn.is_empty() {
+        let c = carrier.expect("validated: --add-plmn implies --carrier");
+        inputs.push(legend_input(dir, c, add_plmn)?);
+    }
+
+    // 4. Package and write.
+    let module_name = name.map_or_else(|| default_name(m, carrier), str::to_string);
+    let zip = crate::magisk::build_module(&inputs, dest, &module_name)?;
+    crate::output::write_out(&zip, out, "module")?;
+    eprintln!("provisioned {} -> {} file(s)", m.display, inputs.len());
+    Ok(i32::from(skipped_total > 0))
+}
+
+/// Comma-separated list of valid model codes (for the unknown-model error).
+fn known_codes() -> String {
+    PHONE_MODELS
+        .iter()
+        .filter(|m| matches!(m.layout, CapabilityLayout::Profiled { .. }))
+        .map(|m| m.code)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Default Magisk module name when `--name` is omitted.
+fn default_name(m: &PhoneModel, carrier: Option<&str>) -> String {
+    match carrier {
+        Some(c) => format!("Pixel UE-caps: {}/{}", m.code, c),
+        None => format!("Pixel UE-caps: {}", m.code),
+    }
+}
+
+/// Apply the LTE patch to in-memory base bytes; return the module entry, warnings, and skip count.
+/// `skipped` = band-drop count + apply-skip count; advisory-only messages are in `warnings` only.
+fn lte_entry(
+    name: String,
+    bytes: &[u8],
+    m: &PhoneModel,
+    patch_text: &str,
+    source_label: &str,
+    strict: bool,
+    bands: &Bands,
+) -> anyhow::Result<(ModuleEntry, Vec<String>, usize)> {
+    let Patch::Lte(mut lp) = format::from_kdl(patch_text)? else {
+        anyhow::bail!("{source_label} expects a `kind lte` patch");
+    };
+    let band_warns = retain_lte_compatible(&mut lp.set, bands, m)?;
+    // Strict: this base LTE file is rewritten into the module, so an unmodeled field
+    // must fail closed rather than be silently dropped. See DESIGN.md "Invariants".
+    let caps = crate::wire::decode_lte_caps(bytes, &name)?;
+    let (result, outcome) = patch::lte::apply_lte_patch(&caps, &lp, strict)?;
+    let skipped = band_warns.len() + outcome.skipped.len();
+    let mut warnings = band_warns;
+    warnings.extend(outcome.skipped);
+    Ok(((name, result.encode_to_vec()), warnings, skipped))
+}
+
+/// Error unless at least one `<CARRIER>_<NUMBER>.binarypb` for `carrier` exists in `dir`.
+fn carrier_exists(dir: &Path, carrier: &str) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
+        if matches!(parse_name(fname), Parsed::Carrier { carrier: c, .. } if c == carrier) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("carrier {carrier} has no files in {}", dir.display());
+}
+
+/// Apply the NR patch to in-memory base bytes; return the module entry, warnings, and skip count.
+/// `skipped` = band-drop count + apply-skip count. The soft fingerprint advisory is in `warnings`
+/// only and is never counted as a skip.
+fn nr_entry(
+    name: String,
+    bytes: &[u8],
+    m: &PhoneModel,
+    patch_text: &str,
+    source_label: &str,
+    strict: bool,
+    bands: &Bands,
+) -> anyhow::Result<(ModuleEntry, Vec<String>, usize)> {
+    let CapabilityLayout::Profiled { nr_anchor, .. } = m.layout else {
+        anyhow::bail!(PROFILED_MODEL_REQUIRED);
+    };
+    // Soft fingerprint check (warn-only; never blocks packaging, never counted as a skip).
+    let mut warnings = Vec::new();
+    if let Ok(caps) = UeCaps::decode(bytes)
+        && let Some((fam, _)) = fp_info(caps.version)
+        && let Some(prof) = PROFILES.iter().find(|p| p.anchor == nr_anchor)
+        && fam != prof.family
+    {
+        warnings.push(format!(
+            "{name} fingerprint family {fam:?} != expected {:?}",
+            prof.family
+        ));
+    }
+    let Patch::Nr(mut np) = format::from_kdl(patch_text)? else {
+        anyhow::bail!("{source_label} expects a `kind nr` patch");
+    };
+    let band_warns = retain_nr_compatible(&mut np.set, bands, m)?;
+    let caps = patch::build::decode_base(bytes)?;
+    let (result, outcome) = patch::build::apply_patch(&caps, &np, strict)?;
+    let skipped = band_warns.len() + outcome.skipped.len();
+    warnings.extend(band_warns);
+    warnings.extend(outcome.skipped);
+    Ok(((name, result.encode_to_vec()), warnings, skipped))
+}
+
+/// Read the legend, strictly add `plmns` to `carrier`, and return the module entry.
+fn legend_input(dir: &Path, carrier: &str, plmns: &[String]) -> anyhow::Result<(String, Vec<u8>)> {
+    let name = "ap_plmn_mapping.binarypb".to_string();
+    let path = dir.join(&name);
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("reading legend {}", path.display()))?;
+    let out = crate::mapping::add_plmns_strict(&bytes, carrier, plmns)?;
+    Ok((name, out))
+}
+
+/// `Some(label)` if this carrier/NR component's band is not supported by the model.
+/// An NR component is checked against `bands.nr`; otherwise an E-UTRA (LTE)
+/// component is checked against `bands.lte`. Labels render as `n78` / `B66`.
+///
+/// A band number outside `u16` is definitely unsupported; it is never wrapped via `as`
+/// (R10), and the drop label reports the original number so the user sees what they wrote.
+fn nr_cc_unsupported(cc: &PatchSubBlock, bands: &Bands) -> Option<String> {
+    let is_nr = matches!(cc.kind, SubBlockKind::Nr);
+    let supported = u16::try_from(cc.band)
+        .ok()
+        .map(|n| {
+            if is_nr {
+                bands.nr.contains(&n)
+            } else {
+                bands.lte.contains(&n)
+            }
+        })
+        .unwrap_or(false);
+    (!supported).then(|| band_label_for(is_nr, cc.band))
+}
+
+/// The pinned "dropped entry" warning:
+/// `skipping <key>: band(s) <list> not supported by <code> (<display>)`.
+fn drop_warning(key: &str, bad: &[String], m: &PhoneModel) -> String {
+    format!(
+        "skipping {key:?}: band(s) {} not supported by {} ({})",
+        bad.join(", "),
+        m.code,
+        m.display
+    )
+}
+
+/// Drop NR/carrier `set` entries that reference any band the model lacks.
+/// Returns one warning string per dropped entry.
+fn retain_nr_compatible(
+    set: &mut Vec<format::SetEntry>,
+    bands: &Bands,
+    m: &PhoneModel,
+) -> anyhow::Result<Vec<String>> {
+    retain_compatible(
+        set,
+        format::set_entry_key,
+        |e| {
+            e.combo
+                .iter()
+                .flat_map(|c| c.sub_blocks.iter())
+                .filter_map(|cc| nr_cc_unsupported(cc, bands))
+                .collect()
+        },
+        m,
+    )
+}
+
+/// Drop LTE `set` entries that reference any band the model lacks.
+/// Returns one warning string per dropped entry.
+fn retain_lte_compatible(
+    set: &mut Vec<format::LteSetEntry>,
+    bands: &Bands,
+    m: &PhoneModel,
+) -> anyhow::Result<Vec<String>> {
+    retain_compatible(
+        set,
+        format::lte_set_entry_key,
+        |e| {
+            e.combo
+                .iter()
+                .flat_map(|c| c.components.iter())
+                // A band outside u16 is definitely unsupported; never wrap it via `as` (R10).
+                .filter(|comp| u16::try_from(comp.band).map_or(true, |b| !bands.lte.contains(&b)))
+                .map(|comp| band_label_for(false, comp.band))
+                .collect()
+        },
+        m,
+    )
+}
+
+/// Drop every `set` entry that references a band the model lacks, in place. `key_of` names an
+/// entry for its drop warning (and a key-derivation error aborts); `bad_bands_of` returns an
+/// entry's unsupported band labels. Returns one warning per dropped entry. Generic over the
+/// NR/LTE entry type — the one retain/warn/error-collect loop both kinds share (C-retain).
+fn retain_compatible<E>(
+    set: &mut Vec<E>,
+    key_of: impl Fn(&E) -> anyhow::Result<String>,
+    bad_bands_of: impl Fn(&E) -> Vec<String>,
+    m: &PhoneModel,
+) -> anyhow::Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    let mut err = None;
+    set.retain(|e| {
+        let key = match key_of(e) {
+            Ok(key) => key,
+            Err(e) => {
+                err = Some(e);
+                return false;
+            }
+        };
+        let mut bad = bad_bands_of(e);
+        bad.sort_unstable();
+        bad.dedup();
+        if bad.is_empty() {
+            return true;
+        }
+        warnings.push(drop_warning(&key, &bad, m));
+        false
+    });
+    if let Some(err) = err {
+        return Err(err);
+    }
+    Ok(warnings)
+}
+
+const UECAP_DEST: &str = "/vendor/firmware/uecapconfig";
+
+/// Outcome of an in-memory provision: the Magisk module zip, the basenames packaged,
+/// human-readable warnings, and the count of skipped/dropped patch entries.
+#[derive(Debug, Clone)]
+pub struct ProvisionResult {
+    pub zip: Vec<u8>,
+    pub included: Vec<String>,
+    pub warnings: Vec<String>,
+    pub skipped: usize,
+}
+
+/// Build a flashable Magisk module from pulled base files + the NR & LTE patch texts,
+/// entirely in memory. Best-effort: band-incompatible or non-applying entries are
+/// dropped and reported, never fatal. `files` holds the pulled `(basename, bytes)`;
+/// both `lte_<id>.binarypb` and the carrier's NR file must be present.
+pub fn provision_in_memory(
+    code: &str,
+    carrier: &str,
+    files: &[(String, Vec<u8>)],
+    nr_patch: &str,
+    lte_patch: &str,
+) -> anyhow::Result<ProvisionResult> {
+    let m = phone_model(code).ok_or_else(|| anyhow::anyhow!("unknown model {code:?}"))?;
+    let CapabilityLayout::Profiled { .. } = m.layout else {
+        anyhow::bail!(PROFILED_MODEL_REQUIRED);
+    };
+    let bands = PIXEL_BANDS
+        .get(m.code)
+        .ok_or_else(|| anyhow::anyhow!("no band data for model {}", m.code))?;
+
+    let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+    let sel = select_files(code, carrier, &names);
+    if !sel.errors.is_empty() {
+        anyhow::bail!("cannot provision: {}", sel.errors.join("; "));
+    }
+    let lookup = |name: &str| -> &[u8] {
+        files
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
+            .expect("present per select_files")
+    };
+    // select_files guarantees to_pull == [lte_name, nr_name].
+    let lte_name = sel.to_pull[0].clone();
+    let nr_name = sel.to_pull[1].clone();
+
+    let mut warnings = Vec::new();
+    let mut skipped_total = 0usize;
+    let mut inputs: Vec<ModuleEntry> = Vec::new();
+
+    let lte_bytes = lookup(&lte_name);
+    let (lte, lte_warn, lte_skip) =
+        lte_entry(lte_name, lte_bytes, m, lte_patch, "lte patch", false, bands)?;
+    warnings.extend(lte_warn);
+    skipped_total += lte_skip;
+    inputs.push(lte);
+
+    let nr_bytes = lookup(&nr_name);
+    let (nr, nr_warn, nr_skip) =
+        nr_entry(nr_name, nr_bytes, m, nr_patch, "nr patch", false, bands)?;
+    warnings.extend(nr_warn);
+    skipped_total += nr_skip;
+    inputs.push(nr);
+
+    let included: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
+    let name = default_name(m, Some(carrier));
+    let zip = crate::magisk::build_module(&inputs, UECAP_DEST, &name)?;
+
+    Ok(ProvisionResult {
+        zip,
+        included,
+        skipped: skipped_total,
+        warnings,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        proto::{
+            Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, combo_group,
+            combo_group::combo::SubBlock,
+        },
+        report::combos::NR_BAND_OFFSET,
+    };
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        io::{Cursor, Read},
+    };
+    use zip::ZipArchive;
+
+    const UECAP_DEST: &str = "/vendor/firmware/uecapconfig";
+
+    fn lte_caps(bands: &[i32]) -> LteCaps {
+        LteCaps {
+            fingerprint: 874_888_686,
+            combos: bands
+                .iter()
+                .map(|&b| LteCombo {
+                    components: vec![LteComponent {
+                        band: b,
+                        dl_bw_class_mimo: 32768,
+                        ul_bw_class_mimo: Some(0),
+                    }],
+                    bcs: Some(0),
+                    unknown1: Some(0),
+                    unknown2: Some(0),
+                })
+                .collect(),
+            bitmask: 42,
+        }
+    }
+
+    fn zip_entries(zip: &[u8]) -> BTreeMap<String, Vec<u8>> {
+        let mut a = ZipArchive::new(Cursor::new(zip)).unwrap();
+        let mut out = BTreeMap::new();
+        for i in 0..a.len() {
+            let mut f = a.by_index(i).unwrap();
+            let n = f.name().to_string();
+            let mut b = Vec::new();
+            f.read_to_end(&mut b).unwrap();
+            out.insert(n, b);
+        }
+        out
+    }
+
+    fn nr_caps(bands: &[i32]) -> UeCaps {
+        UeCaps {
+            version: 862_505_271, // family B / main — matches G2YBB (anchor 66813533)
+            combo_groups: vec![ComboGroup {
+                combo_header: None,
+                combo: bands
+                    .iter()
+                    .map(|&b| combo_group::Combo {
+                        bitmask: Some(0),
+                        sub_blocks: vec![SubBlock {
+                            band: NR_BAND_OFFSET + b,
+                            dl_bw_class: Some(1),
+                            ul_bw_class: Some(1),
+                            ..Default::default()
+                        }],
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn legend_bytes(carrier: &str, plmns: Vec<u64>) -> Vec<u8> {
+        PlmnMap {
+            carriers: vec![Carrier {
+                plmns,
+                index: 1,
+                name: carrier.into(),
+            }],
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn no_modifier_errors() {
+        let e = run(
+            "G2YBB",
+            Path::new("/nope"),
+            None,
+            None,
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("nothing to build"), "{e}");
+    }
+
+    #[test]
+    fn nr_patch_without_carrier_errors() {
+        let e = run(
+            "G2YBB",
+            Path::new("/nope"),
+            None,
+            None,
+            Some(Path::new("n.kdl")),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("require --carrier"), "{e}");
+    }
+
+    #[test]
+    fn carrier_with_only_lte_patch_errors() {
+        let e = run(
+            "G2YBB",
+            Path::new("/nope"),
+            Some("VZW"),
+            Some(Path::new("l.kdl")),
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("--carrier has no effect"), "{e}");
+    }
+
+    #[test]
+    fn unknown_model_errors() {
+        let e = run(
+            "p99-zz",
+            Path::new("/nope"),
+            None,
+            Some(Path::new("l.kdl")),
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("unknown model"), "{e}");
+    }
+
+    #[test]
+    fn run_rejects_bitmask_model_before_io() {
+        let e = run(
+            "G0DZQ",
+            Path::new("/nope"),
+            None,
+            Some(Path::new("l.kdl")),
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "provision requires a profiled Exynos 5400 model"
+        );
+    }
+
+    #[test]
+    fn lte_patch_packages_patched_lte() {
+        use crate::report::lte::lte_combo_key;
+
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-lte-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // G2YBB lte_id = 400907661; provision reads lte_400907661.binarypb (A).
+        let a = lte_caps(&[1, 5]); // B1A, B5A
+        let b = lte_caps(&[1, 7]); // B1A, B7A
+        let a_path = dir.join("lte_400907661.binarypb");
+        let b_path = dir.join("lte_2160127815.binarypb");
+        std::fs::write(&a_path, a.encode_to_vec()).unwrap();
+        std::fs::write(&b_path, b.encode_to_vec()).unwrap();
+
+        let patch_path = dir.join("p.kdl");
+        crate::patch::create(&a_path, &b_path, Some(&patch_path)).unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            None,
+            Some(&patch_path),
+            None,
+            &[],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+
+        let key = "system/vendor/firmware/uecapconfig/lte_400907661.binarypb";
+        assert!(entries.contains_key(key), "missing {key}");
+        assert!(
+            !entries.contains_key("system/vendor/firmware/uecapconfig/ap_plmn_mapping.binarypb")
+        );
+        let packaged = LteCaps::decode(&entries[key][..]).unwrap();
+        let got: BTreeSet<String> = packaged.combos.iter().map(lte_combo_key).collect();
+        let want: BTreeSet<String> = b.combos.iter().map(lte_combo_key).collect();
+        assert_eq!(got, want);
+        assert_eq!(packaged.fingerprint, 874_888_686);
+    }
+
+    #[test]
+    fn lte_patch_rejects_nr_kind() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-kind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lte_400907661.binarypb"),
+            lte_caps(&[1]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            None,
+            Some(&patch_path),
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            e.to_string()
+                .contains("--lte-patch expects a `kind lte` patch"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn lte_missing_file_errors() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let patch_path = dir.join("l.kdl");
+        std::fs::write(&patch_path, "kind lte\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            None,
+            Some(&patch_path),
+            None,
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("reading LTE file"), "{e}");
+    }
+
+    #[test]
+    fn carrier_not_in_dir_errors() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-noc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ATT_1234.binarypb"), b"x").unwrap(); // decoy carrier
+        std::fs::write(
+            dir.join("ap_plmn_mapping.binarypb"),
+            legend_bytes("VZW", vec![]),
+        )
+        .unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            None,
+            &["250-99".to_string()],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("has no files"), "{e}");
+    }
+
+    #[test]
+    fn nr_patch_packages_patched_nr() {
+        use crate::patch::build::present_keys;
+
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-nr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = nr_caps(&[78]); // n78A
+        let b = nr_caps(&[2]); // n2A
+        let a_path = dir.join("VZW_66813533.binarypb"); // 66813533 % 66813533 == 0
+        let b_path = dir.join("BBB_2.binarypb");
+        std::fs::write(&a_path, a.encode_to_vec()).unwrap();
+        std::fs::write(&b_path, b.encode_to_vec()).unwrap();
+        let patch_path = dir.join("nr.kdl");
+        crate::patch::create(&a_path, &b_path, Some(&patch_path)).unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let key = "system/vendor/firmware/uecapconfig/VZW_66813533.binarypb";
+        assert!(entries.contains_key(key), "missing {key}");
+        let packaged = UeCaps::decode(&entries[key][..]).unwrap();
+        assert_eq!(present_keys(&packaged), present_keys(&b));
+        assert_eq!(packaged.version, 862_505_271);
+    }
+
+    #[test]
+    fn nr_ambiguous_errors() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-amb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Both numbers divisible by the G2YBB anchor (66813533 and 2×66813533).
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("VZW_133627066.binarypb"),
+            nr_caps(&[2]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("ambiguous"), "{e}");
+    }
+
+    #[test]
+    fn nr_ambiguous_error_is_sorted() {
+        // M4: the run() inline NR scan must sort matches before joining, so the ambiguous
+        // error is deterministic across filesystems (read_dir order is unspecified). Three
+        // files divisible by the G2YBB anchor (1x, 2x, 3x) whose lexical order ("1" < "2" <
+        // "6") differs from a hash-ordered read_dir.
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-ambs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in [66_813_533u64, 133_627_066, 200_440_599] {
+            std::fs::write(
+                dir.join(format!("VZW_{n}.binarypb")),
+                nr_caps(&[2]).encode_to_vec(),
+            )
+            .unwrap();
+        }
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            e.to_string()
+                .contains("VZW_133627066.binarypb, VZW_200440599.binarypb, VZW_66813533.binarypb"),
+            "ambiguous NR list must be lexically sorted: {e}"
+        );
+    }
+
+    #[test]
+    fn add_plmn_packages_legend() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-plmn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("VZW_66813533.binarypb"), b"x").unwrap(); // name-only; not decoded
+        std::fs::write(
+            dir.join("ap_plmn_mapping.binarypb"),
+            legend_bytes("VZW", vec![5_435_408]),
+        )
+        .unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            None,
+            &["302-220".to_string()],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let key = "system/vendor/firmware/uecapconfig/ap_plmn_mapping.binarypb";
+        let map = PlmnMap::decode(&entries[key][..]).unwrap();
+        assert_eq!(map.carriers[0].plmns, vec![5_435_408, 197_154]); // 302-220 -> 197154
+    }
+
+    #[test]
+    fn add_plmn_rejects_existing_plmn() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-dup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("VZW_66813533.binarypb"), b"x").unwrap();
+        std::fs::write(
+            dir.join("ap_plmn_mapping.binarypb"),
+            legend_bytes("VZW", vec![5_435_408]),
+        )
+        .unwrap();
+        let out_path = dir.join("out.zip");
+
+        // 250-01 -> 5435408, already present.
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            None,
+            &["250-01".to_string()],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        let wrote = out_path.exists();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("already mapped"), "{e}");
+        assert!(!wrote, "no zip on error");
+    }
+
+    #[test]
+    fn all_three_modifiers_package_three_entries() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-all3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(
+            dir.join("lte_400907661.binarypb"),
+            lte_caps(&[1, 5]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("lte_2160127815.binarypb"),
+            lte_caps(&[1, 7]).encode_to_vec(),
+        )
+        .unwrap();
+        let lte_patch = dir.join("lte.kdl");
+        crate::patch::create(
+            &dir.join("lte_400907661.binarypb"),
+            &dir.join("lte_2160127815.binarypb"),
+            Some(&lte_patch),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("BBB_2.binarypb"), nr_caps(&[2]).encode_to_vec()).unwrap();
+        let nr_patch = dir.join("nr.kdl");
+        crate::patch::create(
+            &dir.join("VZW_66813533.binarypb"),
+            &dir.join("BBB_2.binarypb"),
+            Some(&nr_patch),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.join("ap_plmn_mapping.binarypb"),
+            legend_bytes("VZW", vec![]),
+        )
+        .unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            Some(&lte_patch),
+            Some(&nr_patch),
+            &["302-220".to_string()],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let p = "system/vendor/firmware/uecapconfig/";
+        assert!(entries.contains_key(&format!("{p}lte_400907661.binarypb")));
+        assert!(entries.contains_key(&format!("{p}VZW_66813533.binarypb")));
+        assert!(entries.contains_key(&format!("{p}ap_plmn_mapping.binarypb")));
+    }
+
+    #[test]
+    fn nr_missing_file_errors() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-nrmiss-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // VZW exists (carrier_exists passes) but no file divisible by the G2YBB anchor (3 isn't).
+        std::fs::write(dir.join("VZW_3.binarypb"), nr_caps(&[78]).encode_to_vec()).unwrap();
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("no NR file"), "{e}");
+    }
+
+    #[test]
+    fn legend_missing_file_errors() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-legmiss-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("VZW_66813533.binarypb"), b"x").unwrap(); // carrier_exists passes
+        // no ap_plmn_mapping.binarypb present
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            None,
+            &["302-220".to_string()],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("reading legend"), "{e}");
+    }
+
+    #[test]
+    fn nr_cc_unsupported_flags_missing_bands() {
+        let bands = PIXEL_BANDS.get("GUL82").unwrap();
+        let cc = |kind, band| PatchSubBlock {
+            kind,
+            band,
+            ..Default::default()
+        };
+        assert_eq!(nr_cc_unsupported(&cc(SubBlockKind::Nr, 78), bands), None); // n78 supported
+        assert_eq!(
+            nr_cc_unsupported(&cc(SubBlockKind::Nr, 79), bands),
+            Some("n79".into())
+        ); // n79 not
+        assert_eq!(nr_cc_unsupported(&cc(SubBlockKind::Lte, 66), bands), None); // B66 supported
+        assert_eq!(
+            nr_cc_unsupported(&cc(SubBlockKind::Lte, 32), bands),
+            Some("B32".into())
+        ); // B32 not
+    }
+
+    #[test]
+    fn nr_cc_unsupported_does_not_wrap_out_of_range_bands() {
+        // A band number outside u16 is definitely unsupported; the drop label must report
+        // the original number, not the `as u16`-wrapped value (R10, mirroring the LTE side).
+        let bands = PIXEL_BANDS.get("GUL82").unwrap();
+        let cc = |kind, band| PatchSubBlock {
+            kind,
+            band,
+            ..Default::default()
+        };
+        // 100_000 as u16 == 34464; the label must say n100000, not n34464.
+        assert_eq!(
+            nr_cc_unsupported(&cc(SubBlockKind::Nr, 100_000), bands),
+            Some("n100000".into())
+        );
+        assert_eq!(
+            nr_cc_unsupported(&cc(SubBlockKind::Lte, 100_000), bands),
+            Some("B100000".into())
+        );
+    }
+
+    #[test]
+    fn nr_band_filter_drops_unsupported_combo() {
+        use crate::patch::build::present_keys;
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-bandnr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // G2YBB (Pixel 9, mmWave US): nr_anchor 66813533; supports n78, not n79.
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[2]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("BBB_2.binarypb"),
+            nr_caps(&[2, 78, 79]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("nr.kdl");
+        crate::patch::create(
+            &dir.join("VZW_66813533.binarypb"),
+            &dir.join("BBB_2.binarypb"),
+            Some(&patch_path),
+        )
+        .unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 1); // n79 dropped -> skipped tally -> exit 1
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let packaged = UeCaps::decode(
+            &entries["system/vendor/firmware/uecapconfig/VZW_66813533.binarypb"][..],
+        )
+        .unwrap();
+        let keys = present_keys(&packaged);
+        assert!(keys.contains("n78A"), "n78 (supported) should be applied");
+        assert!(
+            !keys.contains("n79A"),
+            "n79 (unsupported) should be dropped"
+        );
+    }
+
+    #[test]
+    fn lte_band_filter_drops_unsupported_combo() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-bandlte-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // GUL82 (Pixel 10 Pro XL): lte_id 1254026417; supports B66, not B32.
+        std::fs::write(
+            dir.join("lte_1254026417.binarypb"),
+            lte_caps(&[66]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("lte_2160127815.binarypb"),
+            lte_caps(&[66, 32]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("lte.kdl");
+        crate::patch::create(
+            &dir.join("lte_1254026417.binarypb"),
+            &dir.join("lte_2160127815.binarypb"),
+            Some(&patch_path),
+        )
+        .unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "GUL82",
+            &dir,
+            None,
+            Some(&patch_path),
+            None,
+            &[],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 1);
+
+        let entries = zip_entries(&std::fs::read(&out_path).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let packaged = LteCaps::decode(
+            &entries["system/vendor/firmware/uecapconfig/lte_1254026417.binarypb"][..],
+        )
+        .unwrap();
+        let used: Vec<i32> = packaged
+            .combos
+            .iter()
+            .flat_map(|c| c.components.iter().map(|x| x.band))
+            .collect();
+        assert!(used.contains(&66), "B66 (supported) should be applied");
+        assert!(!used.contains(&32), "B32 (unsupported) should be dropped");
+    }
+
+    #[test]
+    fn select_files_picks_lte_and_carrier_nr() {
+        // GUL82: lte_id 1254026417, nr_anchor 3616442437.
+        let available = vec![
+            "lte_1254026417.binarypb".to_string(),
+            "APAC_COMMON_3616442437.binarypb".to_string(), // 3616442437 % 3616442437 == 0
+            "VZW_66813533.binarypb".to_string(),           // other carrier — ignored
+            "ap_plmn_mapping.binarypb".to_string(),
+        ];
+        let sel = select_files("GUL82", "APAC_COMMON", &available);
+        assert!(sel.errors.is_empty(), "unexpected errors: {:?}", sel.errors);
+        assert_eq!(
+            sel.to_pull,
+            vec![
+                "lte_1254026417.binarypb".to_string(),
+                "APAC_COMMON_3616442437.binarypb".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_files_reports_missing_nr() {
+        let available = vec!["lte_1254026417.binarypb".to_string()];
+        let sel = select_files("GUL82", "APAC_COMMON", &available);
+        assert!(sel.to_pull.is_empty());
+        assert!(
+            sel.errors.iter().any(|e| e.contains("no APAC_COMMON file")),
+            "{:?}",
+            sel.errors
+        );
+    }
+
+    #[test]
+    fn select_files_reports_missing_lte() {
+        let available = vec!["APAC_COMMON_3616442437.binarypb".to_string()];
+        let sel = select_files("GUL82", "APAC_COMMON", &available);
+        assert!(sel.to_pull.is_empty());
+        assert!(
+            sel.errors
+                .iter()
+                .any(|e| e.contains("lte_1254026417.binarypb")),
+            "{:?}",
+            sel.errors
+        );
+    }
+
+    #[test]
+    fn select_files_reports_ambiguous_nr() {
+        let available = vec![
+            "lte_1254026417.binarypb".to_string(),
+            "APAC_COMMON_3616442437.binarypb".to_string(),
+            "APAC_COMMON_7232884874.binarypb".to_string(), // 2 × anchor — also divisible
+        ];
+        let sel = select_files("GUL82", "APAC_COMMON", &available);
+        assert!(
+            sel.errors.iter().any(|e| e.contains("ambiguous")),
+            "{:?}",
+            sel.errors
+        );
+    }
+
+    #[test]
+    fn select_files_reports_unknown_model() {
+        let sel = select_files("ZZ999", "APAC_COMMON", &[]);
+        assert!(
+            sel.errors.iter().any(|e| e.contains("unknown model")),
+            "{:?}",
+            sel.errors
+        );
+    }
+
+    #[test]
+    fn select_files_rejects_bitmask_model() {
+        let sel = select_files(" g0dzq\n", "APAC_COMMON", &[]);
+        assert!(sel.to_pull.is_empty());
+        assert_eq!(
+            sel.errors,
+            vec!["provision requires a profiled Exynos 5400 model"]
+        );
+    }
+
+    #[test]
+    fn provision_in_memory_rejects_bitmask_model() {
+        let e = provision_in_memory("G0DZQ", "APAC_COMMON", &[], "", "").unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "provision requires a profiled Exynos 5400 model"
+        );
+    }
+
+    #[test]
+    fn nr_patch_rejects_lte_kind() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-nrkind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("lte.kdl");
+        std::fs::write(&patch_path, "kind lte\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            e.to_string()
+                .contains("--nr-patch expects a `kind nr` patch"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn nonstrict_skip_returns_exit_1() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        // Delete a key that isn't present -> best-effort skip.
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\ndelete \"n99A\"\n").unwrap();
+        let out_path = dir.join("out.zip");
+
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            Some(&out_path),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(code, 1); // built, but an entry was skipped
+    }
+
+    #[test]
+    fn strict_skip_returns_error() {
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-strict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("VZW_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\ndelete \"n99A\"\n").unwrap();
+
+        let res = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            true,
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(res.is_err()); // strict: a non-applying entry aborts (exit 2 via main)
+    }
+
+    #[test]
+    fn in_memory_matches_filesystem_and_reports() {
+        use crate::patch::build::present_keys;
+
+        // G2YBB: lte_id 400907661, nr_anchor 66813533.
+        let dir = std::env::temp_dir().join(format!("uecaps-parity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lte_400907661.binarypb"),
+            lte_caps(&[1, 5]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("lte_2160127815.binarypb"),
+            lte_caps(&[1, 7]).encode_to_vec(),
+        )
+        .unwrap();
+        let lte_patch_path = dir.join("lte.kdl");
+        crate::patch::create(
+            &dir.join("lte_400907661.binarypb"),
+            &dir.join("lte_2160127815.binarypb"),
+            Some(&lte_patch_path),
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.join("APAC_COMMON_66813533.binarypb"),
+            nr_caps(&[78]).encode_to_vec(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("BBB_2.binarypb"), nr_caps(&[2]).encode_to_vec()).unwrap();
+        let nr_patch_path = dir.join("nr.kdl");
+        crate::patch::create(
+            &dir.join("APAC_COMMON_66813533.binarypb"),
+            &dir.join("BBB_2.binarypb"),
+            Some(&nr_patch_path),
+        )
+        .unwrap();
+
+        // Filesystem path (CLI).
+        let fs_out = dir.join("fs.zip");
+        let code = run(
+            "G2YBB",
+            &dir,
+            Some("APAC_COMMON"),
+            Some(&lte_patch_path),
+            Some(&nr_patch_path),
+            &[],
+            Some(&fs_out),
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let fs_entries = zip_entries(&std::fs::read(&fs_out).unwrap());
+
+        // In-memory path (web).
+        let files = vec![
+            (
+                "lte_400907661.binarypb".to_string(),
+                std::fs::read(dir.join("lte_400907661.binarypb")).unwrap(),
+            ),
+            (
+                "APAC_COMMON_66813533.binarypb".to_string(),
+                std::fs::read(dir.join("APAC_COMMON_66813533.binarypb")).unwrap(),
+            ),
+        ];
+        let nr_text = std::fs::read_to_string(&nr_patch_path).unwrap();
+        let lte_text = std::fs::read_to_string(&lte_patch_path).unwrap();
+        let res = provision_in_memory("G2YBB", "APAC_COMMON", &files, &nr_text, &lte_text).unwrap();
+        let mem_entries = zip_entries(&res.zip);
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Identical packaged overlay files (the binarypb payloads).
+        let p = "system/vendor/firmware/uecapconfig/";
+        for key in [
+            format!("{p}lte_400907661.binarypb"),
+            format!("{p}APAC_COMMON_66813533.binarypb"),
+        ] {
+            assert_eq!(
+                mem_entries.get(&key),
+                fs_entries.get(&key),
+                "mismatch for {key}"
+            );
+        }
+        // Structured result is populated and consistent.
+        assert_eq!(res.included.len(), 2);
+        assert_eq!(res.skipped, 0);
+        assert!(
+            res.warnings.is_empty(),
+            "expected no warnings, got {:?}",
+            res.warnings
+        );
+        let nr =
+            UeCaps::decode(&mem_entries[&format!("{p}APAC_COMMON_66813533.binarypb")][..]).unwrap();
+        assert_eq!(present_keys(&nr), present_keys(&nr_caps(&[2])));
+    }
+
+    /// Regression test for the soft fingerprint advisory not being counted as a skip.
+    ///
+    /// GUL82 has `nr_anchor` 3616442437 → PROFILES entry with `family = Family::A`.
+    /// `version` 862505271 → `fp_info` returns `(Family::B, Main)`, which mismatches
+    /// the profile's `Family::A`. This fires the advisory warning branch in `nr_entry`.
+    ///
+    /// n78 is supported by GUL82 (no band drops). The no-op patch has no set entries,
+    /// so `apply_patch` produces 0 apply-skips. `skipped` must therefore be 0 even
+    /// though `warnings` is non-empty.
+    #[test]
+    fn nr_soft_fingerprint_mismatch_warns_but_does_not_count_as_skip() {
+        let m = phone_model("GUL82").unwrap(); // profile family A (anchor 3616442437)
+        let bands = PIXEL_BANDS.get("GUL82").unwrap();
+
+        let base = UeCaps {
+            version: 862_505_271, // fp_info -> (Family::B, Main) — mismatches profile Family::A
+            combo_groups: vec![ComboGroup {
+                combo_header: None,
+                combo: vec![combo_group::Combo {
+                    bitmask: Some(0),
+                    sub_blocks: vec![SubBlock {
+                        band: 10078, // n78: supported by GUL82, so no band drop
+                        dl_bw_class: Some(1),
+                        ul_bw_class: Some(1),
+                        ..Default::default()
+                    }],
+                }],
+            }],
+            ..Default::default()
+        };
+        let base_bytes = base.encode_to_vec();
+
+        // No-op NR patch: no add/delete operations → 0 apply-skips.
+        let patch_text = "kind nr\nversion 1\n";
+
+        let (_entry, warnings, skipped) = nr_entry(
+            "APAC_COMMON_3616442437.binarypb".to_string(),
+            &base_bytes,
+            m,
+            patch_text,
+            "nr patch",
+            false,
+            bands,
+        )
+        .unwrap();
+
+        assert!(
+            warnings.iter().any(|w| w.contains("fingerprint")),
+            "expected a fingerprint advisory in warnings, got {warnings:?}"
+        );
+        assert_eq!(skipped, 0, "fingerprint advisory must not count as a skip");
+    }
+
+    /// R1: `provision --lte-patch` re-encodes the base LTE file, so it must fail closed
+    /// on a field number outside the modeled schema rather than silently dropping it.
+    /// `[0x20, 0x05]` is LteCaps field #4 (varint), which is not modeled. (The NR path
+    /// already fails closed via `patch::build::decode_base`; `--add-plmn` via
+    /// `mapping::add_plmns_strict`, both covered by their own tests.)
+    #[test]
+    fn lte_entry_rejects_unmodeled_field() {
+        let m = phone_model("G2YBB").unwrap();
+        let bands = PIXEL_BANDS.get("G2YBB").unwrap();
+        let mut bytes = lte_caps(&[1]).encode_to_vec();
+        bytes.extend_from_slice(&[0x20, 0x05]);
+        let r = lte_entry(
+            "lte_400907661.binarypb".to_string(),
+            &bytes,
+            m,
+            "kind lte\nversion 1\n",
+            "--lte-patch",
+            false,
+            bands,
+        );
+        assert!(
+            r.is_err(),
+            "provision --lte-patch must fail closed on an unmodeled LTE field"
+        );
+    }
+
+    #[test]
+    fn select_files_rejects_number_zero() {
+        // R13: NUMBER 0 is a multiple of every anchor, so a *_0.binarypb would be
+        // selected for any model. It must be ignored.
+        let available = vec![
+            "lte_1254026417.binarypb".to_string(),
+            "APAC_COMMON_0.binarypb".to_string(), // number 0 — divisible by every anchor
+        ];
+        let sel = select_files("GUL82", "APAC_COMMON", &available);
+        assert!(
+            sel.to_pull.is_empty(),
+            "a _0 file must not be selected: {:?}",
+            sel.to_pull
+        );
+        assert!(
+            sel.errors.iter().any(|e| e.contains("no APAC_COMMON file")),
+            "{:?}",
+            sel.errors
+        );
+    }
+
+    #[test]
+    fn nr_patch_rejects_number_zero_file() {
+        // R13: the CLI run() selection path must also ignore a VZW_0 file.
+        let dir = std::env::temp_dir().join(format!("uecaps-prov-r13-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("VZW_0.binarypb"), nr_caps(&[78]).encode_to_vec()).unwrap();
+        let patch_path = dir.join("nr.kdl");
+        std::fs::write(&patch_path, "kind nr\nversion 1\n").unwrap();
+
+        let e = run(
+            "G2YBB",
+            &dir,
+            Some("VZW"),
+            None,
+            Some(&patch_path),
+            &[],
+            None,
+            UECAP_DEST,
+            None,
+            false,
+        )
+        .unwrap_err();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(e.to_string().contains("no NR file"), "{e}");
+    }
+}

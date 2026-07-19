@@ -1,0 +1,1102 @@
+use std::{collections::BTreeSet, fs, path::Path, str};
+
+use anyhow::{Context, ensure};
+
+use super::{
+    GeneratedFile,
+    decode::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
+    lte::generate_lte_file,
+    nr::{NrTarget, generate_nr_files},
+    schema::{ValidatedNr, ValidatedSources, parse_sources},
+    selection::Sku,
+};
+use crate::{
+    atomic::write_bytes_atomic,
+    magisk::{ModuleEntry, build_replacement_module, validate_module_basename},
+    mapping::{MappingEntry, MappingRoot, Plmn, encode_root_verified},
+    model::{CapabilityLayout, PhoneModel, known_model_codes, phone_model},
+    wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
+};
+
+const NR_SOURCE: &str = "nr.kdl";
+const LTE_SOURCE: &str = "lte.kdl";
+const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
+
+/// Build and atomically persist one complete model-specific uecapconfig replacement module.
+pub fn build(
+    model_code: &str,
+    source_dir: &Path,
+    out: &Path,
+    name: Option<&str>,
+) -> anyhow::Result<i32> {
+    let (model, files) = load_and_generate(source_dir, model_code)?;
+    write_module(model, files, out, name)
+}
+
+/// Build one registered model's replacement module from **already-parsed** sources. A caller that
+/// builds many models from the same folder — release tooling, or the corpus test — parses the
+/// ~19 MB source once with [`load_sources`] and calls this per model, rather than re-parsing and
+/// re-validating for every target. `build` is the single-model convenience wrapper over
+/// `load_sources` + this.
+pub fn build_from_sources(
+    sources: &ValidatedSources,
+    model_code: &str,
+    out: &Path,
+    name: Option<&str>,
+) -> anyhow::Result<i32> {
+    let model = resolve_model(model_code)?;
+    let files = generate_files(sources, model)?;
+    write_module(model, files, out, name)
+}
+
+/// Assemble a model's generated files into a replacement Magisk ZIP and write it atomically.
+fn write_module(
+    model: &PhoneModel,
+    files: Vec<GeneratedFile>,
+    out: &Path,
+    name: Option<&str>,
+) -> anyhow::Result<i32> {
+    let inputs = files
+        .into_iter()
+        .map(|file| (file.basename, file.bytes))
+        .collect::<Vec<ModuleEntry>>();
+    let default_name = format!("Pixel UE-caps: {}", model.code);
+    let zip = build_replacement_module(&inputs, name.unwrap_or(&default_name))?;
+    write_bytes_atomic(out, &zip)?;
+    Ok(0)
+}
+
+/// Read and strictly validate both normalized source documents.
+pub fn load_sources(source_dir: &Path) -> anyhow::Result<ValidatedSources> {
+    let nr_path = source_dir.join(NR_SOURCE);
+    let lte_path = source_dir.join(LTE_SOURCE);
+
+    // Finish both filesystem reads before parsing either document. In particular, no model
+    // lookup happens until this function has returned a completely validated source set.
+    let nr_bytes = read_source(&nr_path, NR_SOURCE)?;
+    let lte_bytes = read_source(&lte_path, LTE_SOURCE)?;
+    let nr_text = str::from_utf8(&nr_bytes).context("nr.kdl is not valid UTF-8")?;
+    let lte_text = str::from_utf8(&lte_bytes).context("lte.kdl is not valid UTF-8")?;
+    parse_sources(nr_text, lte_text)
+}
+
+fn read_source(path: &Path, basename: &str) -> anyhow::Result<Vec<u8>> {
+    fs::read(path).with_context(|| format!("reading required source document {basename}"))
+}
+
+/// Load both documents first, then resolve one real registered model and assemble its files.
+pub(crate) fn load_and_generate(
+    source_dir: &Path,
+    model_code: &str,
+) -> anyhow::Result<(&'static PhoneModel, Vec<GeneratedFile>)> {
+    let sources = load_sources(source_dir)?;
+    let model = resolve_model(model_code)?;
+    let files = generate_files(&sources, model)?;
+    Ok((model, files))
+}
+
+fn resolve_model(model_code: &str) -> anyhow::Result<&'static PhoneModel> {
+    phone_model(model_code).with_context(|| {
+        format!(
+            "unknown model; registered models: {}",
+            known_model_codes().join(" ")
+        )
+    })
+}
+
+/// Assemble a complete model-specific `uecapconfig` file set in memory.
+pub(crate) fn generate_files(
+    sources: &ValidatedSources,
+    model: &'static PhoneModel,
+) -> anyhow::Result<Vec<GeneratedFile>> {
+    let (files, verification) = match model.layout {
+        CapabilityLayout::Bitmask => (
+            generate_nr_files(&sources.nr, NrTarget::Legacy)?,
+            VerificationLayout::Bitmask,
+        ),
+        CapabilityLayout::Profiled { nr_anchor, lte_id } => {
+            let sku = Sku::Model(model.code.into());
+            let mut files = generate_nr_files(
+                &sources.nr,
+                NrTarget::Profile {
+                    anchor: nr_anchor,
+                    sku: sku.clone(),
+                },
+            )?;
+            files.push(generate_mapping_file(&sources.nr)?);
+            files.push(generate_lte_file(&sources.lte, lte_id, &sku)?);
+            (
+                files,
+                VerificationLayout::Profiled {
+                    lte_basename: format!("lte_{lte_id}.binarypb"),
+                },
+            )
+        }
+    };
+
+    let files = finalize_files(files)?;
+    verify_generated_files(&files, &verification)?;
+    Ok(files)
+}
+
+fn generate_mapping_file(nr: &ValidatedNr) -> anyhow::Result<GeneratedFile> {
+    let mut mappings = nr
+        .carriers
+        .iter()
+        .filter_map(|(name, carrier)| {
+            carrier.plmns.as_ref().map(|plmns| {
+                let id = carrier
+                    .mapping_id
+                    .expect("validated carrier with PLMNs has mapping_id");
+                let plmns = plmns
+                    .iter()
+                    .map(|value| {
+                        Plmn::from_encoded(*value)
+                            .expect("validated source PLMN remains within 24 bits")
+                            .to_string()
+                    })
+                    .collect();
+                MappingEntry {
+                    id,
+                    name: name.clone(),
+                    plmns,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    mappings.sort_by_key(|entry| entry.id);
+
+    let root = MappingRoot { mappings };
+    let bytes = encode_root_verified(&root, "generated ap_plmn_mapping.binarypb")?;
+    Ok(GeneratedFile {
+        basename: MAPPING_BASENAME.into(),
+        bytes,
+    })
+}
+
+fn finalize_files(mut files: Vec<GeneratedFile>) -> anyhow::Result<Vec<GeneratedFile>> {
+    files.sort_by(|left, right| left.basename.cmp(&right.basename));
+    let mut seen = BTreeSet::new();
+    for file in &files {
+        ensure_safe_basename(&file.basename)?;
+        ensure!(
+            seen.insert(file.basename.as_str()),
+            "duplicate generated basename `{}`",
+            file.basename
+        );
+    }
+    Ok(files)
+}
+
+fn ensure_safe_basename(basename: &str) -> anyhow::Result<()> {
+    validate_module_basename(basename)
+        .with_context(|| format!("generated filename {basename:?} is unsafe"))?;
+    ensure!(
+        basename.ends_with(".binarypb"),
+        "generated basename `{basename}` must end in .binarypb"
+    );
+    Ok(())
+}
+
+enum VerificationLayout {
+    Bitmask,
+    Profiled { lte_basename: String },
+}
+
+fn verify_generated_files(
+    files: &[GeneratedFile],
+    layout: &VerificationLayout,
+) -> anyhow::Result<()> {
+    for file in files {
+        match layout {
+            VerificationLayout::Bitmask => {
+                validate_bitmask_carrier_basename(&file.basename).with_context(|| {
+                    format!(
+                        "validating generated legacy NR basename `{}`",
+                        file.basename
+                    )
+                })?;
+                decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
+            }
+            VerificationLayout::Profiled { .. } if file.basename == MAPPING_BASENAME => {
+                decode_plmn_map(&file.bytes, &format!("generated {}", file.basename))?;
+            }
+            VerificationLayout::Profiled { lte_basename } if file.basename == *lte_basename => {
+                decode_lte_caps(&file.bytes, &format!("generated {}", file.basename))?;
+            }
+            VerificationLayout::Profiled { .. } => {
+                validate_profiled_carrier_basename(&file.basename).with_context(|| {
+                    format!(
+                        "validating generated profiled NR basename `{}`",
+                        file.basename
+                    )
+                })?;
+                decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs, io::Read};
+
+    use prost::Message;
+    use tempfile::tempdir;
+
+    use super::{build, finalize_files, generate_files, load_and_generate, load_sources};
+    use crate::{
+        compiler::{
+            GeneratedFile,
+            decode::decode,
+            features::{DlFeatureSource, NrSourceSubBlock},
+            schema::{
+                BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
+                LteFileSource, LteSourceCombo, LteSourceComponent, NrDocument, NrSourceCombo,
+                ProfileSource, parse_sources, to_kdl,
+            },
+            selection::SelectionRect,
+            test_support::{MiniCorpus, REGISTERED_ANCHOR},
+        },
+        model::{known_model_codes, phone_model},
+        proto::PlmnMap,
+        raw_nr::SubBlockKind,
+        report::combos::build_combos_with_bitmasks,
+        wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
+    };
+    use zip::{CompressionMethod, DateTime, ZipArchive};
+
+    const TARGET_ANCHOR: u64 = 66_813_533;
+    const TARGET_LTE_ID: u64 = 400_907_661;
+    const SYNTHETIC_ANCHOR: u64 = 8_969;
+    const TARGET_MODEL: &str = "G2YBB";
+
+    fn selection(carriers: &[&str], skus: &[&str]) -> Option<Vec<SelectionRect>> {
+        Some(vec![SelectionRect {
+            carriers: Some(carriers.iter().map(|value| (*value).into()).collect()),
+            skus: Some(skus.iter().map(|value| (*value).into()).collect()),
+        }])
+    }
+
+    fn nr_combo(band: i32, carriers: &[&str], skus: &[&str]) -> NrSourceCombo {
+        NrSourceCombo {
+            selection: selection(carriers, skus),
+            // The four corpus-verified always-`Some` header fields (all but
+            // `bcs_intra_endc`) — the compiler self-check re-decodes generated bytes
+            // through the strict `raw_nr::from_proto_combo` boundary, which fails closed
+            // on a missing one (Task 8).
+            power_class: Some(0),
+            bcs_nr: Some(0),
+            bcs_intra_endc: None,
+            bcs_eutra: Some(0),
+            intra_band_en_dc_support: Some(0),
+            sub_blocks: vec![NrSourceSubBlock {
+                kind: SubBlockKind::Nr,
+                band,
+                dl_bw_class: Some(1),
+                ul_bw_class: Some(1),
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn carrier_with_profile(
+        profiled_id: i64,
+        mapping_id: Option<u64>,
+        signature: u64,
+        anchor: u64,
+        unknown: u64,
+        plmns: Option<Vec<String>>,
+    ) -> CarrierSource {
+        CarrierSource {
+            profiled_id: Some(profiled_id),
+            mapping_id,
+            plmns,
+            signature: Some(DecimalU64(signature)),
+            tier: Some(CarrierTier::Main),
+            profiles: BTreeMap::from([(
+                anchor.to_string(),
+                ProfileSource {
+                    multiplier: DecimalU64(anchor),
+                    unknown: DecimalU64(unknown),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    fn miniature_documents() -> (NrDocument, LteDocument) {
+        let nr = NrDocument {
+            version: 1,
+            bitmask_carriers: vec!["BETA".into(), "EMPTY_LEGACY".into(), "ALPHA".into()],
+            bitmask_fingerprints: vec![BitmaskFingerprint {
+                fingerprint: 715_188_856,
+                carriers: vec!["EMPTY_LEGACY".into(), "ALPHA".into(), "BETA".into()],
+            }],
+            carriers: BTreeMap::from([
+                (
+                    "ALPHA".into(),
+                    CarrierSource {
+                        bitmask_id: Some(1),
+                        ..carrier_with_profile(
+                            7,
+                            Some(7),
+                            11,
+                            TARGET_ANCHOR,
+                            71,
+                            Some(vec!["250-01".into(), "250-01".into()]),
+                        )
+                    },
+                ),
+                (
+                    "BETA".into(),
+                    CarrierSource {
+                        bitmask_id: Some(2),
+                        ..carrier_with_profile(
+                            8,
+                            Some(8),
+                            13,
+                            SYNTHETIC_ANCHOR,
+                            81,
+                            Some(Vec::new()),
+                        )
+                    },
+                ),
+                ("EMPTY_LEGACY".into(), CarrierSource::default()),
+                (
+                    "MAP_ONLY".into(),
+                    CarrierSource {
+                        mapping_id: Some(5),
+                        plmns: Some(vec!["302-220".into(), "302-220".into()]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "NO_COMBOS".into(),
+                    carrier_with_profile(9, None, 17, TARGET_ANCHOR, 91, None),
+                ),
+            ]),
+            dl_features: vec![],
+            ul_features: vec![],
+            combo: vec![
+                nr_combo(1, &["ALPHA", "BETA"], &["legacy"]),
+                nr_combo(2, &["ALPHA"], &[TARGET_MODEL]),
+                nr_combo(3, &["BETA"], &["prime:8969"]),
+            ],
+        };
+        let lte = LteDocument {
+            version: 1,
+            files: BTreeMap::from([(
+                TARGET_LTE_ID.to_string(),
+                LteFileSource {
+                    fingerprint: 123,
+                    bitmask: 456,
+                },
+            )]),
+            combo: vec![LteSourceCombo {
+                selection: selection(&[], &[TARGET_MODEL]).map(|mut rectangles| {
+                    rectangles[0].carriers = None;
+                    rectangles
+                }),
+                bcs: Some(0),
+                unknown1: Some(0),
+                unknown2: Some(0),
+                components: vec![LteSourceComponent {
+                    band: 1,
+                    dl_bw_class_mimo: 32_768,
+                    ul_bw_class_mimo: Some(0),
+                }],
+            }],
+        };
+        (nr, lte)
+    }
+
+    fn validated_sources() -> crate::compiler::schema::ValidatedSources {
+        let (nr, lte) = miniature_documents();
+        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+        parse_sources(&nr, &lte).unwrap()
+    }
+
+    fn write_sources(dir: &std::path::Path) {
+        let (nr, lte) = miniature_documents();
+        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+        fs::write(dir.join("nr.kdl"), nr).unwrap();
+        fs::write(dir.join("lte.kdl"), lte).unwrap();
+    }
+
+    fn source_texts() -> (String, String) {
+        let (nr, lte) = miniature_documents();
+        to_kdl(&nr, &lte).unwrap()
+    }
+
+    fn assert_build_prewrite_failure(
+        nr: Option<String>,
+        lte: Option<String>,
+        model: &str,
+        expected: &str,
+    ) {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        if let Some(nr) = nr {
+            fs::write(source.join("nr.kdl"), nr).unwrap();
+        }
+        if let Some(lte) = lte {
+            fs::write(source.join("lte.kdl"), lte).unwrap();
+        }
+        let output = temp.path().join("module.zip");
+        fs::write(&output, b"existing module bytes").unwrap();
+        let before = directory_names(temp.path());
+
+        let error = build(model, &source, &output, None).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains(expected), "unexpected error: {error}");
+        assert_eq!(fs::read(&output).unwrap(), b"existing module bytes");
+        assert_eq!(directory_names(temp.path()), before);
+    }
+
+    fn directory_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+
+    fn rename_carrier(nr: &mut NrDocument, old: &str, new: &str) {
+        for carrier in &mut nr.bitmask_carriers {
+            if carrier == old {
+                *carrier = new.into();
+            }
+        }
+        for group in &mut nr.bitmask_fingerprints {
+            for carrier in &mut group.carriers {
+                if carrier == old {
+                    *carrier = new.into();
+                }
+            }
+        }
+        let source = nr.carriers.remove(old).unwrap();
+        nr.carriers.insert(new.into(), source);
+        for combo in &mut nr.combo {
+            for rectangle in combo.selection.iter_mut().flatten() {
+                for carrier in rectangle.carriers.iter_mut().flatten() {
+                    if carrier == old {
+                        *carrier = new.into();
+                    }
+                }
+            }
+        }
+    }
+
+    fn assert_replacement_zip(zip: &[u8], basenames: &[String]) {
+        assert!(
+            basenames.windows(2).all(|pair| pair[0] < pair[1]),
+            "generated carrier basenames must be strictly sorted"
+        );
+        let mut archive = ZipArchive::new(std::io::Cursor::new(zip)).unwrap();
+        let mut expected_names = vec![
+            "module.prop".to_string(),
+            "META-INF/com/google/android/update-binary".to_string(),
+            "META-INF/com/google/android/updater-script".to_string(),
+            "system/vendor/firmware/uecapconfig/.replace".to_string(),
+        ];
+        expected_names.extend(
+            basenames
+                .iter()
+                .map(|basename| format!("system/vendor/firmware/uecapconfig/{basename}")),
+        );
+
+        assert_eq!(archive.len(), expected_names.len());
+        for (index, expected_name) in expected_names.iter().enumerate() {
+            let mut entry = archive.by_index(index).unwrap();
+            assert_eq!(entry.name(), expected_name, "archive entry {index}");
+            assert_eq!(
+                entry.last_modified(),
+                Some(DateTime::default()),
+                "{expected_name}"
+            );
+            assert_eq!(
+                entry.unix_mode().map(|mode| mode & 0o777),
+                Some(if index == 1 { 0o755 } else { 0o644 }),
+                "{expected_name}"
+            );
+            assert_eq!(
+                entry.compression(),
+                CompressionMethod::Deflated,
+                "{expected_name}"
+            );
+
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            match index {
+                0 => {
+                    let text = String::from_utf8(bytes).unwrap();
+                    assert!(text.contains("name=Hermetic round trip\n"), "{text}");
+                    assert!(text.contains(&basenames.join(", ")), "{text}");
+                }
+                1 => assert_eq!(bytes, include_bytes!("../magisk/assets/update-binary")),
+                2 => assert_eq!(bytes, b"#MAGISK\n"),
+                3 => assert!(bytes.is_empty()),
+                _ => assert!(!bytes.is_empty(), "{expected_name}"),
+            }
+        }
+    }
+
+    #[test]
+    fn full_two_generation_round_trip_is_source_and_zip_byte_deterministic() {
+        let first = tempdir().unwrap();
+        let second = tempdir().unwrap();
+        let (first_bitmask, first_profiled) = MiniCorpus::new().write_to(first.path(), false);
+        let (second_bitmask, second_profiled) = MiniCorpus::new().write_to(second.path(), true);
+        let first_source = first.path().join("source");
+        let second_source = second.path().join("source");
+        for source in [&first_source, &second_source] {
+            fs::create_dir(source).unwrap();
+            fs::write(source.join("nr.kdl"), b"old nr source").unwrap();
+            fs::write(source.join("lte.kdl"), b"old lte source").unwrap();
+        }
+
+        decode(&first_bitmask, &first_profiled, &first_source).unwrap();
+        decode(&second_bitmask, &second_profiled, &second_source).unwrap();
+
+        let first_nr = fs::read(first_source.join("nr.kdl")).unwrap();
+        let first_lte = fs::read(first_source.join("lte.kdl")).unwrap();
+        assert_eq!(first_nr, fs::read(second_source.join("nr.kdl")).unwrap());
+        assert_eq!(first_lte, fs::read(second_source.join("lte.kdl")).unwrap());
+        let parsed = parse_sources(
+            std::str::from_utf8(&first_nr).unwrap(),
+            std::str::from_utf8(&first_lte).unwrap(),
+        )
+        .unwrap();
+        let (canonical_nr, canonical_lte) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
+        assert_eq!(canonical_nr.as_bytes(), first_nr);
+        assert_eq!(canonical_lte.as_bytes(), first_lte);
+
+        let first_legacy = first.path().join("legacy.zip");
+        let second_legacy = second.path().join("legacy.zip");
+        fs::write(&first_legacy, b"old legacy module").unwrap();
+        fs::write(&second_legacy, b"old legacy module").unwrap();
+        build(
+            "G0DZQ",
+            &first_source,
+            &first_legacy,
+            Some("Hermetic round trip"),
+        )
+        .unwrap();
+        build(
+            "G0DZQ",
+            &second_source,
+            &second_legacy,
+            Some("Hermetic round trip"),
+        )
+        .unwrap();
+        let first_legacy = fs::read(first_legacy).unwrap();
+        assert_eq!(first_legacy, fs::read(second_legacy).unwrap());
+        assert_replacement_zip(
+            &first_legacy,
+            &["ALPHA.binarypb".into(), "BETA.binarypb".into()],
+        );
+
+        let first_profiled_out = first.path().join("profiled.zip");
+        let second_profiled_out = second.path().join("profiled.zip");
+        fs::write(&first_profiled_out, b"old profiled module").unwrap();
+        fs::write(&second_profiled_out, b"old profiled module").unwrap();
+        build(
+            TARGET_MODEL,
+            &first_source,
+            &first_profiled_out,
+            Some("Hermetic round trip"),
+        )
+        .unwrap();
+        build(
+            TARGET_MODEL,
+            &second_source,
+            &second_profiled_out,
+            Some("Hermetic round trip"),
+        )
+        .unwrap();
+        let first_profiled_zip = fs::read(first_profiled_out).unwrap();
+        assert_eq!(first_profiled_zip, fs::read(second_profiled_out).unwrap());
+        assert_replacement_zip(
+            &first_profiled_zip,
+            &[
+                format!("ALPHA_{}.binarypb", 11 * REGISTERED_ANCHOR),
+                format!("BETA_{}.binarypb", 13 * REGISTERED_ANCHOR),
+                "ap_plmn_mapping.binarypb".into(),
+                format!("lte_{TARGET_LTE_ID}.binarypb"),
+            ],
+        );
+    }
+
+    #[test]
+    fn legacy_generation_emits_every_bitmask_carrier_only_with_catch_all_masks() {
+        let sources = validated_sources();
+        let files = generate_files(&sources, phone_model("G0DZQ").unwrap()).unwrap();
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.basename.as_str())
+                .collect::<Vec<_>>(),
+            ["ALPHA.binarypb", "BETA.binarypb", "EMPTY_LEGACY.binarypb"]
+        );
+        assert!(
+            files
+                .iter()
+                .all(|file| file.basename != "ap_plmn_mapping.binarypb"
+                    && !file.basename.starts_with("lte_"))
+        );
+        for file in &files {
+            let caps = decode_uecaps(&file.bytes, &file.basename).unwrap();
+            assert!(
+                build_combos_with_bitmasks(&caps)
+                    .iter()
+                    .all(|(_, bitmask)| *bitmask == Some(65_535))
+            );
+        }
+        let empty = files
+            .iter()
+            .find(|file| file.basename == "EMPTY_LEGACY.binarypb")
+            .unwrap();
+        assert!(
+            crate::proto::UeCaps::decode(empty.bytes.as_slice())
+                .unwrap()
+                .combo_groups
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn legacy_generation_rejects_carriers_that_are_not_bitmask_filenames() {
+        for carrier in ["ap_plmn_mapping", "FOO_123", "lte_123"] {
+            let (mut nr, lte) = miniature_documents();
+            rename_carrier(&mut nr, "EMPTY_LEGACY", carrier);
+            let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+            let sources = parse_sources(&nr, &lte).unwrap();
+
+            let error = generate_files(&sources, phone_model("G0DZQ").unwrap()).unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains(&format!("{carrier}.binarypb")), "{error}");
+        }
+    }
+
+    #[test]
+    fn profiled_generation_emits_target_nr_complete_mapping_and_exact_lte() {
+        let sources = validated_sources();
+        let files = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap();
+        let expected_alpha = format!("ALPHA_{}.binarypb", 11 * TARGET_ANCHOR);
+        let expected_empty = format!("NO_COMBOS_{}.binarypb", 17 * TARGET_ANCHOR);
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.basename.as_str())
+                .collect::<Vec<_>>(),
+            [
+                expected_alpha.as_str(),
+                expected_empty.as_str(),
+                "ap_plmn_mapping.binarypb",
+                "lte_400907661.binarypb",
+            ]
+        );
+        assert!(files.iter().all(|file| !file.basename.starts_with("BETA_")));
+
+        let alpha = files
+            .iter()
+            .find(|file| file.basename == expected_alpha)
+            .unwrap();
+        let alpha = decode_uecaps(&alpha.bytes, &alpha.basename).unwrap();
+        assert_eq!(alpha.version, 862_505_271);
+        assert_eq!(alpha.id, Some(7));
+        assert_eq!(alpha.unknown, 71);
+        assert_eq!(
+            build_combos_with_bitmasks(&alpha)
+                .iter()
+                .map(|(_, bitmask)| *bitmask)
+                .collect::<Vec<_>>(),
+            [Some(0)]
+        );
+
+        let empty = files
+            .iter()
+            .find(|file| file.basename == expected_empty)
+            .unwrap();
+        let empty = decode_uecaps(&empty.bytes, &empty.basename).unwrap();
+        assert_eq!(empty.version, 862_505_271);
+        assert_eq!(empty.id, Some(9));
+        assert_eq!(empty.unknown, 91);
+        assert!(empty.combo_groups.is_empty());
+
+        let mapping = files
+            .iter()
+            .find(|file| file.basename == "ap_plmn_mapping.binarypb")
+            .unwrap();
+        let mapping = decode_plmn_map(&mapping.bytes, &mapping.basename).unwrap();
+        assert_eq!(
+            mapping
+                .carriers
+                .iter()
+                .map(|carrier| (
+                    carrier.index,
+                    carrier.name.as_str(),
+                    carrier.plmns.as_slice()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (5, "MAP_ONLY", &[197_154, 197_154][..]),
+                (7, "ALPHA", &[5_435_408, 5_435_408][..]),
+                (8, "BETA", &[][..]),
+            ]
+        );
+        assert!(
+            mapping
+                .carriers
+                .iter()
+                .all(|carrier| carrier.name != "NO_COMBOS")
+        );
+
+        let lte = files
+            .iter()
+            .find(|file| file.basename == "lte_400907661.binarypb")
+            .unwrap();
+        let lte = decode_lte_caps(&lte.bytes, &lte.basename).unwrap();
+        assert_eq!(lte.fingerprint, 123);
+        assert_eq!(lte.bitmask, 456);
+        assert_eq!(lte.combos.len(), 1);
+        assert_eq!(lte.combos[0].bcs, Some(0));
+        assert_eq!(lte.combos[0].unknown1, Some(0));
+        assert_eq!(lte.combos[0].unknown2, Some(0));
+        assert_eq!(lte.combos[0].components[0].ul_bw_class_mimo, Some(0));
+    }
+
+    #[test]
+    fn profiled_generation_rejects_carriers_that_parse_as_lte_filenames() {
+        for carrier in ["lte", "lte_PRIVATE"] {
+            let (mut nr, lte) = miniature_documents();
+            rename_carrier(&mut nr, "NO_COMBOS", carrier);
+            let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+            let sources = parse_sources(&nr, &lte).unwrap();
+
+            let error = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains(&format!("{carrier}_")), "{error}");
+        }
+    }
+
+    #[test]
+    fn classifier_validation_ignores_mapping_only_and_unselected_carriers() {
+        let (mut nr, lte) = miniature_documents();
+        rename_carrier(&mut nr, "MAP_ONLY", "ap_plmn_mapping");
+        rename_carrier(&mut nr, "BETA", "lte_NOT_SELECTED");
+        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+        let sources = parse_sources(&nr, &lte).unwrap();
+
+        let files = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap();
+        let mapping = files
+            .iter()
+            .find(|file| file.basename == "ap_plmn_mapping.binarypb")
+            .unwrap();
+        let mapping = decode_plmn_map(&mapping.bytes, &mapping.basename).unwrap();
+        assert!(
+            mapping
+                .carriers
+                .iter()
+                .any(|carrier| carrier.name == "ap_plmn_mapping")
+        );
+        assert!(
+            mapping
+                .carriers
+                .iter()
+                .any(|carrier| carrier.name == "lte_NOT_SELECTED")
+        );
+    }
+
+    #[test]
+    fn sources_are_fully_loaded_and_validated_before_model_resolution() {
+        let temp = tempdir().unwrap();
+        write_sources(temp.path());
+        fs::write(temp.path().join("lte.kdl"), "version 1\nunknown 1\n").unwrap();
+
+        let error = load_and_generate(temp.path(), "NOT-A-MODEL").unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("parsing lte.kdl"), "{error}");
+        assert!(!error.contains("unknown model"), "{error}");
+    }
+
+    #[test]
+    fn source_loader_requires_both_utf8_strict_documents() {
+        let temp = tempdir().unwrap();
+        write_sources(temp.path());
+        assert!(load_sources(temp.path()).is_ok());
+
+        fs::remove_file(temp.path().join("nr.kdl")).unwrap();
+        let error = load_sources(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("nr.kdl"), "{error}");
+
+        write_sources(temp.path());
+        fs::write(temp.path().join("lte.kdl"), [0xff]).unwrap();
+        let error = load_sources(temp.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("UTF-8") && error.contains("lte.kdl"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unknown_model_error_lists_only_registered_real_codes() {
+        let temp = tempdir().unwrap();
+        write_sources(temp.path());
+
+        for token in ["NOT-A-MODEL", "legacy", "prime:66813533", "lte:400907661"] {
+            let error = load_and_generate(temp.path(), token)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unknown model"), "{error}");
+            for code in known_model_codes() {
+                assert!(error.contains(code), "missing {code} from {error}");
+            }
+            assert!(!error.contains("legacy"), "{error}");
+            assert!(!error.contains("prime:"), "{error}");
+            assert!(!error.contains("lte:"), "{error}");
+        }
+    }
+
+    #[test]
+    fn final_file_set_is_sorted_and_rejects_duplicate_or_unsafe_basenames() {
+        let sorted = finalize_files(vec![
+            GeneratedFile {
+                basename: "B.binarypb".into(),
+                bytes: Vec::new(),
+            },
+            GeneratedFile {
+                basename: "A.binarypb".into(),
+                bytes: Vec::new(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(sorted[0].basename, "A.binarypb");
+
+        for files in [
+            vec![
+                GeneratedFile {
+                    basename: "A.binarypb".into(),
+                    bytes: Vec::new(),
+                },
+                GeneratedFile {
+                    basename: "A.binarypb".into(),
+                    bytes: Vec::new(),
+                },
+            ],
+            vec![GeneratedFile {
+                basename: "../A.binarypb".into(),
+                bytes: Vec::new(),
+            }],
+            vec![GeneratedFile {
+                basename: r"dir\A.binarypb".into(),
+                bytes: Vec::new(),
+            }],
+        ] {
+            assert!(finalize_files(files).is_err());
+        }
+    }
+
+    #[test]
+    fn final_file_set_rejects_control_and_unicode_line_separator_basenames() {
+        for character in ['\0', '\n', '\r', '\u{2028}', '\u{2029}'] {
+            let basename = format!("BAD{character}NAME.binarypb");
+            let error = finalize_files(vec![GeneratedFile {
+                basename,
+                bytes: Vec::new(),
+            }])
+            .unwrap_err();
+            let error = format!("{error:#}");
+            assert!(error.contains("control or line-separator"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn generated_mapping_uses_unpacked_plmn_fields() {
+        let sources = validated_sources();
+        let files = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap();
+        let mapping = files
+            .iter()
+            .find(|file| file.basename == "ap_plmn_mapping.binarypb")
+            .unwrap();
+
+        let intended = PlmnMap::decode(mapping.bytes.as_slice()).unwrap();
+        assert_eq!(intended.carriers[0].plmns.len(), 2);
+        decode_plmn_map(&mapping.bytes, &mapping.basename).unwrap();
+    }
+
+    #[test]
+    fn build_writes_closed_replacement_zip_with_default_model_name() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        write_sources(&source);
+        let output = temp.path().join("module.zip");
+
+        assert_eq!(build(TARGET_MODEL, &source, &output, None).unwrap(), 0);
+
+        let bytes = fs::read(&output).unwrap();
+        let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"system/vendor/firmware/uecapconfig/.replace".to_string()));
+        let mut module_prop = String::new();
+        archive
+            .by_name("module.prop")
+            .unwrap()
+            .read_to_string(&mut module_prop)
+            .unwrap();
+        assert!(
+            module_prop.contains("name=Pixel UE-caps: G2YBB\n"),
+            "{module_prop}"
+        );
+    }
+
+    #[test]
+    fn build_failures_preserve_existing_zip_without_temporary_sibling() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        write_sources(&source);
+        let output = temp.path().join("module.zip");
+        fs::write(&output, b"original zip bytes").unwrap();
+        let original_names = directory_names(temp.path());
+
+        fs::write(source.join("lte.kdl"), "version 1\nunknown 1\n").unwrap();
+        let error = build("NOT-A-MODEL", &source, &output, None).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("parsing lte.kdl"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
+        assert_eq!(directory_names(temp.path()), original_names);
+
+        write_sources(&source);
+        let error = build("NOT-A-MODEL", &source, &output, None).unwrap_err();
+        assert!(error.to_string().contains("unknown model"), "{error:#}");
+        assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
+        assert_eq!(directory_names(temp.path()), original_names);
+    }
+
+    #[test]
+    fn source_validation_and_generation_failures_preserve_an_existing_zip() {
+        let (base_nr, base_lte) = source_texts();
+        assert_build_prewrite_failure(
+            Some(base_nr.clone()),
+            None,
+            TARGET_MODEL,
+            "required source document lte.kdl",
+        );
+
+        let (_, mut missing_lte) = miniature_documents();
+        missing_lte.files = BTreeMap::from([(
+            "92".into(),
+            LteFileSource {
+                fingerprint: 102,
+                bitmask: 202,
+            },
+        )]);
+        missing_lte.combo.clear();
+        let (_, missing_lte) = to_kdl(&miniature_documents().0, &missing_lte).unwrap();
+        assert_build_prewrite_failure(
+            Some(base_nr.clone()),
+            Some(missing_lte),
+            TARGET_MODEL,
+            "absent from the LTE source domain",
+        );
+
+        assert_build_prewrite_failure(
+            Some(base_nr.replacen("profile \"66813533\"", "profile \"066813533\"", 1)),
+            Some(base_lte.clone()),
+            TARGET_MODEL,
+            "shortest-decimal",
+        );
+
+        let invalid_selection = base_nr.replacen(
+            "carriers ALPHA BETA\n        skus legacy",
+            "carriers ALPHA\n        skus prime:8969",
+            1,
+        );
+        assert_ne!(invalid_selection, base_nr);
+        assert_build_prewrite_failure(
+            Some(invalid_selection),
+            Some(base_lte.clone()),
+            TARGET_MODEL,
+            "empty intersection",
+        );
+
+        // ALPHA's PLMN list is `["250-01", "250-01"]`, written as two identical
+        // `plmn mcc=250 mnc=1` nodes; corrupt the first into an out-of-range MNC so it
+        // fails to reconstruct into a valid PLMN.
+        let invalid_plmn = base_nr.replacen("plmn mcc=250 mnc=1", "plmn mcc=250 mnc=99999", 1);
+        assert_ne!(invalid_plmn, base_nr);
+        assert_build_prewrite_failure(
+            Some(invalid_plmn),
+            Some(base_lte.clone()),
+            TARGET_MODEL,
+            "invalid PLMN",
+        );
+
+        let overflow = base_nr.replacen("signature=11", "signature=18446744073709551615", 1);
+        assert_build_prewrite_failure(
+            Some(overflow),
+            Some(base_lte.clone()),
+            TARGET_MODEL,
+            "filename product overflow",
+        );
+
+        let (mut too_many_features, lte) = miniature_documents();
+        too_many_features.dl_features = (1..=256)
+            .map(|max_scs| DlFeatureSource {
+                max_scs: Some(max_scs),
+                ..Default::default()
+            })
+            .collect();
+        too_many_features.combo = (1..=256)
+            .map(|max_scs| {
+                let mut combo = nr_combo(1, &["ALPHA"], &["legacy"]);
+                combo.sub_blocks[0].dl_feature = vec![max_scs as usize];
+                combo
+            })
+            .collect();
+        let (too_many_features, _) = to_kdl(&too_many_features, &lte).unwrap();
+        assert_build_prewrite_failure(
+            Some(too_many_features),
+            Some(base_lte),
+            "G0DZQ",
+            "uses 256 distinct DL feature records; local limit is 255",
+        );
+    }
+
+    #[test]
+    fn escaped_control_carrier_preserves_existing_zip_without_temporary_sibling() {
+        let temp = tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let (mut nr, lte) = miniature_documents();
+        rename_carrier(&mut nr, "ALPHA", "BAD\nNAME");
+        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
+        assert!(nr.contains(r#"BAD\nNAME"#), "{nr}");
+        fs::write(source.join("nr.kdl"), nr).unwrap();
+        fs::write(source.join("lte.kdl"), lte).unwrap();
+
+        let output = temp.path().join("module.zip");
+        fs::write(&output, b"original zip bytes").unwrap();
+        let original_names = directory_names(temp.path());
+
+        let error = build("G0DZQ", &source, &output, None).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("control or line-separator"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
+        assert_eq!(directory_names(temp.path()), original_names);
+    }
+}
