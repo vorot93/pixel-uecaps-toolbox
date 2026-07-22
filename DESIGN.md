@@ -19,6 +19,7 @@ to *use* the tool see the [README](README.md); for how to build, test, and work 
 - [On-disk formats](#on-disk-formats)
 - [LTE-fallback firmware selection](#lte-fallback-firmware-selection)
 - [Patch internals](#patch-internals)
+- [The `decode` command](#the-decode-command)
 - [Design conventions & rationale](#design-conventions--rationale)
 - [Glossary](#glossary)
 
@@ -73,7 +74,7 @@ models rather than inventing IDs for them.
 | `src/compiler/build.rs` | Real-model resolution, complete file-set assembly, protobuf self-check, replacement-module construction, and atomic ZIP output. |
 | `src/compiler/test_support.rs` | `#[cfg(test)]` miniature bitmask/profiled folders and exact canonical-source fixtures shared by compiler unit tests. |
 | `src/mapping/mod.rs` | Reader for the `ap_plmn_mapping.binarypb` legend; `load_mapping(dir)`. |
-| `src/mapping/edit.rs` | Legend ops: `decode_bytes` (used by the top-level `decode` command), `encode`/`inject` PLMN (stdin↔stdout), plus `add_plmns_strict`. |
+| `src/mapping/edit.rs` | Legend ops: `decode_bytes`/`encode_bytes` (binarypb↔KDL; `decode_bytes` used by the top-level `decode` command, `encode_bytes` by `mapping encode` — both deliberately `pub`, pinned by `tests/lib_api.rs`), `encode`/`inject` PLMN (stdin↔stdout), plus `add_plmns_strict`. |
 | `src/mapping/plmn.rs` | The `Plmn(u32)` newtype: packed-BCD `from_encoded`, `nibbles`, `Display`. |
 | `src/mapping/schema.rs` | The editable mapping schema (`Root`/`MappingEntry`) ↔ proto `PlmnMap` (`map_to_root`/`root_to_map`). |
 | `src/mapping/kdl_format.rs` | KDL (de)serialization for the schema above (`root_to_kdl`/`root_from_kdl`), `version 1` header, structured `plmn mcc=/mnc=` nodes via the shared codec. |
@@ -746,7 +747,7 @@ features are alternatives, and a flat struct let all three sit side by side:
 - **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
 - **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — spelled `dl-feature`/`ul-feature` in KDL, dropping the `-index` suffix (LTE-only — an
 `nr` node carries no feature index in source at all), with `ul-feature=0` omitted per the
-omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl` and patches) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE, and `source_dl_feature_index()` returns nothing for NR. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on build/decode. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from`, `RawSubBlock::to_sub_block()`, and both `reconstruct_sub_block` sites all read the index through the same `dl_feature_index()` accessor, so dedup, `CanonCc` change-detection, and `apply` self-verify cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
+omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl` and patches) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE, and `source_dl_feature_index()` returns nothing for NR. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on build/decompose. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from`, `RawSubBlock::to_sub_block()`, and both `reconstruct_sub_block` sites all read the index through the same `dl_feature_index()` accessor, so dedup, `CanonCc` change-detection, and `apply` self-verify cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
   - *Corpus scope behind the "0 mismatches" claim:* 1,487 files (9 non-`UeCaps` decode skips), **1,715,899 NR components** and **1,741,849 LTE components**. 0 of the 1.74M LTE components carry a field-6/7 per-CC selector; every NR component carries a DL one and ~60% carry a UL one.
   - *Why these keys (rejected hypotheses):* DL keys off `max_scs` (FR1/FR2), **not** `max_mimo` — a cross-tab against `max_mimo` looked noisy precisely because MIMO is not the key. UL keys off `max_mimo_cb`; `max_mimo_non_cb` moves in lockstep in the data but `max_mimo_cb` is the definitional key.
   - *LTE `parseLteFeatureIndex` cross-check* (for the record; the LTE index is kept explicit, not derived): DL `count = ceil(fi/2)` (fi 1/2→1CC, 3/6→2CC, 7/8→4CC, 9/10→5CC), even fi = 2-layer MIMO, odd = 1-layer, with 5/6 the special B/C 2-CC case; UL only ever `0` or `2` in this corpus.
@@ -946,6 +947,13 @@ someone editing a patch; keep reconstruction, comparison, and parser rationale h
   capability fields; string bandwidth classes; hex-string selector IDs; and stored
   derived keys. Do not add compatibility aliases without an explicit format-version
   design.
+
+## The `decode` command
+
+The public command reference and exit codes live in the README's [Command
+reference](README.md#command-reference); keep design rationale here, the same split
+as [Patch internals](#patch-internals) keeps for patch.
+
 - `decode`'s capability branches emit a write-only per-file slice of `nr.kdl`/`lte.kdl`
   (`src/compiler/slice.rs`). Each builds compiler source DTOs from the single file (via
   `nr_source_from_one_file`/`lte_source_from_one_file`) and emits them through the same writer
@@ -960,15 +968,35 @@ someone editing a patch; keep reconstruction, comparison, and parser rationale h
   `wire::decode_plmn_map` fails closed on an unmodeled field or packed `plmns`, because a
   dropped field would corrupt that round-trip. Capability decoding is lenient: undecodable
   bytes yield a `version 1`-only document and exit 1, since nothing consumes a slice.
+- **Why the two asymmetries above exist.** They read like two coincidental facts about two
+  branches, but both trace to one cause. Round-trip is a property of the *format*, not of
+  `decode` itself — a capability slice never carries enough to round-trip (no cross-file
+  metadata, no `selection`), while the legend always does. Strictness then *follows from*
+  round-trip: only a format that gets re-encoded can be corrupted by a silently dropped field,
+  so only that one has to fail closed; a slice nothing consumes has nothing to protect. `decode`
+  itself has one uniform contract — render this file's KDL — and its fidelity is inherited from
+  the format it renders, not implemented per branch.
 - **A file that cannot be read at all exits `2`, before either branch's leniency or
   strictness applies.** `render` (`src/decode.rs`) does one `std::fs::read` up front; a
   nonexistent path, permission error, or other I/O failure propagates as a hard error (`main`'s
   generic `Err` → exit `2`), the same as any other argument error — distinct from an existing
   file whose *content* fails to decode (lenient exit 1 for a capability file, strict exit 2 for
   the legend).
+- **Residual cost: exit 1 is unreachable for `--kind mapping`.** A capability slice exits 0
+  (decoded) or 1 (undecodable); the legend can only exit 0 (decoded) or 2 (fails closed as a
+  hard error) — it has no lenient middle exit. So a caller cannot ask "did this file's content
+  decode?" with one exit code uniformly across all three kinds: it's exit 1 for `nr`/`lte`,
+  exit 2 for `mapping`. This is the one place the "one uniform contract" above still leaks a
+  per-format detail into the exit code.
 - **`--kind` overrides filename dispatch**, so a renamed or backed-up file still decodes. It
   is the whole of what a stdin route would have bought; `decode` is otherwise
   filename-dispatched like `inspect` and `check`.
+- **`Kind` derives `clap::ValueEnum`** (`src/decode.rs`) — the crate's only `clap` reference
+  outside `src/main.rs`, i.e. this one enum carries a `clap` trait impl into the library.
+  Deliberate, not an oversight: `decode::run` is a library entry point that takes `Kind` as a
+  parameter, so the type has to live in the library, and a binary-crate type cannot cross that
+  boundary the other way. Note this before any future clap-free-library cleanup pass tries to
+  strip it.
 
 ## Design conventions & rationale
 

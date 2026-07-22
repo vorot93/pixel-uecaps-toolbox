@@ -63,7 +63,7 @@ pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     // kind:
     //   * `nr`: the index is NOT surfaced — NR derives it from its feature set on build (the
     //     former `dl-feature-index`/`ul-feature-index` source override was dropped; the proto
-    //     field is still materialized on build/decode). Per-CC list → repeated
+    //     field is still materialized on build/decompose). Per-CC list → repeated
     //     `dl-feature=`/`ul-feature=`; an unresolved NR selector is only ever the all-zero
     //     placeholder (corpus: 0 of 1.74M non-zero), omitted here and re-derived by the reader.
     //   * `lte`: index → single scalar `dl-feature`/`ul-feature` (the LTE MIMO × CC-count value).

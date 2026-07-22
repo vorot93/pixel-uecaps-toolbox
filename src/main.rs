@@ -147,7 +147,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum MappingCmd {
-    /// Encode editable KDL (stdin) to a binarypb (stdout)
+    /// Encode editable legend KDL back to .binarypb (stdin -> stdout);
+    /// inverse of `decode ap_plmn_mapping.binarypb`
     Encode,
     /// Append one or more PLMNs (MCC-MNC) to a named carrier; binarypb stdin -> stdout
     InjectPlmn {

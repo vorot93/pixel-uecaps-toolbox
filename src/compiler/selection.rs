@@ -9,7 +9,7 @@ use crate::model::PHONE_MODELS;
 pub(crate) enum Sku {
     Legacy,
     // Inline (SSO) string: model codes are 5 chars and this variant is a set key touched
-    // hundreds of millions of times per decode (the selection-algebra hot path), so keeping
+    // hundreds of millions of times per decompose (the selection-algebra hot path), so keeping
     // the bytes inline avoids per-clone heap alloc and the compare-time pointer chase. Ord is
     // byte-lexical, identical to `String`, so canonical output is unchanged.
     Model(CompactString),

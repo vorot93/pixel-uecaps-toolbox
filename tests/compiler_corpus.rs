@@ -307,8 +307,11 @@ fn optional_corpora_decompose_and_build_every_registered_target() {
     // directory-order-independent source bytes at the public boundary. The two decompose runs are
     // independent (distinct output dirs) and each is CPU-bound, so run them concurrently.
     rayon::join(
-        || decompose(bitmask, profiled, &first_source).expect("decoding both optional corpora"),
-        || decompose(bitmask, profiled, &second_source).expect("re-decoding both optional corpora"),
+        || decompose(bitmask, profiled, &first_source).expect("decomposing both optional corpora"),
+        || {
+            decompose(bitmask, profiled, &second_source)
+                .expect("re-decomposing both optional corpora")
+        },
     );
     for document in ["nr.kdl", "lte.kdl"] {
         assert_eq!(

@@ -12,7 +12,7 @@ use crate::{compiler::schema::one_trailing_newline, raw_nr::SubBlockKind};
 /// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
 /// crate (compiler `nr.kdl`, NR-carrier patch, `decode` NR view) emits it as the
 /// `nr`/`lte` node NAME; uniformly-LTE surfaces (compiler `lte.kdl`, LTE-fallback patch,
-/// `decode` LTE view) use plain `cc` with no kind tag. One source of truth.
+/// `decode` LTE view) use plain `subblock` with no kind tag. One source of truth.
 pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
     match k {
         SubBlockKind::Nr => "nr",
@@ -20,7 +20,7 @@ pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
     }
 }
 /// Parse a radio kind from its KDL spelling. `what` names the surface in the error message
-/// (e.g. `"NR/EN-DC component kind"` for the compiler `nr.kdl`/patch/inspect NR view),
+/// (e.g. `"NR/EN-DC component kind"` for the compiler `nr.kdl`/patch/`decode` NR view),
 /// so each caller keeps its own phrasing.
 pub(crate) fn str_to_cckind(s: &str, what: &str) -> Result<SubBlockKind> {
     match s {

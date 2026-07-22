@@ -1171,7 +1171,7 @@ mod tests {
         // `cc()` seeds `dl_feature_index = Some(0)`, but selector `[2]` resolves to the
         // max_scs=3 (FR1) record whose derived index is 1. NR no longer carries a source
         // index override, so the strict decode boundary rejects a stored≠derived index —
-        // clear it (the derived 1 is materialized on build) so decode is about pruning, not
+        // clear it (the derived 1 is materialized on build) so decompose is about pruning, not
         // the dropped override.
         component.dl_feature_index = None;
         caps.dl_feature_per_cc_list = vec![

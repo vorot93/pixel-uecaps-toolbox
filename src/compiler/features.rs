@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn local_plan_passes_through_the_all_zero_placeholder_selector() {
         // The all-zero placeholder is the ONLY unresolved selector that can reach
-        // generation: decode (`resolve_or_placeholder`) and `patch create`
+        // generation: decompose (`resolve_or_placeholder`) and `patch create`
         // (`ensure_selector_resolved`) both fail closed on a non-placeholder one. It must
         // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside nr.kdl combos
         // and UL-disabled NR sub-blocks depend on this for byte-exact round-trip.

@@ -73,62 +73,18 @@ fn kind_from_name(label: &str) -> anyhow::Result<Kind> {
 #[cfg(test)]
 mod tests {
     use super::{Kind, render};
-    use crate::proto::{
-        Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, UeCaps, combo_group,
-        combo_group::combo::SubBlock,
+    use crate::{
+        compiler::test_support::{carrier_bytes, lte_bytes},
+        proto::{Carrier, PlmnMap},
     };
     use prost::Message;
     use std::path::{Path, PathBuf};
-
-    /// A temp dir unique to this test binary + the given tag, removed by `cleanup`.
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("uecaps-decode-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use tempfile::tempdir;
 
     fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         path
-    }
-
-    fn carrier_bytes() -> Vec<u8> {
-        UeCaps {
-            version: 874_888_686,
-            combo_groups: vec![ComboGroup {
-                combo_header: None,
-                combo: vec![combo_group::Combo {
-                    bitmask: Some(0),
-                    sub_blocks: vec![SubBlock {
-                        band: 10078,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        ..Default::default()
-                    }],
-                }],
-            }],
-            ..Default::default()
-        }
-        .encode_to_vec()
-    }
-
-    fn lte_bytes() -> Vec<u8> {
-        LteCaps {
-            fingerprint: 862_505_271,
-            bitmask: 0,
-            combos: vec![LteCombo {
-                components: vec![LteComponent {
-                    band: 1,
-                    dl_bw_class_mimo: 32768,
-                    ul_bw_class_mimo: None,
-                }],
-                bcs: None,
-                unknown1: None,
-                unknown2: None,
-            }],
-        }
-        .encode_to_vec()
     }
 
     fn legend_bytes() -> Vec<u8> {
@@ -144,10 +100,9 @@ mod tests {
 
     #[test]
     fn carrier_filename_yields_an_nr_slice() {
-        let dir = scratch("carrier");
-        let path = write(&dir, "VZW_3616442437.binarypb", &carrier_bytes());
+        let dir = tempdir().unwrap();
+        let path = write(dir.path(), "VZW_3616442437.binarypb", &carrier_bytes());
         let (bytes, code) = render(&path, None).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         let text = String::from_utf8(bytes).unwrap();
         assert_eq!(code, 0);
@@ -157,10 +112,9 @@ mod tests {
 
     #[test]
     fn lte_filename_yields_an_lte_slice() {
-        let dir = scratch("lte");
-        let path = write(&dir, "lte_2160127815.binarypb", &lte_bytes());
+        let dir = tempdir().unwrap();
+        let path = write(dir.path(), "lte_2160127815.binarypb", &lte_bytes());
         let (bytes, code) = render(&path, None).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         let text = String::from_utf8(bytes).unwrap();
         assert_eq!(code, 0);
@@ -169,11 +123,10 @@ mod tests {
 
     #[test]
     fn legend_filename_yields_kdl_that_re_encodes_bit_for_bit() {
-        let dir = scratch("legend");
+        let dir = tempdir().unwrap();
         let original = legend_bytes();
-        let path = write(&dir, "ap_plmn_mapping.binarypb", &original);
+        let path = write(dir.path(), "ap_plmn_mapping.binarypb", &original);
         let (kdl, code) = render(&path, None).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(code, 0);
         assert_eq!(
@@ -190,35 +143,32 @@ mod tests {
         // PlmnMap field #2 (varint), which is not modeled; prost decodes past it, so
         // only the strict wire validator catches it. This is the strictness half of
         // the asymmetry -- an undecodable *capability* file is lenient (exit 1).
-        let dir = scratch("strict");
+        let dir = tempdir().unwrap();
         let mut bytes = legend_bytes();
         bytes.extend_from_slice(&[0x10, 0x05]);
-        let path = write(&dir, "ap_plmn_mapping.binarypb", &bytes);
+        let path = write(dir.path(), "ap_plmn_mapping.binarypb", &bytes);
         let result = render(&path, None);
-        std::fs::remove_dir_all(&dir).ok();
 
         assert!(result.is_err(), "legend decoding must fail closed");
     }
 
     #[test]
     fn kind_overrides_a_non_canonical_filename() {
-        let dir = scratch("override");
-        let canonical = write(&dir, "ap_plmn_mapping.binarypb", &legend_bytes());
-        let renamed = write(&dir, "legend.bak", &legend_bytes());
+        let dir = tempdir().unwrap();
+        let canonical = write(dir.path(), "ap_plmn_mapping.binarypb", &legend_bytes());
+        let renamed = write(dir.path(), "legend.bak", &legend_bytes());
 
         let (by_name, _) = render(&canonical, None).unwrap();
         let (by_flag, _) = render(&renamed, Some(Kind::Mapping)).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(by_flag, by_name, "--kind must reproduce filename dispatch");
     }
 
     #[test]
     fn unrecognised_filename_without_kind_errors_and_names_the_flag() {
-        let dir = scratch("unknown");
-        let path = write(&dir, "whatever.bin", &carrier_bytes());
+        let dir = tempdir().unwrap();
+        let path = write(dir.path(), "whatever.bin", &carrier_bytes());
         let err = render(&path, None).unwrap_err();
-        std::fs::remove_dir_all(&dir).ok();
 
         let message = err.to_string();
         assert!(
@@ -228,15 +178,14 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_carrier_yields_a_version_only_document_and_code_one() {
-        let dir = scratch("bad");
+    fn undecodable_carrier_yields_a_version_only_document_and_code_one() {
+        let dir = tempdir().unwrap();
         // Truncated field 3 -- UeCaps::decode fails.
-        let path = write(&dir, "VZW_3616442437.binarypb", &[0x1a, 0x05, 0x01]);
+        let path = write(dir.path(), "VZW_3616442437.binarypb", &[0x1a, 0x05, 0x01]);
         let (bytes, code) = render(&path, None).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         let text = String::from_utf8(bytes).unwrap();
-        assert_eq!(code, 1, "an unreadable file must exit 1");
+        assert_eq!(code, 1, "an undecodable file must exit 1");
         assert!(
             text.starts_with("version 1") && !text.contains("combo"),
             "{text}"
@@ -248,11 +197,14 @@ mod tests {
         // 3347 * 3539 is divisible by two anchor primes. Under the slice shape,
         // ambiguity is not a `decode`-level exit condition -- the diagnostic lives in
         // `inspect`'s text report.
-        let dir = scratch("ambiguous");
+        let dir = tempdir().unwrap();
         let number = 3347u64 * 3539;
-        let path = write(&dir, &format!("VZW_{number}.binarypb"), &carrier_bytes());
+        let path = write(
+            dir.path(),
+            &format!("VZW_{number}.binarypb"),
+            &carrier_bytes(),
+        );
         let (_bytes, code) = render(&path, None).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(code, 0);
     }
@@ -262,10 +214,9 @@ mod tests {
         // The path is never written. A recognised filename reaches the `std::fs::read`
         // in `render`'s body, which must propagate a hard error via `?` rather than
         // let a nonexistent file decode as an empty (and therefore valid) protobuf.
-        let dir = scratch("missing");
-        let path = dir.join("VZW_3616442437.binarypb");
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("VZW_3616442437.binarypb");
         let result = render(&path, None);
-        std::fs::remove_dir_all(&dir).ok();
 
         assert!(
             result.is_err(),

@@ -20,6 +20,12 @@ fn lib_exposes_the_one_file_decode_entry_point() {
 }
 
 #[test]
+fn lib_exposes_the_mapping_legend_codec() {
+    let _: fn(&[u8]) -> anyhow::Result<Vec<u8>> = pixel_uecaps_toolbox::mapping::decode_bytes;
+    let _: fn(&[u8]) -> anyhow::Result<Vec<u8>> = pixel_uecaps_toolbox::mapping::encode_bytes;
+}
+
+#[test]
 fn lib_exposes_phone_models() {
     assert_eq!(PHONE_MODELS.len(), 52);
     assert_eq!(

@@ -24,7 +24,7 @@ the network what it supports. With it you can:
   Magisk module for a real Pixel model code.
 - **Audit a whole dump** — scan a folder of capability files and flag anything that
   doesn't fit the expected scheme.
-- **Convert one file to KDL** — `decode` emits any single `.binarypb` as KDL: a slice of the compiler source format for capability files, the editable legend for `ap_plmn_mapping.binarypb`.
+- **Convert one file to KDL** — `decode` emits any single `.binarypb` as KDL (auto-detected from a recognised filename, or `--kind` for a renamed one): a slice of the compiler source format for capability files, the editable legend for `ap_plmn_mapping.binarypb`.
 
 ## Install
 
@@ -154,7 +154,7 @@ Compiler `nr.kdl` stores no feature index for NR components at all: that value i
 the component's per-CC feature set on build (DL from the subcarrier-spacing band FR1/FR2, UL from
 MIMO presence). The old `dl-feature-index`/`ul-feature-index` override was removed — a decoded NR
 index that contradicts the derivation is now a hard decode error rather than a carried override
-(the proto field is still materialized on build/decode). LTE components keep the value explicit
+(the proto field is still materialized on build/decompose). LTE components keep the value explicit
 but spell it `dl-feature`/`ul-feature` (dropping the `-index` suffix; the LTE MIMO × CC-count
 encoding, which is not derivable); `ul-feature` is omitted when it is `0` — the common "no UL"
 default — and re-defaults to `0` on read.
@@ -332,6 +332,30 @@ number). The `LTE config` line names the modem's selection-table family (and the
 confirmed); the modem picks the file by hardware/SKU category — burned into the Shannon firmware —
 not by SIM or MCC.
 
+### Convert one file to KDL
+
+```console
+$ pixel-uecaps-toolbox decode VZW_193698151252893.binarypb
+version 1
+dl-feature max-scs=1 max-mimo=1 max-bw=10 max-mod-order=2 bw-90mhz-supported=#false
+dl-feature max-scs=1 max-mimo=2 max-bw=10 max-mod-order=2 bw-90mhz-supported=#false
+…       (19 dl-feature + 20 ul-feature catalog entries total — trimmed)
+combo {
+    nr 2 dl-bw-class=1 dl-feature=9 ul-bw-class=1 ul-feature=6
+}
+combo {
+    nr 5 dl-bw-class=1 dl-feature=6 ul-bw-class=1 ul-feature=4
+}
+…       (1235 combos total — trimmed)
+```
+
+**Read:** `version 1` plus the file's own `dl-feature`/`ul-feature` catalog and `combo` blocks —
+exactly what `decompose` would write into `nr.kdl` for this one file, spelled identically. It's
+a write-only slice, not a diagnostic: no file path, fingerprint status, or profile info (that's
+`inspect`, above). An `lte_*` file slices `lte.kdl` the same way (previous recipe); the legend
+(`ap_plmn_mapping.binarypb`) takes a different, round-tripping branch — see "Add a network to a
+carrier" below.
+
 ### Compare two carriers or profiles
 
 ```console
@@ -482,7 +506,7 @@ LTE (`lte`) components carry a feature index in source, spelled `dl-feature=`/`u
 kept explicit — except `ul-feature=0`, which is omitted and re-defaults to `0` on read. NR (`nr`)
 components carry no feature index in source: it is derived from the component's feature set on
 build (the old `dl-feature-index=`/`ul-feature-index=` override was removed — the proto field is
-still materialized on build/decode, just not surfaced).
+still materialized on build/decompose, just not surfaced).
 
 Each `dl-cc` child accepts `max-scs=`, `max-mimo=`, `max-bw=`, `max-mod-order=`, and
 `bw-90mhz-supported=` (`#true`/`#false`); each `ul-cc` child accepts the same plus
@@ -658,7 +682,7 @@ as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 | --- | --- |
 | `decompose --bitmask DIR --profiled DIR -o SOURCE` | Decompose both complete folder layouts into canonical `SOURCE/nr.kdl` and `SOURCE/lte.kdl`. Both directories and `-o` are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |
 | `build <CODE> <SOURCE> -o ZIP [--name N]` | Strictly load both compiler documents and build a complete, deterministic `.replace` Magisk ZIP for a registered real model code. The destination is fixed at `/vendor/firmware/uecapconfig`; there is no `--dest`. Exit `0`/`2`. |
-| `decode <FILE> [--kind nr\|lte\|mapping]` | Decode one `.binarypb` to KDL, dispatching on the filename. A carrier file emits a one-file slice of `decompose`'s `nr.kdl`, an `lte_*` file a slice of `lte.kdl`, and the legend its editable document (bit-for-bit re-encodable via `mapping encode`). `--kind` overrides the filename for a renamed or backed-up file. Exit `0`/`1` unreadable capability file/`2` error (including a nonexistent input file). |
+| `decode <FILE> [--kind nr\|lte\|mapping]` | Decode one `.binarypb` to KDL, dispatching on the filename. A carrier file emits a one-file slice of `decompose`'s `nr.kdl`, an `lte_*` file a slice of `lte.kdl`, and the legend its editable document (bit-for-bit re-encodable via `mapping encode`). `--kind` overrides the filename for a renamed or backed-up file. Exit `0`/`1` undecodable capability file/`2` error (including a nonexistent input file). |
 | `inspect <FILE> [--full]` | Inspect one file. Adapts to the file type: a carrier file, the PLMN legend, or an `lte_*` fallback (whose LTE CA combinations it decodes). `--full` reveals the SKU-selection math and per-component capabilities. Exit `2` on an unrecognised filename. |
 | `compare <A> <B> [--full] [--common]` | Diff two files' band combinations (set diff by default; `--full` adds per-component diffs; `--common` also lists the combos common to both — `=` identical, `~` caps differ). Exit `0` identical, `1` differ, `2` error. |
 | `patch create <A> <B> [-o FILE]` | Diff two files (A→B) and emit a documented KDL combo patch to `-o` or stdout. Exit `0`/`2`. Both files must be the same kind (carrier or `lte_*`); the patch's top-level `kind` node is `nr` or `lte`. |
@@ -680,8 +704,8 @@ exactly), and an `lte_*` file as a one-file slice of `lte.kdl`. Diagnostic field
 fingerprint status, profile model, mapping info) live in `inspect`'s text report, not here.
 
 The legend is different in two ways worth knowing. Its document **round-trips**:
-`mapping encode` turns it back into a byte-identical `.binarypb`, which is why the
-capability slices do not — they carry no cross-file metadata and no `selection`, so they are
+`mapping encode` turns it back into a byte-identical `.binarypb`, unlike the capability
+slices, which do not — they carry no cross-file metadata and no `selection`, so they are
 not `build` inputs. And decoding it is **strict**: a field outside the modeled schema fails
 closed (exit `2`) rather than being silently dropped, because a dropped field would corrupt
 the round-trip. A capability file that will not decode is lenient by comparison — you get a
@@ -691,6 +715,19 @@ A file that cannot be read at all — a nonexistent path, a permission error, or
 failure — is a separate, harder failure than either of those: `decode` exits `2` on it
 regardless of kind, the same as any other argument error, before either branch's leniency or
 strictness comes into play.
+
+**Migration note:** this branch's cutover renamed and removed the following spellings, with
+no aliases:
+
+```
+decode --bitmask … -o SRC   →  decompose --bitmask … -o SRC
+inspect FILE --kdl          →  decode FILE
+mapping decode < FILE       →  decode FILE   (or decode FILE --kind mapping)
+compiler::decode (library)  →  compiler::decompose
+```
+
+Each is a hard removal, not a deprecation — there is no back-compat reader or CLI shim for
+any of them; use the new spelling instead.
 
 ## How the file naming works
 

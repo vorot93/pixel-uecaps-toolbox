@@ -49,7 +49,7 @@ pub(crate) fn lte_slice(bytes: &[u8]) -> (String, i32) {
     (finish_doc(doc), 0)
 }
 
-/// What an unreadable capability file emits: just `version 1`, no combos, no
+/// What an undecodable capability file emits: just `version 1`, no combos, no
 /// catalogs. Intentionally empty so a stale round-trip cannot fabricate data the
 /// file does not contain; the diagnostic belongs to `inspect`'s text report.
 fn version_only_document() -> String {
@@ -68,31 +68,7 @@ fn versioned_document() -> KdlDocument {
 #[cfg(test)]
 mod tests {
     use super::{lte_slice, nr_slice};
-    use crate::proto::{
-        ComboGroup, LteCaps, LteCombo, LteComponent, UeCaps, combo_group,
-        combo_group::combo::SubBlock,
-    };
-    use prost::Message;
-
-    fn carrier_bytes() -> Vec<u8> {
-        UeCaps {
-            version: 874_888_686,
-            combo_groups: vec![ComboGroup {
-                combo_header: None,
-                combo: vec![combo_group::Combo {
-                    bitmask: Some(0),
-                    sub_blocks: vec![SubBlock {
-                        band: 10078,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        ..Default::default()
-                    }],
-                }],
-            }],
-            ..Default::default()
-        }
-        .encode_to_vec()
-    }
+    use crate::compiler::test_support::{carrier_bytes, lte_bytes};
 
     #[test]
     fn nr_slice_matches_the_nr_kdl_shape() {
@@ -109,21 +85,7 @@ mod tests {
 
     #[test]
     fn lte_slice_matches_the_lte_kdl_shape() {
-        let caps = LteCaps {
-            fingerprint: 862_505_271,
-            bitmask: 0,
-            combos: vec![LteCombo {
-                components: vec![LteComponent {
-                    band: 1,
-                    dl_bw_class_mimo: 32768,
-                    ul_bw_class_mimo: None,
-                }],
-                bcs: None,
-                unknown1: None,
-                unknown2: None,
-            }],
-        };
-        let (text, code) = lte_slice(&caps.encode_to_vec());
+        let (text, code) = lte_slice(&lte_bytes());
         assert_eq!(code, 0, "decodable bytes exit 0");
         assert!(text.starts_with("version 1"), "{text}");
         assert!(text.contains("subblock 1 dl-bw-class-mimo=32768"), "{text}");
@@ -134,10 +96,21 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_bytes_yield_a_version_only_document_and_code_one() {
-        // Truncated field 3 -- UeCaps::decode fails.
+    fn nr_slice_undecodable_bytes_yield_a_version_only_document_and_code_one() {
+        // Truncated field 3 (`combo_groups`) -- UeCaps::decode fails.
         let (text, code) = nr_slice(&[0x1a, 0x05, 0x01]).unwrap();
-        assert_eq!(code, 1, "an unreadable file must exit 1");
+        assert_eq!(code, 1, "an undecodable file must exit 1");
+        assert!(
+            text.starts_with("version 1") && !text.contains("combo"),
+            "an empty slice must not fabricate data: {text}"
+        );
+    }
+
+    #[test]
+    fn lte_slice_undecodable_bytes_yield_a_version_only_document_and_code_one() {
+        // Truncated field 2 (`combos`) -- LteCaps::decode fails.
+        let (text, code) = lte_slice(&[0x12, 0x05, 0x01]);
+        assert_eq!(code, 1, "an undecodable file must exit 1");
         assert!(
             text.starts_with("version 1") && !text.contains("combo"),
             "an empty slice must not fabricate data: {text}"
