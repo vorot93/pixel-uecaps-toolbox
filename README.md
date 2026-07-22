@@ -24,7 +24,11 @@ the network what it supports. With it you can:
   Magisk module for a real Pixel model code.
 - **Audit a whole dump** — scan a folder of capability files and flag anything that
   doesn't fit the expected scheme.
-- **Convert one file to KDL** — `decode` emits any single `.binarypb` as KDL (auto-detected from a recognised filename, or `--kind` for a renamed one): a slice of the compiler source format for capability files, the editable legend for `ap_plmn_mapping.binarypb`.
+- **Convert one file to KDL** — `decode` emits any single `.binarypb` as KDL: a slice of the
+  compiler source format for capability files, the editable legend for
+  `ap_plmn_mapping.binarypb`. The kind is read from the filename when it carries one, and given
+  explicitly with `--kind` when it doesn't — which is routine, not an edge case: no bitmask-folder
+  file names its kind.
 
 ## Install
 
@@ -682,7 +686,7 @@ as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 | --- | --- |
 | `decompose --bitmask DIR --profiled DIR -o SOURCE` | Decompose both complete folder layouts into canonical `SOURCE/nr.kdl` and `SOURCE/lte.kdl`. Both directories and `-o` are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |
 | `build <CODE> <SOURCE> -o ZIP [--name N]` | Strictly load both compiler documents and build a complete, deterministic `.replace` Magisk ZIP for a registered real model code. The destination is fixed at `/vendor/firmware/uecapconfig`; there is no `--dest`. Exit `0`/`2`. |
-| `decode <FILE> [--kind nr\|lte\|mapping]` | Decode one `.binarypb` to KDL, dispatching on the filename. A carrier file emits a one-file slice of `decompose`'s `nr.kdl`, an `lte_*` file a slice of `lte.kdl`, and the legend its editable document (bit-for-bit re-encodable via `mapping encode`). `--kind` overrides the filename for a renamed or backed-up file. Exit `0`/`1` undecodable capability file/`2` error (including a nonexistent input file). |
+| `decode <FILE> [--kind nr\|lte\|mapping]` | Decode one `.binarypb` to KDL, dispatching on the filename: `<CARRIER>_<NUMBER>.binarypb` emits a one-file slice of `decompose`'s `nr.kdl`, `lte_<NUMBER>.binarypb` a slice of `lte.kdl`, and `ap_plmn_mapping.binarypb` its editable document (bit-for-bit re-encodable via `mapping encode`). **Any other name needs an explicit `--kind`** and exits `2` without one — that covers every bitmask-folder file (`AIRTEL.binarypb`, `1_1_DE.binarypb`, …), since only the profiled layout ends in `_<NUMBER>`, as well as renamed, backed-up, and duplicate-suffixed copies (`lte_400907661 (1).binarypb`). `--kind` also overrides a name that *would* have parsed. Exit `0`/`1` undecodable capability file/`2` error (including a nonexistent input file). |
 | `inspect <FILE> [--full]` | Inspect one file. Adapts to the file type: a carrier file, the PLMN legend, or an `lte_*` fallback (whose LTE CA combinations it decodes). `--full` reveals the SKU-selection math and per-component capabilities. Exit `2` on an unrecognised filename. |
 | `compare <A> <B> [--full] [--common]` | Diff two files' band combinations (set diff by default; `--full` adds per-component diffs; `--common` also lists the combos common to both — `=` identical, `~` caps differ). Exit `0` identical, `1` differ, `2` error. |
 | `patch create <A> <B> [-o FILE]` | Diff two files (A→B) and emit a documented KDL combo patch to `-o` or stdout. Exit `0`/`2`. Both files must be the same kind (carrier or `lte_*`); the patch's top-level `kind` node is `nr` or `lte`. |

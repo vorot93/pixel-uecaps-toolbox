@@ -1,5 +1,7 @@
-//! `decode`: one `.binarypb` file to its KDL. The kind comes from the filename
-//! unless `--kind` overrides it — the escape hatch for a renamed or backed-up file.
+//! `decode`: one `.binarypb` file to its KDL. The kind comes from the filename when
+//! it carries one, and from `--kind` when it doesn't. Supplying is the common case,
+//! not an escape hatch for renamed files: only the profiled layout ends in `_<NUMBER>`,
+//! so no bitmask-folder name parses and every one of them needs `--kind nr`.
 //!
 //! A capability file yields a write-only slice of `nr.kdl`/`lte.kdl`; the PLMN
 //! legend yields the editable document `mapping encode` re-encodes bit-for-bit.

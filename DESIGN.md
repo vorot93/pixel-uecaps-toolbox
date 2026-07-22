@@ -988,9 +988,15 @@ as [Patch internals](#patch-internals) keeps for patch.
   decode?" with one exit code uniformly across all three kinds: it's exit 1 for `nr`/`lte`,
   exit 2 for `mapping`. This is the one place the "one uniform contract" above still leaks a
   per-format detail into the exit code.
-- **`--kind` overrides filename dispatch**, so a renamed or backed-up file still decodes. It
-  is the whole of what a stdin route would have bought; `decode` is otherwise
-  filename-dispatched like `inspect` and `check`.
+- **`--kind` supplies or overrides filename dispatch.** It is the whole of what a stdin route
+  would have bought; `decode` is otherwise filename-dispatched like `inspect` and `check`. Note
+  that supplying, not overriding, is the common case: only the *profiled* layout ends in
+  `_<NUMBER>`, so **no bitmask-folder file parses** (0 of the 89 in the reference corpus) and
+  each one needs `--kind nr`. Both layouts hold the same NR payload — it is purely a naming
+  gap, not a format difference. Treat `--kind` as a normal part of the interface rather than an
+  escape hatch for renamed files, and don't "fix" the parser to guess at unnumbered names:
+  a bare `<CARRIER>.binarypb` is indistinguishable from an arbitrary file, so guessing would
+  turn a clear error into a silent misparse.
 - **`Kind` derives `clap::ValueEnum`** (`src/decode.rs`) — the crate's only `clap` reference
   outside `src/main.rs`, i.e. this one enum carries a `clap` trait impl into the library.
   Deliberate, not an oversight: `decode::run` is a library entry point that takes `Kind` as a
