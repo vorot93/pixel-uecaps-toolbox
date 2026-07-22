@@ -1,6 +1,6 @@
 //! pixel-uecaps-toolbox — decode and validate Google Pixel UE-capabilities files.
 
-use pixel_uecaps_toolbox::{compiler, magisk, mapping, patch, provision, report};
+use pixel_uecaps_toolbox::{compiler, decode, magisk, mapping, patch, provision, report};
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -27,6 +27,14 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: PathBuf,
     },
+    /// Decode one .binarypb file to KDL
+    Decode {
+        /// File to decode
+        file: PathBuf,
+        /// Override the kind implied by the filename
+        #[arg(long, value_name = "KIND")]
+        kind: Option<decode::Kind>,
+    },
     /// Build a complete model-specific replacement Magisk module from compiler sources
     Build {
         /// Registered Google 5-character hardware model code
@@ -46,9 +54,6 @@ enum Cmd {
         /// Reveal per-component combo detail and the SKU-selection math
         #[arg(long)]
         full: bool,
-        /// Emit the complete analysis as KDL
-        #[arg(long)]
-        kdl: bool,
     },
     /// Scan a folder and report everything that does not match
     Check {
@@ -65,7 +70,7 @@ enum Cmd {
     },
     /// Run built-in, data-independent sanity checks
     SelfTest,
-    /// Decode, encode, or edit ap_plmn_mapping.binarypb (stdin -> stdout)
+    /// Encode or edit ap_plmn_mapping.binarypb (stdin -> stdout)
     Mapping {
         #[command(subcommand)]
         cmd: MappingCmd,
@@ -142,8 +147,6 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum MappingCmd {
-    /// Decode a binarypb (stdin) to editable KDL (stdout)
-    Decode,
     /// Encode editable KDL (stdin) to a binarypb (stdout)
     Encode,
     /// Append one or more PLMNs (MCC-MNC) to a named carrier; binarypb stdin -> stdout
@@ -257,7 +260,8 @@ impl Cmd {
                 out,
                 name,
             } => compiler::build(&model, &source, &out, name.as_deref()),
-            Self::Inspect { file, full, kdl } => report::inspect(&file, full, kdl),
+            Self::Decode { file, kind } => decode::run(&file, kind),
+            Self::Inspect { file, full } => report::inspect(&file, full),
             Self::Check { dir } => report::check_folder(&dir),
             Self::Matrix { dir, out } => report::matrix(&dir, out.as_deref()),
             Self::SelfTest => report::self_test(),
@@ -305,7 +309,6 @@ impl Cmd {
 impl MappingCmd {
     fn run(self) -> anyhow::Result<i32> {
         match self {
-            Self::Decode => mapping::decode(),
             Self::Encode => mapping::encode(),
             Self::InjectPlmn { carrier, plmns } => mapping::inject(&carrier, &plmns),
         }
@@ -475,17 +478,6 @@ mod tests {
             ])
             .is_err()
         );
-    }
-
-    #[test]
-    fn parses_decode_subcommand() {
-        let cli = Cli::parse_from(["x", "mapping", "decode"]);
-        assert!(matches!(
-            cli.cmd,
-            Cmd::Mapping {
-                cmd: MappingCmd::Decode
-            }
-        ));
     }
 
     #[test]
@@ -870,5 +862,65 @@ mod tests {
         assert!(only);
         assert_eq!(input, None);
         assert_eq!(out, None);
+    }
+
+    #[test]
+    fn parses_decode_with_a_file() {
+        let cli = Cli::parse_from(["x", "decode", "VZW_167.binarypb"]);
+        let Cmd::Decode { file, kind } = cli.cmd else {
+            panic!("expected decode");
+        };
+        assert_eq!(file, PathBuf::from("VZW_167.binarypb"));
+        assert_eq!(kind, None);
+    }
+
+    #[test]
+    fn parses_decode_kind_override() {
+        let cli = Cli::parse_from(["x", "decode", "legend.bak", "--kind", "mapping"]);
+        let Cmd::Decode { file, kind } = cli.cmd else {
+            panic!("expected decode");
+        };
+        assert_eq!(file, PathBuf::from("legend.bak"));
+        assert_eq!(kind, Some(decode::Kind::Mapping));
+    }
+
+    #[test]
+    fn decode_requires_a_file() {
+        assert!(Cli::try_parse_from(["x", "decode"]).is_err());
+    }
+
+    #[test]
+    fn parses_decompose() {
+        let cli = Cli::parse_from([
+            "x",
+            "decompose",
+            "--bitmask",
+            "b",
+            "--profiled",
+            "p",
+            "-o",
+            "src",
+        ]);
+        let Cmd::Decompose {
+            bitmask,
+            profiled,
+            out,
+        } = cli.cmd
+        else {
+            panic!("expected decompose");
+        };
+        assert_eq!(bitmask, PathBuf::from("b"));
+        assert_eq!(profiled, PathBuf::from("p"));
+        assert_eq!(out, PathBuf::from("src"));
+    }
+
+    #[test]
+    fn inspect_no_longer_accepts_kdl() {
+        assert!(Cli::try_parse_from(["x", "inspect", "f.binarypb", "--kdl"]).is_err());
+    }
+
+    #[test]
+    fn mapping_no_longer_has_decode() {
+        assert!(Cli::try_parse_from(["x", "mapping", "decode"]).is_err());
     }
 }

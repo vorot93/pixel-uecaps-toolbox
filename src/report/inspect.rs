@@ -1,14 +1,12 @@
-//! Single-file analysis (`inspect`): text + KDL for carrier / LTE / mapping files.
+//! Single-file analysis (`inspect`): text report for carrier / LTE / mapping files.
 
 use super::read_ue_caps;
 use crate::{
     factor::{factor_display, gcd},
-    kdl_support::{finish_doc, opt_int_prop, str_list_node},
     mapping::load_mapping,
     model::*,
     report::combos::{build_combos, print_combos},
 };
-use kdl::{KdlDocument, KdlEntry, KdlNode};
 use prost::Message;
 use std::{
     collections::BTreeSet,
@@ -65,18 +63,12 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> (u64, usize) {
 // --------------------------------------------------------------------------- //
 //  Single-file analysis                                                        //
 // --------------------------------------------------------------------------- //
-pub fn inspect(path: &Path, full: bool, as_kdl: bool) -> anyhow::Result<i32> {
+pub fn inspect(path: &Path, full: bool) -> anyhow::Result<i32> {
     let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     let dir: PathBuf = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
     };
-
-    if as_kdl {
-        let (text, code) = inspect_kdl(path, &dir, base)?;
-        print!("{text}");
-        return Ok(code);
-    }
 
     Ok(match parse_name(base) {
         Parsed::Mapping => {
@@ -90,46 +82,6 @@ pub fn inspect(path: &Path, full: bool, as_kdl: bool) -> anyhow::Result<i32> {
             2
         }
     })
-}
-
-/// The write-only `inspect --kdl` dump: delegates the capability branches to the
-/// compiler's one-file slice functions (`nr_slice` / `lte_slice`). The Mapping
-/// branch is unchanged.
-fn inspect_kdl(path: &Path, dir: &Path, base: &str) -> anyhow::Result<(String, i32)> {
-    match parse_name(base) {
-        Parsed::Mapping => {
-            let carrier = load_mapping(dir)
-                .into_iter()
-                .map(|(name, e)| MapCarrier {
-                    name,
-                    index: e.index,
-                    countries: country_summary(&e.plmns),
-                })
-                .collect();
-            let v = MappingKdl {
-                file: base.to_string(),
-                kind: "mapping".into(),
-                carrier,
-            };
-            Ok((v.to_kdl(), 0))
-        }
-        Parsed::Lte(number) => {
-            let _ = number;
-            let bytes = std::fs::read(path).unwrap_or_default();
-            Ok(crate::compiler::lte_slice(&bytes))
-        }
-        Parsed::Carrier {
-            carrier: _,
-            number: _,
-        } => {
-            let bytes = std::fs::read(path).unwrap_or_default();
-            crate::compiler::nr_slice(&bytes)
-        }
-        Parsed::Other => {
-            eprintln!("Not a recognised uecaps filename: {base}");
-            Ok((String::new(), 2))
-        }
-    }
 }
 
 fn inspect_lte(path: &Path, number: u64, full: bool) -> i32 {
@@ -358,47 +310,6 @@ fn sku_profile_summary(profile: &Profile, tier: Option<&str>) -> String {
     s
 }
 
-struct MapCarrier {
-    name: String,
-    index: Option<u64>,
-    countries: Vec<String>,
-}
-
-impl MapCarrier {
-    fn to_node(&self) -> KdlNode {
-        let mut node = KdlNode::new("carrier");
-        node.push(KdlEntry::new_prop("name", self.name.as_str()));
-        opt_int_prop(&mut node, "index", self.index.map(i128::from));
-        node.ensure_children()
-            .nodes_mut()
-            .push(str_list_node("countries", &self.countries));
-        node
-    }
-}
-
-struct MappingKdl {
-    file: String,
-    kind: String,
-    carrier: Vec<MapCarrier>,
-}
-
-impl MappingKdl {
-    fn to_kdl(&self) -> String {
-        let mut node = KdlNode::new(self.kind.as_str());
-        node.push(KdlEntry::new_prop("file", self.file.as_str()));
-        node.push(KdlEntry::new_prop("type", self.kind.as_str()));
-        if !self.carrier.is_empty() {
-            let kids = node.ensure_children();
-            for c in &self.carrier {
-                kids.nodes_mut().push(c.to_node());
-            }
-        }
-        let mut doc = KdlDocument::new();
-        doc.nodes_mut().push(node);
-        finish_doc(doc)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::sku_profile_summary;
@@ -439,67 +350,5 @@ mod tests {
         assert_eq!(family_short(Family::B), "B");
         assert_eq!(tier_short(Tier::Main), "main");
         assert_eq!(tier_short(Tier::Alt), "alt");
-    }
-
-    fn caps_bytes() -> Vec<u8> {
-        use crate::proto::{ComboGroup, UeCaps, combo_group, combo_group::combo::SubBlock};
-        use prost::Message;
-        UeCaps {
-            version: 874_888_686,
-            combo_groups: vec![ComboGroup {
-                combo_header: None,
-                combo: vec![combo_group::Combo {
-                    bitmask: Some(0),
-                    sub_blocks: vec![SubBlock {
-                        band: 10078,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        ..Default::default()
-                    }],
-                }],
-            }],
-            ..Default::default()
-        }
-        .encode_to_vec()
-    }
-
-    #[test]
-    fn inspect_kdl_readable_file_exits_zero_even_when_ambiguous() {
-        // R8 history: 3347 * 3539 is divisible by two anchors → ambiguous. Under the
-        // one-file-slice shape, ambiguity is no longer a --kdl-level exit condition
-        // (the diagnostic envelope that carried it is gone — the text report has it);
-        // a readable file with an ambiguous NUMBER still exits 0.
-        let dir = std::env::temp_dir().join(format!("uecaps-r8-kdl-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let number = 3347u64 * 3539;
-        let base = format!("VZW_{number}.binarypb");
-        let path = dir.join(&base);
-        std::fs::write(&path, caps_bytes()).unwrap();
-
-        let (_text, code) = super::inspect_kdl(&path, &dir, &base).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(
-            code, 0,
-            "a readable carrier file with an ambiguous NUMBER still exits 0; \
-             the diagnostic moves to the text report"
-        );
-    }
-
-    #[test]
-    fn inspect_kdl_unreadable_carrier_exits_nonzero() {
-        let dir = std::env::temp_dir().join(format!("uecaps-kdl-bad-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let base = "VZW_3616442437.binarypb";
-        let path = dir.join(base);
-        // Truncated field 3 — UeCaps::decode fails.
-        std::fs::write(&path, [0x1a, 0x05, 0x01]).unwrap();
-
-        let (text, code) = super::inspect_kdl(&path, &dir, base).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(code, 1, "an unreadable file must exit 1");
-        assert!(
-            text.starts_with("version 1") && !text.contains("combo"),
-            "unreadable file yields version-only output: {text}"
-        );
     }
 }

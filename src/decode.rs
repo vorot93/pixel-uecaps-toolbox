@@ -256,4 +256,20 @@ mod tests {
 
         assert_eq!(code, 0);
     }
+
+    #[test]
+    fn missing_file_is_a_hard_error() {
+        // The path is never written. A recognised filename reaches the `std::fs::read`
+        // in `render`'s body, which must propagate a hard error via `?` rather than
+        // let a nonexistent file decode as an empty (and therefore valid) protobuf.
+        let dir = scratch("missing");
+        let path = dir.join("VZW_3616442437.binarypb");
+        let result = render(&path, None);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            result.is_err(),
+            "a nonexistent file must not decode as empty bytes"
+        );
+    }
 }

@@ -39,13 +39,6 @@ pub fn encode_bytes(input: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(map.encode_to_vec())
 }
 
-/// `mapping decode`: stdin (binarypb) -> stdout (KDL).
-pub fn decode() -> anyhow::Result<i32> {
-    let out = decode_bytes(&read_stdin()?)?;
-    write_stdout(&out)?;
-    Ok(0)
-}
-
 /// `mapping encode`: stdin (KDL) -> stdout (binarypb).
 pub fn encode() -> anyhow::Result<i32> {
     let out = encode_bytes(&read_stdin()?)?;
