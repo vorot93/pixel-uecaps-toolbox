@@ -184,11 +184,14 @@ rest".
    - Flatten the `combo_groups` nesting — group packing, combo order, and masks are
      provenance, not payload.
    - Convert each combo to a `RawNrPayload`: the five `ComboHeader` header fields plus its
-     components, resolving each component's leading selector byte against the *source
-     file's own* feature lists (nonzero and `1..=len`: embed that record's raw values —
-     with presence, so a referenced all-absent record stays a real identity — and drop the
-     selector; absent/`0`/out-of-range, e.g. `[0, 2]`: keep the exact bytes as opaque
-     selector-only data). No later stage sees per-file feature lists again.
+     components, resolving each component's whole per-CC selector array against the
+     *source file's own* feature lists, **all-or-nothing** (every byte nonzero and in
+     `1..=len`: embed each record's raw values — with presence, so a referenced all-absent
+     record stays a real identity — and drop the selectors). If any byte fails, the array
+     is unresolved, and only the **all-zero placeholder** may survive that way: a nonzero
+     unresolvable selector such as `[0, 2]` is a hard error at this boundary
+     (`resolve_or_placeholder`, `src/raw_nr.rs`), not retained opaque data. No later stage
+     sees per-file feature lists again.
    - Sort components by their full raw key (`RawSubBlockKey`) — NR component order is
      normalized away (LTE order is significant; step 6).
    - Deduplicate within the file by `RawNrPayloadKey`: the header fields plus the sorted
@@ -561,8 +564,11 @@ be stored:
   catalogs. Decode resolves a component's whole per-CC selector-byte array
   **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
-  fails, the entire raw array stays unresolved selector-only data (`[0, 2]` and `[2, 99]`
-  both stay raw). Decode then deduplicates and sorts each catalog by complete raw field
+  fails, the entire raw array stays unresolved (`[0, 2]` and `[2, 99]` both fail to
+  resolve). `resolve_all` itself only reports that; the decode boundary that consumes it
+  (`resolve_or_placeholder`) then **rejects** any unresolved array that is not the
+  all-zero placeholder, so neither `[0, 2]` nor `[2, 99]` can survive decode as raw
+  bytes. Decode then deduplicates and sorts each catalog by complete raw field
   identity. A referenced all-absent record remains a real identity; every unreferenced
   input record is ignored, whether default, explicit-zero/false, or value-bearing. A
   sub-block node's `dl-feature`/`ul-feature` properties are **repeated**, one canonical
@@ -584,12 +590,17 @@ be stored:
   global catalogs may exceed 255 records, but one generated file may use at most 255
   records independently in each direction.
 - Selector-only bytes remain exact, and the only one that can reach generation is the
-  all-zero placeholder. A nonzero unresolvable selector is rejected upstream at both
-  entry points — `resolve_or_placeholder` on decode and `ensure_selector_resolved` on
-  `patch create` — so generation no longer re-checks it. The historical hazard this
-  guarded against still stands as a rule for any future change here: inserting default
-  filler to reserve a selector's index would make a previously out-of-range byte resolve
-  and silently change its meaning, so filler or reserved-slot generation must not return.
+  all-zero placeholder — the KDL source format cannot express anything else.
+  `read_sub_block` (`src/compiler/kdl_source.rs`) rebuilds a direction's per-CC ids with
+  `reconstruct_placeholder_ids`, which returns `[0; cc_count]` and nothing else; the
+  removed `dl-cc-id`/`ul-cc-id` escape hatches have no replacement, and the strict reader
+  rejects any stray property. Generation therefore no longer re-checks the collision case.
+  (Decode and `patch create` fail closed on a nonzero unresolvable selector too, via
+  `resolve_or_placeholder` and `ensure_selector_resolved`, but those govern their own
+  pipelines and are not what protects generation.) The hazard the removed check guarded
+  against still stands as a rule for any future change here: inserting default filler to
+  reserve a selector's index would make a previously out-of-range byte resolve and
+  silently change its meaning, so filler or reserved-slot generation must not return.
 
 NR compiler fidelity is canonical modeled-value equality, not protobuf byte identity.
 Feature-list layout, selectors, group packing, component order, and canonical proto3

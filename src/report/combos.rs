@@ -32,10 +32,12 @@ fn cc_class(dl: Option<i32>, ul: Option<i32>) -> String {
 pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 
 /// The band label for a component of a **known** radio kind: `n<num>` (NR) or `B<num>`
-/// (E-UTRA). The crate-wide single source of the band-prefix convention — both `band_label`
-/// (which *infers* the kind from `NR_BAND_OFFSET`) and every kind-*asserting* caller
-/// (`RawSubBlock::band_label`, provision's band-drop labels, `patch filter`'s LTE matching) route
-/// through it, so the `n`/`B` convention lives in exactly one place (C-band).
+/// (E-UTRA). The single source of the band-prefix convention for every caller that can see
+/// *both* kinds — `band_label` (which *infers* the kind from `NR_BAND_OFFSET`),
+/// `RawSubBlock::band_label` and all of `raw_nr`'s validation/guard messages, provision's
+/// band-drop labels, and `patch filter`'s LTE matching (C-band). Display code that is
+/// statically single-kind — `report::lte` and `patch::show`'s `render_lte` — formats `B`
+/// inline instead; that is correct there because no NR component can reach it.
 pub(crate) fn band_label_for(is_nr: bool, band: i32) -> String {
     if is_nr {
         format!("n{band}")
