@@ -20,7 +20,7 @@ use crate::{
         plmn_to_node, push_repeated_int_prop, read_plmn, read_str_list, str_list_node,
         str_to_cckind,
     },
-    raw_nr::{SubBlockKind, cc_count},
+    raw_nr::SubBlockKind,
 };
 
 // ---- NR document mapping ----
@@ -446,20 +446,6 @@ fn read_selection(node: &KdlNode) -> Result<SelectionRect> {
     Ok(SelectionRect { carriers, skus })
 }
 
-/// Reconstruct the omitted all-zero placeholder (see `write_raw_cc_ids` above) when a
-/// direction's bandwidth class is present: `bw_class` supplies the CC count to fill with
-/// zero bytes. `None` when there is no bandwidth class to derive a count from (no data for
-/// that direction at all — the pre-omission `None` state).
-fn reconstruct_placeholder_ids(
-    kind: SubBlockKind,
-    bw_class: Option<i32>,
-) -> Result<Option<Vec<u8>>> {
-    match bw_class {
-        Some(bw) => Ok(Some(vec![0u8; cc_count(kind, bw)?])),
-        None => Ok(None),
-    }
-}
-
 fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     let kind = str_to_cckind(node.name().value(), "NR/EN-DC component kind")?;
     let mut r = NodeReader::new(node);
@@ -489,20 +475,11 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     };
     let srs_tx_switch = r.opt_int::<i32>("srs-tx-switch")?;
     r.finish()?; // now rejects any stray dl-cc-id / *-feature-index as unknown properties
-    // An NR unresolved selector is only ever the all-zero placeholder, which `cc_to_node` no
-    // longer emits, so an empty feature list unambiguously means "reconstruct the placeholder".
-    // `dl_bw_class` is always present on a real component; UL only reconstructs once
-    // `ul_bw_class >= 1` (`ul_bw_class == 0` means UL disabled — no UL data at all).
-    let dl_feature_per_cc_ids = dl_feature
-        .is_empty()
-        .then(|| reconstruct_placeholder_ids(kind, dl_bw_class))
-        .transpose()?
-        .flatten();
-    let ul_feature_per_cc_ids = ul_feature
-        .is_empty()
-        .then(|| reconstruct_placeholder_ids(kind, ul_bw_class.filter(|&bw| bw >= 1)))
-        .transpose()?
-        .flatten();
+    // The raw selector bytes are NOT reconstructed here. An unresolved direction only ever
+    // carries the all-zero placeholder, which is a pure function of `kind` + `bw_class`, so
+    // `cc_to_node` omits it and `NrSourceSubBlock::resolve` (the single build-path boundary
+    // that needs the bytes) re-derives it. Carrying it on the source model would let a
+    // component hold a catalog reference and a raw selector for the same direction.
     Ok(NrSourceSubBlock {
         kind,
         band,
@@ -512,8 +489,6 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
         ul_feature_index,
         dl_feature,
         ul_feature,
-        dl_feature_per_cc_ids,
-        ul_feature_per_cc_ids,
         srs_tx_switch,
     })
 }
@@ -842,8 +817,6 @@ mod nr_tests {
                     ul_feature_index: None,
                     dl_feature: vec![0],
                     ul_feature: vec![],
-                    dl_feature_per_cc_ids: None,
-                    ul_feature_per_cc_ids: None,
                     srs_tx_switch: None,
                 }],
             }],
@@ -875,29 +848,25 @@ mod nr_tests {
     }
 
     #[test]
-    fn nr_sub_block_repeated_features_and_lte_placeholder_ids_round_trip() {
+    fn nr_sub_block_repeated_features_and_lte_placeholder_round_trip() {
         // Two-CC NR sub-block: repeated `dl-feature=` reads back as one usize per CC.
-        // LTE sub-block: no ids at all in source — the writer's all-zero-placeholder
-        // omission means the reader must derive `dl_cc_ids = [0; cc_count(Lte, 1)]`
-        // (== `[0]`) purely from `dl-bw-class=1`, and re-emitting must not resurrect the
-        // ids (byte-identical fixed point).
+        // LTE sub-block: no per-CC references at all. The all-zero placeholder selector
+        // that the binary carries for it is NOT part of the source model — the reader
+        // leaves it out entirely (`NrSourceSubBlock::resolve` derives it from
+        // `dl-bw-class=1` on the build path; see `resolve_derives_the_omitted_placeholder`
+        // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
+        // point.
         let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr 48 dl-bw-class=2 dl-feature=5 dl-feature=8\n    lte 66 dl-bw-class=1\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         assert_eq!(cc[0].kind, SubBlockKind::Nr);
         assert_eq!(cc[0].dl_feature, vec![5, 8], "repeated dl-feature");
-        assert!(cc[0].dl_feature_per_cc_ids.is_none());
         assert_eq!(cc[1].kind, SubBlockKind::Lte);
         assert!(cc[1].dl_feature.is_empty());
         assert_eq!(
-            cc[1].dl_feature_per_cc_ids,
-            Some(vec![0]),
-            "LTE all-zero ids derived from cc_count(Lte, 1) despite no dl-cc-id in source"
-        );
-        assert_eq!(
             nr_to_kdl(&doc).unwrap(),
             text,
-            "re-emitting must omit the derived LTE placeholder again (fixed point)"
+            "re-emitting must not resurrect the omitted LTE placeholder (fixed point)"
         );
     }
 

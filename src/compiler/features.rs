@@ -7,7 +7,7 @@ use crate::{
         ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
         combo_group::combo::SubBlock as ProtoSubBlock,
     },
-    raw_nr::{RawNrPayload, RawSubBlock, SubBlockKind},
+    raw_nr::{RawNrPayload, RawSubBlock, SubBlockKind, cc_count},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,6 +79,18 @@ impl From<&UlFeatureSource> for ShannonFeatureSetUlPerCcNr {
     }
 }
 
+/// One sub-block as the KDL source spells it: proto field 6/7 as 1-based *references* into
+/// `nr.kdl`'s global feature catalogs rather than resolved values, and no raw selector bytes
+/// at all.
+///
+/// Exactly one representation per direction is populated, discriminated by [`kind`](Self::kind):
+/// an `lte` node carries the scalar `dl_feature_index` (proto 4/5, `parseLteFeatureIndex`) and
+/// never a catalog list; an `nr` node carries the per-CC `dl_feature` list and never an index
+/// (NR derives proto 4/5 from its feature set on build). The raw all-zero placeholder selector
+/// is deliberately NOT a field: it is a pure function of `kind` + `bw_class`, so KDL omits it
+/// and [`resolve`](Self::resolve) materializes it via [`placeholder_ids`]. Keeping it here
+/// would let the type express a component with a catalog reference *and* a raw selector for
+/// the same direction — a state the source format has no way to spell.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NrSourceSubBlock {
     pub(crate) kind: SubBlockKind,
@@ -89,8 +101,6 @@ pub(crate) struct NrSourceSubBlock {
     pub(crate) ul_feature_index: Option<i32>,
     pub(crate) dl_feature: Vec<usize>,
     pub(crate) ul_feature: Vec<usize>,
-    pub(crate) dl_feature_per_cc_ids: Option<Vec<u8>>,
-    pub(crate) ul_feature_per_cc_ids: Option<Vec<u8>>,
     pub(crate) srs_tx_switch: Option<i32>,
 }
 
@@ -297,14 +307,9 @@ impl FeatureCatalogs {
             ul_bw_class: component.ul_bw_class,
             dl_feature_index: component.source_dl_feature_index(),
             ul_feature_index: component.source_ul_feature_index(),
-            dl_feature_per_cc_ids: dl_feature
-                .is_empty()
-                .then(|| component.dl_cc_ids.clone())
-                .flatten(),
-            ul_feature_per_cc_ids: ul_feature
-                .is_empty()
-                .then(|| component.ul_cc_ids.clone())
-                .flatten(),
+            // `dl_cc_ids`/`ul_cc_ids` are intentionally dropped: an unresolved direction only
+            // ever carries the all-zero placeholder, which the source omits and `resolve`
+            // re-derives from `bw_class`.
             dl_feature,
             ul_feature,
             srs_tx_switch: component.srs_tx_switch,
@@ -325,16 +330,21 @@ fn resolve_index<T: Clone>(index: usize, records: &[T], direction: &str) -> anyh
     })
 }
 
+/// The all-zero placeholder selector a direction carries when it references no catalog
+/// record: `bw_class` supplies the CC count to fill with zero bytes. KDL omits these bytes
+/// because they are fully derivable, so the build path materializes them here instead of
+/// storing them on [`NrSourceSubBlock`]. `None` when there is no bandwidth class to derive a
+/// count from — an absent DL class, or UL disabled (the caller filters `ul_bw_class == 0`),
+/// both of which mean the direction carries no proto field 6/7 at all.
+fn placeholder_ids(kind: SubBlockKind, bw_class: Option<i32>) -> anyhow::Result<Option<Vec<u8>>> {
+    match bw_class {
+        Some(bw) => Ok(Some(vec![0u8; cc_count(kind, bw)?])),
+        None => Ok(None),
+    }
+}
+
 impl NrSourceSubBlock {
     pub(crate) fn resolve(&self, catalogs: &FeatureCatalogs) -> anyhow::Result<RawSubBlock> {
-        ensure!(
-            self.dl_feature.is_empty() || self.dl_feature_per_cc_ids.is_none(),
-            "component has both dl_feature and dl_feature_per_cc_ids"
-        );
-        ensure!(
-            self.ul_feature.is_empty() || self.ul_feature_per_cc_ids.is_none(),
-            "component has both ul_feature and ul_feature_per_cc_ids"
-        );
         let dl = self
             .dl_feature
             .iter()
@@ -358,8 +368,24 @@ impl NrSourceSubBlock {
             ul_bw_class: self.ul_bw_class,
             dl_feature_index: self.dl_feature_index,
             ul_feature_index: self.ul_feature_index,
-            dl_cc_ids: self.dl_feature_per_cc_ids.clone(),
-            ul_cc_ids: self.ul_feature_per_cc_ids.clone(),
+            // Re-materialize the omitted placeholder for a direction that resolves to no
+            // catalog record. `with_resolved_feature_sets` below clears it again for a
+            // direction that did resolve, so computing it unconditionally would be wasted —
+            // gate on the empty list, exactly as the KDL reader used to.
+            dl_cc_ids: self
+                .dl_feature
+                .is_empty()
+                .then(|| placeholder_ids(self.kind, self.dl_bw_class))
+                .transpose()?
+                .flatten(),
+            // `ul_bw_class == 0` means UL disabled: no per-CC data at all, so no placeholder
+            // (as opposed to DL, which has no "disabled" class).
+            ul_cc_ids: self
+                .ul_feature
+                .is_empty()
+                .then(|| placeholder_ids(self.kind, self.ul_bw_class.filter(|&bw| bw >= 1)))
+                .transpose()?
+                .flatten(),
             srs_tx_switch: self.srs_tx_switch,
             ..Default::default()
         }
@@ -676,6 +702,73 @@ mod tests {
             }),
             "raw dl_cc_ids must be masked from identity once the feature set is present"
         );
+    }
+
+    #[test]
+    fn resolve_derives_the_omitted_placeholder() {
+        // The source format spells no raw selector bytes at all, so `resolve` is the single
+        // place that puts proto field 6/7 back for a direction referencing no catalog
+        // record: the all-zero placeholder, `cc_count(kind, bw_class)` bytes wide.
+        let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
+
+        // LTE never carries per-CC references; `cc_count(Lte, 1) == 1`.
+        let lte = NrSourceSubBlock {
+            kind: SubBlockKind::Lte,
+            band: 66,
+            dl_bw_class: Some(1),
+            dl_feature_index: Some(3),
+            ..Default::default()
+        }
+        .resolve(&catalogs)
+        .unwrap();
+        assert_eq!(lte.dl_cc_ids, Some(vec![0]));
+        assert_eq!(
+            lte.ul_cc_ids, None,
+            "no ul_bw_class means no UL data at all"
+        );
+
+        // NR class 2 aggregates 2 CCs, so the placeholder is two bytes wide. `ul_bw_class`
+        // 0 is UL-disabled — the one case that must stay absent rather than placeholdered.
+        let nr = NrSourceSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 48,
+            dl_bw_class: Some(2),
+            ul_bw_class: Some(0),
+            ..Default::default()
+        }
+        .resolve(&catalogs)
+        .unwrap();
+        assert_eq!(nr.dl_cc_ids, Some(vec![0, 0]));
+        assert_eq!(nr.ul_cc_ids, None, "ul_bw_class 0 means UL disabled");
+
+        // A direction that does resolve carries values and no placeholder.
+        let resolved = NrSourceSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 78,
+            dl_bw_class: Some(1),
+            dl_feature: vec![1],
+            ..Default::default()
+        }
+        .resolve(&catalogs)
+        .unwrap();
+        assert_eq!(resolved.dl_cc_ids, None);
+        assert_eq!(resolved.dl_cc_count(), 1);
+    }
+
+    #[test]
+    fn resolve_rejects_a_bw_class_with_no_known_cc_count() {
+        // Fail closed rather than mis-derive a placeholder length: the derivation is only
+        // as safe as `cc_count`, so an unobserved class must error here too.
+        let error = NrSourceSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 78,
+            dl_bw_class: Some(99),
+            ..Default::default()
+        }
+        .resolve(&FeatureCatalogs::default())
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown Nr bw_class 99"), "{error}");
     }
 
     #[test]

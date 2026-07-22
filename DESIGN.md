@@ -234,7 +234,7 @@ rest".
    [Applicability relation and canonical rectangles](#applicability-relation-and-canonical-rectangles))
    and each resolved CC rewritten as a repeated 1-based global catalog reference
    (`dl-feature=`/`ul-feature=`, one per CC; a component with no resolved feature set carries
-   nothing — the all-zero placeholder is re-derived on read, and the raw `dl-cc-id=`/`ul-cc-id=`
+   nothing — the all-zero placeholder is re-derived on build, and the raw `dl-cc-id=`/`ul-cc-id=`
    selector fallback was removed). LTE: the ID-keyed file whitelist with stored
    `fingerprint`/`bitmask`, plus the step-6 global combo order.
 8. **Serialize, reparse, require a fixed point.** The assembled documents pass through
@@ -576,14 +576,23 @@ be stored:
   one `dl-feature=N`). The raw `dl-cc-id=`/`ul-cc-id=` selector fallback for unresolved
   components was removed (proto field 6/7 is still carried in the model): a component with
   no resolved feature set surfaces nothing for that direction.
-- **LTE placeholder per-CC ids are omitted, not stored.** An LTE sub-block's per-CC
-  selector bytes are always the all-zero placeholder in the corpus (LTE has no per-CC
-  feature catalog entry), fully redundant with `bw_class`/`cc_count`. The compiler emitter
-  (`cc_to_node`, `src/compiler/kdl_source.rs`) never surfaces per-CC selector bytes at all
-  (the raw `dl-cc-id=`/`ul-cc-id=` fallback was removed); the reader (`read_sub_block`, via
-  `reconstruct_placeholder_ids`) re-derives `[0; cc_count]` when a direction's
-  `dl-feature=`/`ul-feature=` list is empty. `ul_bw_class == 0` (UL disabled)
-  short-circuits the UL side to no data at all, never a derived placeholder.
+- **LTE placeholder per-CC ids are omitted, not stored — and not modeled.** An LTE
+  sub-block's per-CC selector bytes are always the all-zero placeholder in the corpus (LTE
+  has no per-CC feature catalog entry), fully redundant with `bw_class`/`cc_count`. The
+  compiler emitter (`cc_to_node`, `src/compiler/kdl_source.rs`) never surfaces per-CC
+  selector bytes at all (the raw `dl-cc-id=`/`ul-cc-id=` fallback was removed), and the
+  reader does not reconstruct them either: **the source model carries no selector-byte
+  field.** `NrSourceSubBlock` (`src/compiler/features.rs`) holds only catalog *references*,
+  and `NrSourceSubBlock::resolve` — the single boundary that turns source into a
+  `RawSubBlock` bound for the binary — materializes `[0; cc_count]` via `placeholder_ids`
+  when a direction's `dl-feature=`/`ul-feature=` list is empty. `ul_bw_class == 0` (UL
+  disabled) short-circuits the UL side to no data at all, never a derived placeholder.
+  Deriving at `resolve` rather than at parse is what keeps the three per-direction
+  encodings from coexisting on one type: a source sub-block can hold the LTE scalar index
+  (`dl_feature_index`, proto 4/5) or the NR per-CC reference list (`dl_feature`, proto 6/7)
+  — discriminated by `kind` — and never raw selector bytes for a direction that already has
+  a reference. That state was previously representable and guarded only by a runtime
+  `ensure!`; it is now unrepresentable, and the guard is gone.
 - Generation filters the global catalogs, in canonical order, into compact per-file DL
   and UL lists containing only records used by that carrier/SKU. Resolved components get
   one 1-based local selector byte per CC (a CC-count-long array, not a single byte). The
@@ -591,10 +600,10 @@ be stored:
   records independently in each direction.
 - Selector-only bytes remain exact, and the only one that can reach generation is the
   all-zero placeholder — the KDL source format cannot express anything else.
-  `read_sub_block` (`src/compiler/kdl_source.rs`) rebuilds a direction's per-CC ids with
-  `reconstruct_placeholder_ids`, which returns `[0; cc_count]` and nothing else; the
-  removed `dl-cc-id`/`ul-cc-id` escape hatches have no replacement, and the strict reader
-  rejects any stray property. Generation therefore no longer re-checks the collision case.
+  `NrSourceSubBlock::resolve` (`src/compiler/features.rs`) builds a direction's per-CC ids
+  with `placeholder_ids`, which returns `[0; cc_count]` and nothing else; the removed
+  `dl-cc-id`/`ul-cc-id` escape hatches have no replacement, and the strict reader rejects
+  any stray property. Generation therefore no longer re-checks the collision case.
   (Decode and `patch create` fail closed on a nonzero unresolvable selector too, via
   `resolve_or_placeholder` and `ensure_selector_resolved`, but those govern their own
   pipelines and are not what protects generation.) The hazard the removed check guarded

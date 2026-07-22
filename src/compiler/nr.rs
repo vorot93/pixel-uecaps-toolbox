@@ -737,9 +737,9 @@ pub(crate) fn nr_source_from_one_file(
                     } else {
                         (SubBlockKind::Lte, raw_band)
                     };
-                    let (dl_feature, dl_feature_per_cc_ids) =
+                    let dl_feature =
                         resolve_selector_all(component.dl_feature_per_cc_ids.as_deref(), dl_len);
-                    let (ul_feature, ul_feature_per_cc_ids) =
+                    let ul_feature =
                         resolve_selector_all(component.ul_feature_per_cc_ids.as_deref(), ul_len);
                     NrSourceSubBlock {
                         kind,
@@ -768,8 +768,6 @@ pub(crate) fn nr_source_from_one_file(
                         // --kdl` too.
                         dl_feature,
                         ul_feature,
-                        dl_feature_per_cc_ids,
-                        ul_feature_per_cc_ids,
                         srs_tx_switch: component.srstxswitch,
                     }
                 })
@@ -788,27 +786,27 @@ pub(crate) fn nr_source_from_one_file(
     (dl, ul, combos)
 }
 
-/// Resolve a component's selector bytes against the per-file catalog: EVERY byte in
-/// `1..=len` embeds the array as 1-based catalog indices (selectors dropped) iff ALL bytes
-/// resolve — a non-uniform `[22, 23]` becomes two distinct catalog references, matching
-/// `report::combos::resolve_all`'s all-or-nothing semantics; otherwise the raw bytes are
-/// kept verbatim as opaque selector-only data (empty indices).
-fn resolve_selector_all(ids: Option<&[u8]>, len: usize) -> (Vec<usize>, Option<Vec<u8>>) {
+/// Resolve a component's selector bytes into 1-based catalog references for the source
+/// document: EVERY byte in `1..=len` yields one index per CC iff ALL bytes resolve — a
+/// non-uniform `[22, 23]` becomes two distinct catalog references, matching
+/// `report::combos::resolve_all`'s all-or-nothing semantics. An unresolved selector yields
+/// no references and the bytes are dropped: the source format cannot spell them, and the
+/// only unresolved form a real file carries is the all-zero placeholder, which
+/// `NrSourceSubBlock::resolve` re-derives from `bw_class` on the way back. (A non-placeholder
+/// unresolvable selector is corpus-impossible and rejected outright by the strict decode
+/// boundary, `RawSubBlock::from_proto_sub_block`; this lenient `inspect --kdl` path has
+/// always dropped it from the emitted text, since `cc_to_node` never wrote raw bytes.)
+fn resolve_selector_all(ids: Option<&[u8]>, len: usize) -> Vec<usize> {
     match ids {
-        Some(bytes) if !bytes.is_empty() => {
-            let resolved: Option<Vec<usize>> = bytes
-                .iter()
-                .map(|&b| {
-                    let k = b as usize;
-                    (1..=len).contains(&k).then_some(k)
-                })
-                .collect();
-            match resolved {
-                Some(indices) => (indices, None),
-                None => (Vec::new(), Some(bytes.to_vec())),
-            }
-        }
-        _ => (Vec::new(), None),
+        Some(bytes) if !bytes.is_empty() => bytes
+            .iter()
+            .map(|&b| {
+                let k = b as usize;
+                (1..=len).contains(&k).then_some(k)
+            })
+            .collect::<Option<Vec<usize>>>()
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -1224,8 +1222,6 @@ mod tests {
         assert_eq!(nr.ul_features[0].max_scs, Some(4));
         assert_eq!(nr.combo[0].sub_blocks[0].dl_feature, vec![1]);
         assert_eq!(nr.combo[0].sub_blocks[0].ul_feature, vec![1]);
-        assert_eq!(nr.combo[0].sub_blocks[0].dl_feature_per_cc_ids, None);
-        assert_eq!(nr.combo[0].sub_blocks[0].ul_feature_per_cc_ids, None);
     }
 
     #[test]
@@ -2068,7 +2064,6 @@ mod tests {
         assert_eq!(cc.kind, crate::raw_nr::SubBlockKind::Nr);
         assert_eq!(cc.band, 78);
         assert_eq!(cc.dl_feature, vec![1]);
-        assert!(cc.dl_feature_per_cc_ids.is_none());
     }
 
     #[test]
@@ -2110,6 +2105,5 @@ mod tests {
         assert_eq!(dl.len(), 2);
         let cc = &combos[0].sub_blocks[0];
         assert_eq!(cc.dl_feature, vec![1, 2], "both CCs resolved, not just CC0");
-        assert!(cc.dl_feature_per_cc_ids.is_none());
     }
 }
