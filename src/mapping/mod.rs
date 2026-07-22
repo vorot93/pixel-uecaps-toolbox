@@ -6,7 +6,7 @@ mod kdl_format;
 mod plmn;
 mod schema;
 
-pub use edit::{add_plmns_strict, decode, encode, inject};
+pub use edit::{add_plmns_strict, decode, decode_bytes, encode, encode_bytes, inject};
 pub use error::Error;
 pub use plmn::Plmn;
 pub(crate) use schema::{
