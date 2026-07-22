@@ -353,8 +353,8 @@ fn legend_input(dir: &Path, carrier: &str, plmns: &[String]) -> anyhow::Result<(
 /// A band number outside `u16` is definitely unsupported; it is never wrapped via `as`
 /// (R10), and the drop label reports the original number so the user sees what they wrote.
 fn nr_cc_unsupported(cc: &PatchSubBlock, bands: &Bands) -> Option<String> {
-    let is_nr = matches!(cc.kind, SubBlockKind::Nr);
-    let supported = u16::try_from(cc.band)
+    let is_nr = matches!(cc.kind(), SubBlockKind::Nr);
+    let supported = u16::try_from(cc.band())
         .ok()
         .map(|n| {
             if is_nr {
@@ -364,7 +364,7 @@ fn nr_cc_unsupported(cc: &PatchSubBlock, bands: &Bands) -> Option<String> {
             }
         })
         .unwrap_or(false);
-    (!supported).then(|| band_label_for(is_nr, cc.band))
+    (!supported).then(|| band_label_for(is_nr, cc.band()))
 }
 
 /// The pinned "dropped entry" warning:
@@ -1144,11 +1144,7 @@ mod tests {
     #[test]
     fn nr_cc_unsupported_flags_missing_bands() {
         let bands = PIXEL_BANDS.get("GUL82").unwrap();
-        let cc = |kind, band| PatchSubBlock {
-            kind,
-            band,
-            ..Default::default()
-        };
+        let cc = |kind, band| PatchSubBlock::bare(kind, band, None, None);
         assert_eq!(nr_cc_unsupported(&cc(SubBlockKind::Nr, 78), bands), None); // n78 supported
         assert_eq!(
             nr_cc_unsupported(&cc(SubBlockKind::Nr, 79), bands),
@@ -1166,11 +1162,7 @@ mod tests {
         // A band number outside u16 is definitely unsupported; the drop label must report
         // the original number, not the `as u16`-wrapped value (R10, mirroring the LTE side).
         let bands = PIXEL_BANDS.get("GUL82").unwrap();
-        let cc = |kind, band| PatchSubBlock {
-            kind,
-            band,
-            ..Default::default()
-        };
+        let cc = |kind, band| PatchSubBlock::bare(kind, band, None, None);
         // 100_000 as u16 == 34464; the label must say n100000, not n34464.
         assert_eq!(
             nr_cc_unsupported(&cc(SubBlockKind::Nr, 100_000), bands),

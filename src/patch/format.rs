@@ -6,7 +6,7 @@ use crate::{
     },
     proto::{LteCombo, LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     report::{
-        combos::{Combo, NR_BAND_OFFSET, SubBlock, combo_key},
+        combos::{Combo, NR_BAND_OFFSET, SubBlock, band_label_for, combo_key},
         lte::lte_combo_key,
     },
 };
@@ -14,7 +14,10 @@ use anyhow::Context;
 use kdl::{KdlDocument, KdlEntry, KdlNode};
 use std::collections::BTreeSet;
 
-pub(crate) use crate::raw_nr::{RawSubBlock as PatchSubBlock, SubBlockKind};
+pub(crate) use crate::raw_nr::{
+    LteDirection, NrDirection, PerCc, RawLteSubBlock, RawNrSubBlock, RawSubBlock as PatchSubBlock,
+    SubBlockKind,
+};
 
 /// Patch discriminator, the top-level `kind nr`/`kind lte` node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,10 +214,10 @@ fn nr_combo_to_node(combo: &PatchCombo) -> KdlNode {
 }
 
 fn sub_block_to_node(cc: &PatchSubBlock) -> KdlNode {
-    let mut node = KdlNode::new(cckind_to_str(cc.kind));
+    let mut node = KdlNode::new(cckind_to_str(cc.kind()));
     // Leading positional `band` (mirrors compiler `cc_to_node`).
-    node.push(KdlEntry::new(i128::from(cc.band)));
-    opt_int_prop(&mut node, "dl-bw-class", cc.dl_bw_class.map(i128::from));
+    node.push(KdlEntry::new(i128::from(cc.band())));
+    opt_int_prop(&mut node, "dl-bw-class", cc.dl_bw_class().map(i128::from));
     // Per-kind spelling of the proto-4/5 index — mirrors `compiler::kdl_source::cc_to_node`.
     // `lte` uses scalar `dl-feature`/`ul-feature` (patch NR features are `dl-cc`/`ul-cc`
     // children, so these names are free); `ul-feature=0` is omitted (LTE always-`Some`, reader
@@ -222,33 +225,41 @@ fn sub_block_to_node(cc: &PatchSubBlock) -> KdlNode {
     // `dl-feature-index`/`ul-feature-index` source override was dropped (proto field kept).
     // Emitted direction-grouped (mirrors `cc_to_node`): `dl-bw-class`, `dl-feature`,
     // `ul-bw-class`, `ul-feature`, so DL and UL each read as a contiguous group.
-    if cc.kind == SubBlockKind::Lte {
-        opt_int_prop(&mut node, "dl-feature", cc.dl_feature_index.map(i128::from));
+    if let PatchSubBlock::Lte(lte) = cc {
+        opt_int_prop(
+            &mut node,
+            "dl-feature",
+            lte.dl.feature_index.map(i128::from),
+        );
     }
     // Corpus-verified always-`Some` (Task 8 omit-when-0) — see `cc_to_node`'s counterpart in
     // `compiler::kdl_source`.
     opt_int_prop(
         &mut node,
         "ul-bw-class",
-        cc.ul_bw_class.filter(|&v| v != 0).map(i128::from),
+        cc.ul_bw_class().filter(|&v| v != 0).map(i128::from),
     );
-    if cc.kind == SubBlockKind::Lte {
+    if let PatchSubBlock::Lte(lte) = cc {
         opt_int_prop(
             &mut node,
             "ul-feature",
-            cc.ul_feature_index.filter(|&v| v != 0).map(i128::from),
+            lte.ul.feature_index.filter(|&v| v != 0).map(i128::from),
         );
     }
-    opt_int_prop(&mut node, "srs-tx-switch", cc.srs_tx_switch.map(i128::from));
+    opt_int_prop(
+        &mut node,
+        "srs-tx-switch",
+        cc.srs_tx_switch().map(i128::from),
+    );
     // Per-CC feature child nodes are the only per-CC representation now (the raw `dl-cc-id`/
     // `ul-cc-id` selector fallback was dropped): a resolved feature set emits `dl-cc`/`ul-cc`
     // children, an unresolved one emits nothing.
-    if !cc.dl_features.is_empty() || !cc.ul_features.is_empty() {
+    if !cc.dl_features().is_empty() || !cc.ul_features().is_empty() {
         let kids = node.ensure_children();
-        for f in &cc.dl_features {
+        for f in cc.dl_features() {
             kids.nodes_mut().push(dl_cc_to_node(f));
         }
-        for f in &cc.ul_features {
+        for f in cc.ul_features() {
             kids.nodes_mut().push(ul_cc_to_node(f));
         }
     }
@@ -512,7 +523,7 @@ fn read_sub_block(node: &KdlNode) -> anyhow::Result<PatchSubBlock> {
     // `dl-cc`/`ul-cc` child nodes are the only per-CC representation (the raw `dl-cc-id`/
     // `ul-cc-id` selector fallback was dropped — `finish()` now rejects those keys). Unlike
     // the compiler reader, the patch never reconstructs an omitted placeholder: no children
-    // means `dl_cc_ids`/`ul_cc_ids` stay `None`.
+    // means the direction is `PerCc::Absent`.
     let dl_cc_nodes = r.children("dl-cc");
     let ul_cc_nodes = r.children("ul-cc");
     r.finish()?;
@@ -526,19 +537,46 @@ fn read_sub_block(node: &KdlNode) -> anyhow::Result<PatchSubBlock> {
         .map(read_ul_cc)
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(PatchSubBlock {
-        kind,
-        band,
-        dl_bw_class,
-        ul_bw_class,
-        dl_feature_index,
-        ul_feature_index,
-        dl_cc_ids: None,
-        ul_cc_ids: None,
-        srs_tx_switch,
-        dl_features,
-        ul_features,
-    })
+    match kind {
+        SubBlockKind::Lte => {
+            // `dl-cc`/`ul-cc` children and `srs-tx-switch` are NR-only and `RawLteSubBlock`
+            // has nowhere to put them, so reject them at the parse boundary rather than drop
+            // them — this is the old `validate` "carries NR-only fields" check, moved to
+            // where the data still exists.
+            anyhow::ensure!(
+                dl_features.is_empty() && ul_features.is_empty() && srs_tx_switch.is_none(),
+                "LTE component {} carries NR-only fields",
+                band_label_for(false, band)
+            );
+            Ok(RawLteSubBlock {
+                band,
+                dl: LteDirection {
+                    bw_class: dl_bw_class,
+                    feature_index: dl_feature_index,
+                    selector: None,
+                },
+                ul: LteDirection {
+                    bw_class: ul_bw_class,
+                    feature_index: ul_feature_index,
+                    selector: None,
+                },
+            }
+            .into())
+        }
+        SubBlockKind::Nr => Ok(RawNrSubBlock {
+            band,
+            dl: NrDirection {
+                bw_class: dl_bw_class,
+                features: (!dl_features.is_empty()).then_some(PerCc::Resolved(dl_features)),
+            },
+            ul: NrDirection {
+                bw_class: ul_bw_class,
+                features: (!ul_features.is_empty()).then_some(PerCc::Resolved(ul_features)),
+            },
+            srs_tx_switch,
+        }
+        .into()),
+    }
 }
 
 /// One `dl-cc` child node — a single CC's resolved DL feature set. `finish()` rejects any
@@ -637,7 +675,7 @@ pub(crate) fn validate_patch(patch: &Patch) -> anyhow::Result<()> {
             for entry in &p.set {
                 for combo in &entry.combo {
                     for cc in &combo.sub_blocks {
-                        validate_component_band(cc.kind, cc.band)?;
+                        validate_component_band(cc.kind(), cc.band())?;
                     }
                 }
                 let key = set_entry_key(entry)?;
@@ -778,12 +816,9 @@ impl PatchCombo {
             sub_blocks: combo
                 .sub_blocks
                 .iter()
-                .map(|cc| {
-                    let mut pc = PatchSubBlock::from_sub_block(cc);
-                    pc.dl_feature_index = pc.source_dl_feature_index();
-                    pc.ul_feature_index = pc.source_ul_feature_index();
-                    pc
-                })
+                // `from_sub_block` already stores the source-shaped index: LTE keeps its
+                // `parseLteFeatureIndex` value, NR has no index field to normalize away.
+                .map(PatchSubBlock::from_sub_block)
                 .collect(),
         }
     }
@@ -848,19 +883,26 @@ mod tests {
                     group: 0,
                     index: 0,
                     bit_mask: 0,
-                    sub_blocks: vec![PatchSubBlock {
-                        kind: SubBlockKind::Nr,
-                        band: 2,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                            max_bw: Some(40),
-                            max_mimo: Some(2),
-                            max_mod_order: Some(2),
-                            ..Default::default()
-                        }],
-                        ..Default::default()
-                    }],
+                    sub_blocks: vec![
+                        RawNrSubBlock {
+                            band: 2,
+                            dl: NrDirection {
+                                bw_class: Some(1),
+                                features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr {
+                                    max_bw: Some(40),
+                                    max_mimo: Some(2),
+                                    max_mod_order: Some(2),
+                                    ..Default::default()
+                                }])),
+                            },
+                            ul: NrDirection {
+                                bw_class: Some(1),
+                                features: None,
+                            },
+                            srs_tx_switch: None,
+                        }
+                        .into(),
+                    ],
                     ..Default::default()
                 }],
             }],
@@ -903,9 +945,11 @@ mod tests {
             ..Default::default()
         };
         let patch_combo = PatchCombo::from_combo(&combo);
-        assert_eq!(patch_combo.sub_blocks[0].dl_feature_index, None); // omitted
+        // Omitted from the source shape; the binary-bound value is still the derivation.
+        assert_eq!(patch_combo.sub_blocks[0].source_dl_feature_index(), None);
+        assert_eq!(patch_combo.sub_blocks[0].dl_feature_index(), Some(2));
         // Sanity: the inline feature set is still carried so apply can re-derive.
-        assert_eq!(patch_combo.sub_blocks[0].dl_features[0].max_scs, Some(4));
+        assert_eq!(patch_combo.sub_blocks[0].dl_features()[0].max_scs, Some(4));
     }
 
     #[test]
@@ -932,8 +976,8 @@ mod tests {
         assert_eq!(back.delete, vec!["n41A".to_string()]);
         assert_eq!(set_entry_key(&back.set[0]).unwrap(), "n2A");
         assert_eq!(back.set[0].kind, SetKind::Add);
-        assert_eq!(back.set[0].combo[0].sub_blocks[0].kind, SubBlockKind::Nr);
-        assert_eq!(back.set[0].combo[0].sub_blocks[0].band, 2);
+        assert_eq!(back.set[0].combo[0].sub_blocks[0].kind(), SubBlockKind::Nr);
+        assert_eq!(back.set[0].combo[0].sub_blocks[0].band(), 2);
     }
 
     #[test]
@@ -971,7 +1015,7 @@ mod tests {
         let kinds: Vec<SubBlockKind> = p.set[0].combo[0]
             .sub_blocks
             .iter()
-            .map(|cc| cc.kind)
+            .map(|cc| cc.kind())
             .collect();
         assert_eq!(kinds, vec![SubBlockKind::Lte, SubBlockKind::Nr]);
         assert_eq!(set_entry_key(&p.set[0]).unwrap(), "B66A + n77A");
@@ -1075,15 +1119,24 @@ add {
                 kind: SetKind::Add,
                 combo: vec![PatchCombo {
                     bit_mask: 0,
-                    sub_blocks: vec![PatchSubBlock {
-                        kind: SubBlockKind::Nr,
-                        band: 78,
-                        dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                            max_scs: Some(3),
-                            ..Default::default()
-                        }],
-                        ..Default::default()
-                    }],
+                    sub_blocks: vec![
+                        RawNrSubBlock {
+                            band: 78,
+                            dl: NrDirection {
+                                bw_class: None,
+                                features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr {
+                                    max_scs: Some(3),
+                                    ..Default::default()
+                                }])),
+                            },
+                            ul: NrDirection {
+                                bw_class: None,
+                                features: None,
+                            },
+                            srs_tx_switch: None,
+                        }
+                        .into(),
+                    ],
                     ..Default::default()
                 }],
             }],
@@ -1236,9 +1289,9 @@ add {
             panic!("expected nr variant")
         };
         let cc = &p.set[0].combo[0].sub_blocks[0];
-        assert_eq!(cc.kind, SubBlockKind::Lte);
-        assert_eq!(cc.dl_feature_index, Some(1));
-        assert_eq!(cc.ul_feature_index, Some(2));
+        assert_eq!(cc.kind(), SubBlockKind::Lte);
+        assert_eq!(cc.dl_feature_index(), Some(1));
+        assert_eq!(cc.ul_feature_index(), Some(2));
         assert_eq!(set_entry_key(&p.set[0]).unwrap(), "B1A");
     }
 
@@ -1321,28 +1374,30 @@ add {
     /// on one sub-block (colliding property names).
     #[test]
     fn patch_sub_block_per_cc_non_uniform_dl_round_trips_both_features() {
-        let cc = PatchSubBlock {
-            kind: SubBlockKind::Nr,
+        let cc = RawNrSubBlock {
             band: 48,
-            dl_bw_class: Some(2),
+            dl: NrDirection {
+                bw_class: Some(2),
+                features: Some(PerCc::Resolved(vec![
+                    ShannonFeatureSetDlPerCcNr {
+                        max_scs: Some(1),
+                        max_bw: Some(40),
+                        ..Default::default()
+                    },
+                    ShannonFeatureSetDlPerCcNr {
+                        max_scs: Some(2),
+                        max_bw: Some(100),
+                        ..Default::default()
+                    },
+                ])),
+            },
             // Corpus-verified always-`Some`: `read_sub_block` now defaults an absent
             // `ul-bw-class` back to `Some(0)` (Task 8 omit-when-0), so a `None` here would
             // not round-trip byte-for-byte through the writer/reader pair under test.
-            ul_bw_class: Some(0),
-            dl_features: vec![
-                ShannonFeatureSetDlPerCcNr {
-                    max_scs: Some(1),
-                    max_bw: Some(40),
-                    ..Default::default()
-                },
-                ShannonFeatureSetDlPerCcNr {
-                    max_scs: Some(2),
-                    max_bw: Some(100),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
+            ul: NrDirection::bare(Some(0)),
+            srs_tx_switch: None,
+        }
+        .into();
 
         let node = sub_block_to_node(&cc);
         let text = node.to_string();
@@ -1353,36 +1408,40 @@ add {
             back, cc,
             "round-trip must preserve both per-CC feature sets"
         );
-        assert_eq!(back.dl_features[0].max_scs, Some(1));
-        assert_eq!(back.dl_features[1].max_scs, Some(2));
+        assert_eq!(back.dl_features()[0].max_scs, Some(1));
+        assert_eq!(back.dl_features()[1].max_scs, Some(2));
     }
 
     /// Non-uniform DL + a distinct UL child, mixed with the raw UL fallback absent —
     /// exercises `dl-cc`/`ul-cc` emitted together in one sub-block.
     #[test]
     fn patch_sub_block_per_cc_dl_and_ul_children_round_trip_together() {
-        let cc = PatchSubBlock {
-            kind: SubBlockKind::Nr,
+        let cc = RawNrSubBlock {
             band: 78,
-            dl_bw_class: Some(1),
-            ul_bw_class: Some(1),
-            dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                max_scs: Some(2),
-                max_mimo: Some(2),
-                max_bw: Some(100),
-                max_mod_order: Some(2),
-                bw_90mhz_supported: Some(true),
-            }],
-            ul_features: vec![ShannonFeatureSetUlPerCcNr {
-                max_scs: Some(1),
-                max_mimo_cb: Some(2),
-                max_bw: Some(50),
-                max_mod_order: Some(1),
-                max_mimo_non_cb: Some(1),
-                bw_90mhz_supported: Some(false),
-            }],
-            ..Default::default()
-        };
+            dl: NrDirection {
+                bw_class: Some(1),
+                features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr {
+                    max_scs: Some(2),
+                    max_mimo: Some(2),
+                    max_bw: Some(100),
+                    max_mod_order: Some(2),
+                    bw_90mhz_supported: Some(true),
+                }])),
+            },
+            ul: NrDirection {
+                bw_class: Some(1),
+                features: Some(PerCc::Resolved(vec![ShannonFeatureSetUlPerCcNr {
+                    max_scs: Some(1),
+                    max_mimo_cb: Some(2),
+                    max_bw: Some(50),
+                    max_mod_order: Some(1),
+                    max_mimo_non_cb: Some(1),
+                    bw_90mhz_supported: Some(false),
+                }])),
+            },
+            srs_tx_switch: None,
+        }
+        .into();
 
         let node = sub_block_to_node(&cc);
         let back = read_sub_block(&node).unwrap();
@@ -1395,16 +1454,22 @@ add {
     #[test]
     fn patch_lte_sub_block_scalar_feature_names_round_trip() {
         for (ul, shows_ul) in [(Some(0), false), (Some(2), true)] {
-            let cc = PatchSubBlock {
-                kind: SubBlockKind::Lte,
+            let cc = RawLteSubBlock {
                 band: 7,
-                dl_bw_class: Some(2),
-                // Always-`Some` on LTE; a `None` would not round-trip (reader defaults absent→0).
-                ul_bw_class: Some(1),
-                dl_feature_index: Some(1),
-                ul_feature_index: ul,
-                ..Default::default()
-            };
+                dl: LteDirection {
+                    bw_class: Some(2),
+                    feature_index: Some(1),
+                    selector: None,
+                },
+                ul: LteDirection {
+                    // Always-`Some` on LTE; a `None` would not round-trip (reader defaults
+                    // absent→0).
+                    bw_class: Some(1),
+                    feature_index: ul,
+                    selector: None,
+                },
+            }
+            .into();
             let node = sub_block_to_node(&cc);
             let text = node.to_string();
             assert!(text.contains("dl-feature=1"), "{text}");
@@ -1419,13 +1484,20 @@ add {
     fn lte_placeholder_sub_block_carries_no_feature_children() {
         // An LTE component inside a mixed EN-DC combo carries no NR-only fields, so it
         // must round-trip with no `dl-cc`/`ul-cc` children at all.
-        let cc = PatchSubBlock {
-            kind: SubBlockKind::Lte,
+        let cc = RawLteSubBlock {
             band: 66,
-            dl_bw_class: Some(1),
-            ul_bw_class: Some(1),
-            ..Default::default()
-        };
+            dl: LteDirection {
+                bw_class: Some(1),
+                feature_index: None,
+                selector: None,
+            },
+            ul: LteDirection {
+                bw_class: Some(1),
+                feature_index: None,
+                selector: None,
+            },
+        }
+        .into();
         let text = sub_block_to_node(&cc).to_string();
         assert!(!text.contains("dl-cc"), "{text}");
         assert!(!text.contains("ul-cc"), "{text}");

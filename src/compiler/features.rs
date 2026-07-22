@@ -7,7 +7,11 @@ use crate::{
         ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
         combo_group::combo::SubBlock as ProtoSubBlock,
     },
-    raw_nr::{RawNrPayload, RawSubBlock, SubBlockKind, cc_count},
+    raw_nr::{
+        LteDirection, NrDirection, PerCc, RawLteSubBlock, RawNrPayload, RawNrSubBlock, RawSubBlock,
+        SubBlockKind, cc_count,
+    },
+    report::combos::band_label_for,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -136,10 +140,10 @@ impl LocalFeaturePlan {
         // or leaves a plan record unreferenced (present here but never emitted).
         for payload in payloads {
             for component in &payload.sub_blocks {
-                for feature in &component.dl_features {
+                for feature in component.dl_features() {
                     used_dl.insert(DlFeatureSource::from(feature));
                 }
-                for feature in &component.ul_features {
+                for feature in component.ul_features() {
                     used_ul.insert(UlFeatureSource::from(feature));
                 }
             }
@@ -202,12 +206,12 @@ impl LocalFeaturePlan {
         // above: every per-CC record referenced here was inserted there, so `binary_search`
         // (not find_or_append) is enough. Falls back to the raw selector bytes when the
         // sub-block carries no resolved feature sets at all.
-        let dl_feature_per_cc_ids = if component.dl_features.is_empty() {
-            component.dl_cc_ids.clone()
+        let dl_feature_per_cc_ids = if component.dl_features().is_empty() {
+            component.dl_selector().map(<[u8]>::to_vec)
         } else {
             Some(
                 component
-                    .dl_features
+                    .dl_features()
                     .iter()
                     .map(|feature| {
                         let index = self
@@ -220,12 +224,12 @@ impl LocalFeaturePlan {
                     .collect(),
             )
         };
-        let ul_feature_per_cc_ids = if component.ul_features.is_empty() {
-            component.ul_cc_ids.clone()
+        let ul_feature_per_cc_ids = if component.ul_features().is_empty() {
+            component.ul_selector().map(<[u8]>::to_vec)
         } else {
             Some(
                 component
-                    .ul_features
+                    .ul_features()
                     .iter()
                     .map(|feature| {
                         let index = self
@@ -240,13 +244,13 @@ impl LocalFeaturePlan {
         };
         Ok(ProtoSubBlock {
             band: component.raw_band(),
-            dl_bw_class: component.dl_bw_class,
-            ul_bw_class: component.ul_bw_class,
-            dl_feature_index: component.materialized_dl_feature_index(),
-            ul_feature_index: component.materialized_ul_feature_index(),
+            dl_bw_class: component.dl_bw_class(),
+            ul_bw_class: component.ul_bw_class(),
+            dl_feature_index: component.dl_feature_index(),
+            ul_feature_index: component.ul_feature_index(),
             dl_feature_per_cc_ids,
             ul_feature_per_cc_ids,
-            srstxswitch: component.srs_tx_switch,
+            srstxswitch: component.srs_tx_switch(),
         })
     }
 }
@@ -263,10 +267,10 @@ impl FeatureCatalogs {
         let mut ul = BTreeSet::new();
         for payload in payloads {
             for component in &payload.sub_blocks {
-                for feature in &component.dl_features {
+                for feature in component.dl_features() {
                     dl.insert(DlFeatureSource::from(feature));
                 }
-                for feature in &component.ul_features {
+                for feature in component.ul_features() {
                     ul.insert(UlFeatureSource::from(feature));
                 }
             }
@@ -281,7 +285,7 @@ impl FeatureCatalogs {
     /// its own 1-based index into the canonical (global) catalog — one `usize` per CC.
     pub(crate) fn source_sub_block(&self, component: &RawSubBlock) -> NrSourceSubBlock {
         let dl_feature: Vec<usize> = component
-            .dl_features
+            .dl_features()
             .iter()
             .map(|feature| {
                 self.dl
@@ -291,7 +295,7 @@ impl FeatureCatalogs {
             })
             .collect();
         let ul_feature: Vec<usize> = component
-            .ul_features
+            .ul_features()
             .iter()
             .map(|feature| {
                 self.ul
@@ -301,10 +305,10 @@ impl FeatureCatalogs {
             })
             .collect();
         NrSourceSubBlock {
-            kind: component.kind,
-            band: component.band,
-            dl_bw_class: component.dl_bw_class,
-            ul_bw_class: component.ul_bw_class,
+            kind: component.kind(),
+            band: component.band(),
+            dl_bw_class: component.dl_bw_class(),
+            ul_bw_class: component.ul_bw_class(),
             dl_feature_index: component.source_dl_feature_index(),
             ul_feature_index: component.source_ul_feature_index(),
             // `dl_cc_ids`/`ul_cc_ids` are intentionally dropped: an unresolved direction only
@@ -312,7 +316,7 @@ impl FeatureCatalogs {
             // re-derives from `bw_class`.
             dl_feature,
             ul_feature,
-            srs_tx_switch: component.srs_tx_switch,
+            srs_tx_switch: component.srs_tx_switch(),
         }
     }
 }
@@ -361,37 +365,69 @@ impl NrSourceSubBlock {
                     .map(|source| ShannonFeatureSetUlPerCcNr::from(&source))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let component = RawSubBlock {
-            kind: self.kind,
-            band: self.band,
-            dl_bw_class: self.dl_bw_class,
-            ul_bw_class: self.ul_bw_class,
-            dl_feature_index: self.dl_feature_index,
-            ul_feature_index: self.ul_feature_index,
-            // Re-materialize the omitted placeholder for a direction that resolves to no
-            // catalog record. `with_resolved_feature_sets` below clears it again for a
-            // direction that did resolve, so computing it unconditionally would be wasted —
-            // gate on the empty list, exactly as the KDL reader used to.
-            dl_cc_ids: self
-                .dl_feature
-                .is_empty()
-                .then(|| placeholder_ids(self.kind, self.dl_bw_class))
-                .transpose()?
-                .flatten(),
-            // `ul_bw_class == 0` means UL disabled: no per-CC data at all, so no placeholder
-            // (as opposed to DL, which has no "disabled" class).
-            ul_cc_ids: self
-                .ul_feature
-                .is_empty()
-                .then(|| placeholder_ids(self.kind, self.ul_bw_class.filter(|&bw| bw >= 1)))
-                .transpose()?
-                .flatten(),
-            srs_tx_switch: self.srs_tx_switch,
-            ..Default::default()
-        }
-        .with_resolved_feature_sets(dl, ul);
+        // `ul_bw_class == 0` means UL disabled: no per-CC data at all, hence no placeholder
+        // (DL has no such "disabled" class).
+        let ul_bw_class = self.ul_bw_class.filter(|&bw| bw >= 1);
+        let component: RawSubBlock = match self.kind {
+            // The source model is flat across both kinds, so this is where an `lte` node
+            // carrying NR-only data is rejected instead of silently truncated —
+            // `RawLteSubBlock` has nowhere to put it. Replaces the old
+            // `RawSubBlock::validate` "carries NR-only fields" check, which could only run
+            // after the fields had already been stored.
+            SubBlockKind::Lte => {
+                ensure!(
+                    dl.is_empty() && ul.is_empty() && self.srs_tx_switch.is_none(),
+                    "LTE component {} carries NR-only fields",
+                    band_label_for(false, self.band)
+                );
+                RawLteSubBlock {
+                    band: self.band,
+                    dl: LteDirection {
+                        bw_class: self.dl_bw_class,
+                        feature_index: self.dl_feature_index,
+                        selector: placeholder_ids(self.kind, self.dl_bw_class)?,
+                    },
+                    ul: LteDirection {
+                        bw_class: self.ul_bw_class,
+                        feature_index: self.ul_feature_index,
+                        selector: placeholder_ids(self.kind, ul_bw_class)?,
+                    },
+                }
+                .into()
+            }
+            SubBlockKind::Nr => {
+                ensure!(
+                    self.dl_feature_index.is_none() && self.ul_feature_index.is_none(),
+                    "NR component {} stores a feature index; NR derives it from its feature set",
+                    band_label_for(true, self.band)
+                );
+                RawNrSubBlock {
+                    band: self.band,
+                    dl: NrDirection {
+                        bw_class: self.dl_bw_class,
+                        features: nr_per_cc(dl, self.dl_bw_class)?,
+                    },
+                    ul: NrDirection {
+                        bw_class: self.ul_bw_class,
+                        features: nr_per_cc(ul, ul_bw_class)?,
+                    },
+                    srs_tx_switch: self.srs_tx_switch,
+                }
+                .into()
+            }
+        };
         component.validate()?;
         Ok(component)
+    }
+}
+
+/// Resolved catalog references become values; a direction that references nothing
+/// re-materializes the placeholder the source omitted (see [`placeholder_ids`]).
+fn nr_per_cc<T: Copy>(features: Vec<T>, bw_class: Option<i32>) -> anyhow::Result<Option<PerCc<T>>> {
+    if features.is_empty() {
+        Ok(placeholder_ids(SubBlockKind::Nr, bw_class)?.map(PerCc::Selector))
+    } else {
+        Ok(Some(PerCc::Resolved(features)))
     }
 }
 
@@ -421,13 +457,12 @@ mod tests {
             max_bw: Some(100),
             ..Default::default()
         };
-        let sb = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let sb: RawSubBlock = RawNrSubBlock {
             band: 48,
-            dl_bw_class: Some(2),
-            dl_features: vec![a, b],
+            dl: NrDirection::with_features(2, vec![a, b]),
             ..Default::default()
-        };
+        }
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -462,13 +497,12 @@ mod tests {
             ..Default::default()
         };
         let catalogs = FeatureCatalogs::new(vec![low, high.clone()], vec![]);
-        let component = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            dl_bw_class: Some(1),
+            dl: NrDirection::with_features(1, vec![ShannonFeatureSetDlPerCcNr::from(&high)]),
             ..Default::default()
         }
-        .with_resolved_feature_sets(vec![ShannonFeatureSetDlPerCcNr::from(&high)], vec![]);
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -499,13 +533,12 @@ mod tests {
             ..Default::default()
         };
         let catalogs = FeatureCatalogs::new(vec![], vec![low, high.clone()]);
-        let component = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            ul_bw_class: Some(1),
+            ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::from(&high)]),
             ..Default::default()
         }
-        .with_resolved_feature_sets(vec![], vec![ShannonFeatureSetUlPerCcNr::from(&high)]);
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -527,13 +560,12 @@ mod tests {
     #[test]
     fn local_plan_emits_a_referenced_all_absent_dl_record() {
         let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
-        let component = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            dl_bw_class: Some(1),
+            dl: NrDirection::with_features(1, vec![ShannonFeatureSetDlPerCcNr::default()]),
             ..Default::default()
         }
-        .with_resolved_feature_sets(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -555,13 +587,12 @@ mod tests {
     #[test]
     fn local_plan_emits_a_referenced_all_absent_ul_record() {
         let catalogs = FeatureCatalogs::new(vec![], vec![UlFeatureSource::default()]);
-        let component = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            ul_bw_class: Some(1),
+            ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::default()]),
             ..Default::default()
         }
-        .with_resolved_feature_sets(vec![], vec![ShannonFeatureSetUlPerCcNr::default()]);
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -587,14 +618,20 @@ mod tests {
         // (`ensure_selector_resolved`) both fail closed on a non-placeholder one. It must
         // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside nr.kdl combos
         // and UL-disabled NR sub-blocks depend on this for byte-exact round-trip.
-        let sb = RawSubBlock {
-            kind: SubBlockKind::Lte,
+        let sb: RawSubBlock = RawLteSubBlock {
             band: 66,
-            dl_bw_class: Some(1), // cc_count(Lte, 1) == 1, matching the 1-byte selector
-            ul_bw_class: Some(1),
-            dl_cc_ids: Some(vec![0]),
-            ..Default::default()
-        };
+            dl: LteDirection {
+                // cc_count(Lte, 1) == 1, matching the 1-byte selector
+                bw_class: Some(1),
+                feature_index: None,
+                selector: Some(vec![0]),
+            },
+            ul: LteDirection {
+                bw_class: Some(1),
+                ..Default::default()
+            },
+        }
+        .into();
         let payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -617,14 +654,15 @@ mod tests {
         // The other half of the claim above: a UL-disabled NR sub-block carries the same
         // all-zero placeholder on the UL side (`validate_ul_cc_count` skips the length check
         // entirely when `ul_bw_class == 0`), and it must survive generation identically.
-        let nr_sb = RawSubBlock {
-            kind: SubBlockKind::Nr,
+        let nr_sb: RawSubBlock = RawNrSubBlock {
             band: 78,
-            dl_bw_class: Some(1), // valid NR class; DL is not exercised by this assertion
-            ul_bw_class: Some(0), // UL disabled
-            ul_cc_ids: Some(vec![0]),
+            // valid NR class; DL is not exercised by this assertion
+            dl: NrDirection::bare(Some(1)),
+            // UL disabled, but still carrying the placeholder
+            ul: NrDirection::with_selector(0, vec![0]),
             ..Default::default()
-        };
+        }
+        .into();
         let nr_payload = RawNrPayload {
             power_class: None,
             bcs_nr: None,
@@ -664,17 +702,16 @@ mod tests {
         };
         let resolved = source.resolve(&catalogs).unwrap();
         assert_eq!(
-            resolved.dl_feature_set(),
+            resolved.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
-        assert_eq!(resolved.dl_cc_ids, None);
+        assert_eq!(resolved.dl_selector(), None);
         assert_ne!(
             RawSubBlockKey::from(&resolved),
-            RawSubBlockKey::from(&RawSubBlock {
-                kind: SubBlockKind::Nr,
+            RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
                 band: 78,
                 ..Default::default()
-            })
+            }))
         );
 
         let patch = RawSubBlock::from_sub_block(&SubBlock {
@@ -684,23 +721,26 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(
-            patch.dl_feature_set(),
+            patch.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
-        // The raw selector bytes are still carried on the struct (`from_sub_block` never
-        // clears `dl_cc_ids` itself), but identity/writer logic ignore it once
-        // `dl_feature_set_is_present()` is true — see `RawSubBlockKey::from` and
-        // `patch::format::sub_block_to_node`.
-        assert_eq!(patch.dl_cc_ids, Some(vec![7]));
+        // The flat DTO offered both a selector and resolved values; `PerCc` keeps only the
+        // resolution, so the bytes are gone rather than merely masked from identity (they
+        // used to survive on the struct and be filtered out by `RawSubBlockKey::from` and
+        // `patch::format::sub_block_to_node`).
+        assert_eq!(patch.dl_selector(), None);
         assert_eq!(
             RawSubBlockKey::from(&patch),
-            RawSubBlockKey::from(&RawSubBlock {
-                kind: SubBlockKind::Nr,
+            RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
                 band: 78,
-                dl_features: vec![ShannonFeatureSetDlPerCcNr::default()],
+                // The DTO under test carries no bandwidth class, so neither does this.
+                dl: NrDirection {
+                    bw_class: None,
+                    features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr::default()])),
+                },
                 ..Default::default()
-            }),
-            "raw dl_cc_ids must be masked from identity once the feature set is present"
+            })),
+            "a resolved direction has no selector left to disturb identity"
         );
     }
 
@@ -721,9 +761,10 @@ mod tests {
         }
         .resolve(&catalogs)
         .unwrap();
-        assert_eq!(lte.dl_cc_ids, Some(vec![0]));
+        assert_eq!(lte.dl_selector(), Some([0].as_slice()));
         assert_eq!(
-            lte.ul_cc_ids, None,
+            lte.ul_selector(),
+            None,
             "no ul_bw_class means no UL data at all"
         );
 
@@ -738,8 +779,8 @@ mod tests {
         }
         .resolve(&catalogs)
         .unwrap();
-        assert_eq!(nr.dl_cc_ids, Some(vec![0, 0]));
-        assert_eq!(nr.ul_cc_ids, None, "ul_bw_class 0 means UL disabled");
+        assert_eq!(nr.dl_selector(), Some([0, 0].as_slice()));
+        assert_eq!(nr.ul_selector(), None, "ul_bw_class 0 means UL disabled");
 
         // A direction that does resolve carries values and no placeholder.
         let resolved = NrSourceSubBlock {
@@ -751,8 +792,8 @@ mod tests {
         }
         .resolve(&catalogs)
         .unwrap();
-        assert_eq!(resolved.dl_cc_ids, None);
-        assert_eq!(resolved.dl_cc_count(), 1);
+        assert_eq!(resolved.dl_selector(), None);
+        assert_eq!(resolved.dl_features().len(), 1);
     }
 
     #[test]

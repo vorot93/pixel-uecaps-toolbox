@@ -137,7 +137,7 @@ profiled), all present in `pixel_bands::PIXEL_BANDS`. Every profiled target's
 `nr_anchor ∈ PROFILES` and `lte_id ∈ LTE_CONFIGS`; bitmask targets deliberately have
 neither.
 
-**An `lte` component (`SubBlockKind::Lte`, spelled as the `lte` node — see the naming rule) carries no NR-only fields** (the `srs_tx_switch` + `*_max_*` set); feature *indexes* are shared and allowed (an LTE component carries its own `parseLteFeatureIndex` value; an NR component's is derived from its per-CC feature set — see the `dl/ul_feature_index` bullet under [On-disk formats](#on-disk-formats)). Validated on parse. LTE component **bands** are likewise validated to `1..NR_BAND_OFFSET` on parse (mirroring NR's `RawSubBlock::validate`), so a value that would wrap in the `as u16` band-compatibility filter (e.g. 65602 → 66) is rejected before it can ship.
+**An `lte` component (`SubBlockKind::Lte`, spelled as the `lte` node — see the naming rule) carries no NR-only fields** (the `srs_tx_switch` + `*_max_*` set); feature *indexes* are shared and allowed (an LTE component carries its own `parseLteFeatureIndex` value; an NR component's is derived from its per-CC feature set — see the `dl/ul_feature_index` bullet under [On-disk formats](#on-disk-formats)). This is **structural, not validated**: `RawLteSubBlock` has no feature-set or `srs_tx_switch` field at all (see [The sub-block model is a sum type](#the-sub-block-model-is-a-sum-type)), so the rule is enforced where flat outside data still carries those fields — the KDL patch reader, `RawSubBlock::try_from_sub_block`, and `NrSourceSubBlock::resolve` — each rejecting them rather than dropping them silently. LTE component **bands** are likewise validated to `1..NR_BAND_OFFSET` on parse (mirroring NR's `RawSubBlock::validate`), so a value that would wrap in the `as u16` band-compatibility filter (e.g. 65602 → 66) is rejected before it can ship.
 
 **`provision --add-plmn` is strict and atomic.** It de-dups the input, then errors if a PLMN is already mapped under **any** carrier (naming the owner), if the carrier is absent, or if a PLMN is malformed — and never writes a partial module. (Its lenient sibling `mapping inject-plmn` only skips duplicates within the one named carrier.)
 
@@ -319,8 +319,9 @@ order (the per-CC `dl-feature=`/`ul-feature=` format relies on this) — an auto
 explicit `nr`/`lte` node names only where a single combo can mix both.** The compiler's `lte.kdl` is
 uniformly LTE — its `subblock` node carries no kind tag. Whenever a single combo can mix LTE and NR
 components (an EN-DC combo), the radio kind **is** the node name (`nr 78 …` / `lte 66 …`), not a
-`kind=` property: `RawSubBlock`/`PatchSubBlock` carries an *explicit* `kind: SubBlockKind` field for
-exactly that reason, and compiler `nr.kdl` and inspect's NR view follow the same rule. The
+`kind=` property: `RawSubBlock`/`PatchSubBlock` is an *enum over the two radio kinds* for exactly
+that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field is gone), and
+compiler `nr.kdl` and inspect's NR view follow the same rule. The
 **LTE-fallback patch** is uniformly LTE, so its component node is likewise `subblock`. A set-entry's
 add/change marker is likewise the **node name** (`add { … }` / `change { … }`, `SetKind` in
 `src/patch/format.rs`), not a `kind=` property. The naming rule is uniform across every KDL surface:
@@ -705,11 +706,43 @@ ShannonFeatureSetUlPerCCNr { max_scs, max_mimo_cb, max_bw, max_mod_order, bw_90m
 ```
 
 - **Band encoding.** `SubBlock.band ≥ 10000` (`NR_BAND_OFFSET`) is an **NR** band (`band − 10000`); `< 10000` is an **E-UTRA/LTE** band. NR combos are **EN-DC** and mix LTE (`B…`) and NR (`n…`) components.
+### The sub-block model is a sum type
+
+`raw_nr::RawSubBlock` is an `enum { Lte(RawLteSubBlock), Nr(RawNrSubBlock) }`, and each variant's
+two directions are their own structs. The point is that the three ways of spelling a direction's
+features are alternatives, and a flat struct let all three sit side by side:
+
+- **Kind.** `RawLteSubBlock` has no per-CC feature sets and no `srs_tx_switch`; `RawNrSubBlock` has
+  no stored `dl/ul_feature_index` (NR derives it — see the `dl/ul_feature_index` bullet below).
+  Neither can hold the other's data, so the old runtime `has_nr_only_fields` check inside
+  `validate` is gone.
+- **Direction.** Resolved-vs-selector is **per direction**, not per sub-block: a DL-resolved,
+  UL-disabled component is ordinary (`ul_bw_class == 0`), so the choice lives in
+  `NrDirection::features`, an `Option<PerCc<T>>` where `PerCc` is `Selector(Vec<u8>) |
+  Resolved(Vec<T>)`. **Absence is the `Option`, not a third variant** — it mirrors the wire,
+  where field 6/7 is simply missing, and it keeps the two axes separate: presence outside,
+  encoding inside. (An `Absent` variant was tried first and produced four sites that marshalled
+  between the flat enum and an `Option` in one direction or the other.) `Resolved` is never
+  empty; an empty resolution is "did not resolve" (`NrDirection::resolve`). The per-CC
+  accessors live on `NrDirection` rather than `PerCc` because every length question is also a
+  `bw_class` question — `per_cc_len()` is what `validate_cc_count` compares against
+  `cc_count(kind, bw_class)`.
+- **What did *not* move.** `RawSubBlockKey` stays a flat struct with its original field order,
+  because it is an *ordering projection*, not a state model — component order inside a generated
+  combo is `sort_by(RawSubBlockKey)`, so regrouping its fields would silently change generated
+  bytes. Build it from the enum, never restructure it. `report::combos::SubBlock` likewise stays
+  flat: it is a display DTO with pre-rendered scalars, and it is the one place both encodings can
+  still arrive together from outside.
+- **Reading.** Code that treats both kinds alike uses the accessors (`band()`, `dl_bw_class()`,
+  `dl_features()`, `dl_selector()`, `dl_feature_index()` — materialized, `source_dl_feature_index()`
+  — source-shaped). Code that *builds* a component matches on the variant, so it can only fill
+  fields that kind actually has.
+
 - **A `SubBlock` is one band+CA-bandwidth-class entry, not one component carrier** — it contains `cc_count(kind, bw_class)` physical CCs (e.g. band 78 class C = `n78C` = 2 CCs; this is how a Pixel expresses `7C-3A`, not just `7A-3A`). `cc_count(kind, bw_class)` (`src/raw_nr.rs`) is a fail-closed lookup over the Samsung Shannon `bw_class` enumeration; NR and LTE tables (`NR_CC_COUNTS`/`LTE_CC_COUNTS`) are distinct and non-monotonic relative to each other (NR class 2/3/7 all count 2; LTE class 2/3 both count 2 — the class carries strictly more information than the CC count, which is why `bw_class` is never derived from it), and an unknown class errors rather than mis-deriving a length (the tables are corpus-validated with zero exceptions across all **3.46M sub-blocks**). `RawSubBlock::validate` fails closed (checked on both source parse and regenerated output) if a stored per-CC list's length doesn't equal `cc_count` for its `bw_class`, and separately if the sub-block's CCs would derive disagreeing `dl_feature_index`/`ul_feature_index` values (physically you cannot mix FR1+FR2 or mixed MIMO-presence within one band+class entry).
 - **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decode pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
 - **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — spelled `dl-feature`/`ul-feature` in KDL, dropping the `-index` suffix (LTE-only — an
 `nr` node carries no feature index in source at all), with `ul-feature=0` omitted per the
-omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl` and patches) carries **no** index and re-derives on build/apply via `RawSubBlock::{materialized,source}_*_feature_index`; the old source override was removed, so a decoded NR index that disagrees with the derivation is now a hard decode error (`RawSubBlock::ensure_nr_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files, while proto field 4/5 is still materialized on build/decode. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency (gotcha):** `RawSubBlockKey::from` and `RawSubBlock::to_sub_block()` also materialize the NR index, so dedup, `CanonCc` change-detection, and `apply` self-verify compare in the same resolved space and treat an omitted (`None`) index and a matching explicit one as equal. If you change how the NR index is materialized, update those two as well — otherwise self-verify/dedup see a spurious diff between an omitted and a re-derived value (this is why materializing only at the two `reconstruct_sub_block` sites is insufficient).
+omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl` and patches) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE, and `source_dl_feature_index()` returns nothing for NR. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on build/decode. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from`, `RawSubBlock::to_sub_block()`, and both `reconstruct_sub_block` sites all read the index through the same `dl_feature_index()` accessor, so dedup, `CanonCc` change-detection, and `apply` self-verify cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
   - *Corpus scope behind the "0 mismatches" claim:* 1,487 files (9 non-`UeCaps` decode skips), **1,715,899 NR components** and **1,741,849 LTE components**. 0 of the 1.74M LTE components carry a field-6/7 per-CC selector; every NR component carries a DL one and ~60% carry a UL one.
   - *Why these keys (rejected hypotheses):* DL keys off `max_scs` (FR1/FR2), **not** `max_mimo` — a cross-tab against `max_mimo` looked noisy precisely because MIMO is not the key. UL keys off `max_mimo_cb`; `max_mimo_non_cb` moves in lockstep in the data but `max_mimo_cb` is the definitional key.
   - *LTE `parseLteFeatureIndex` cross-check* (for the record; the LTE index is kept explicit, not derived): DL `count = ceil(fi/2)` (fi 1/2→1CC, 3/6→2CC, 7/8→4CC, 9/10→5CC), even fi = 2-layer MIMO, odd = 1-layer, with 5/6 the special B/C 2-CC case; UL only ever `0` or `2` in this corpus.
@@ -868,12 +901,13 @@ someone editing a patch; keep reconstruction, comparison, and parser rationale h
   label computed fresh from the combo payload every time. Keep the derived-key definition in
   the README synchronized with `combo_key`/`lte_combo_key`.
 - NR payload conversion uses the neutral `raw_nr` representation shared with the folder
-  compiler, per-CC end to end: `RawSubBlock::from_sub_block` carries every entry of
-  `dl_features`/`ul_features`, not just CC0. A **non-empty vec is presence**, full stop — even
-  a single all-`None` entry (a legitimate all-absent catalog record) counts as resolved and
-  suppresses raw selector identity for that direction; an **empty** vec is the only
-  selector-only case. This matches `with_resolved_feature_sets`/the protobuf-ingest axis, so
-  there is no report/patch presence gap. The free `raw_nr::reconstruct_sub_block`
+  compiler, per-CC end to end: `RawSubBlock::from_sub_block` carries every entry of the report
+  DTO's `dl_features`/`ul_features`, not just CC0. Presence is `Option<PerCc>`, not a length
+  test: `Some(Resolved(..))` (never empty — even a single all-`None` entry, a legitimate
+  all-absent catalog record, counts) versus `Some(Selector(..))`/`None`. Because the flat report DTO
+  can carry both encodings at once, `from_sub_block` is where they collapse — resolved values
+  win and the selector bytes are dropped, rather than surviving and being filtered out again
+  by every downstream consumer. The free `raw_nr::reconstruct_sub_block`
   (patch-build path) emits one selector byte per per-CC entry, `find_or_append`-deduping into
   the growing top-level lists — the compiler's `LocalFeaturePlan::reconstruct_sub_block` does
   the analogous per-CC emission against a pre-scanned local catalog (`binary_search`) instead.

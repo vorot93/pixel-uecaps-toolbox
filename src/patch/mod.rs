@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(by_key("n2A").kind, SetKind::Add);
         assert_eq!(by_key("n78A").kind, SetKind::Change);
         assert_eq!(
-            by_key("n78A").combo[0].sub_blocks[0].dl_features[0].max_mimo,
+            by_key("n78A").combo[0].sub_blocks[0].dl_features()[0].max_mimo,
             Some(3)
         );
     }
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(p.set.len(), 1);
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
         assert_eq!(
-            p.set[0].combo[0].sub_blocks[0].dl_features[0].max_mimo,
+            p.set[0].combo[0].sub_blocks[0].dl_features()[0].max_mimo,
             Some(3)
         );
     }
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(p.set.len(), 1);
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
         assert_eq!(
-            p.set[0].combo[0].sub_blocks[0].dl_features[0].max_scs,
+            p.set[0].combo[0].sub_blocks[0].dl_features()[0].max_scs,
             Some(8)
         );
     }
@@ -340,7 +340,12 @@ mod tests {
         assert!(p.delete.is_empty());
         assert_eq!(p.set.len(), 1);
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
-        assert_eq!(p.set[0].combo[0].sub_blocks[0].dl_cc_ids, Some(vec![2]));
+        assert_eq!(
+            p.set[0].combo[0].sub_blocks[0]
+                .dl_selector()
+                .map(<[u8]>::to_vec),
+            Some(vec![2])
+        );
     }
 
     #[test]
@@ -363,11 +368,16 @@ mod tests {
         assert!(p.delete.is_empty());
         assert_eq!(p.set.len(), 1);
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
-        // The raw ids are still carried on the struct (from_sub_block never clears them),
-        // but the resolved (all-absent) feature set is what identity/the writer honor.
-        assert_eq!(p.set[0].combo[0].sub_blocks[0].dl_cc_ids, Some(vec![1]));
+        // The raw ids are gone: `PerCc::Resolved` supersedes them, so the resolved
+        // (all-absent) feature set is the only DL representation left on the component.
+        // Before the sum-type model the bytes survived alongside the values and every
+        // consumer had to remember to ignore them.
+        assert_eq!(p.set[0].combo[0].sub_blocks[0].dl_selector(), None);
         assert_eq!(
-            p.set[0].combo[0].sub_blocks[0].dl_feature_set(),
+            p.set[0].combo[0].sub_blocks[0]
+                .dl_features()
+                .first()
+                .copied(),
             Some(crate::proto::ShannonFeatureSetDlPerCcNr::default())
         );
     }
@@ -414,9 +424,9 @@ mod tests {
         );
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n48B↓");
         let cc = &p.set[0].combo[0].sub_blocks[0];
-        assert_eq!(cc.dl_features.len(), 2, "both CCs must survive the diff");
-        assert_eq!(cc.dl_features[0].max_scs, Some(1));
-        assert_eq!(cc.dl_features[1].max_scs, Some(3));
+        assert_eq!(cc.dl_features().len(), 2, "both CCs must survive the diff");
+        assert_eq!(cc.dl_features()[0].max_scs, Some(1));
+        assert_eq!(cc.dl_features()[1].max_scs, Some(3));
     }
 
     #[test]
@@ -446,7 +456,12 @@ mod tests {
         assert!(p.delete.is_empty());
         assert_eq!(p.set.len(), 1);
         assert_eq!(format::set_entry_key(&p.set[0]).unwrap(), "n78A");
-        assert_eq!(p.set[0].combo[0].sub_blocks[0].ul_cc_ids, Some(vec![9]));
+        assert_eq!(
+            p.set[0].combo[0].sub_blocks[0]
+                .ul_selector()
+                .map(<[u8]>::to_vec),
+            Some(vec![9])
+        );
     }
 
     #[test]

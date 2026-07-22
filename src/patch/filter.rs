@@ -147,16 +147,13 @@ mod tests {
                 index: 0,
                 sub_blocks: bands
                     .iter()
-                    .map(|&band| PatchSubBlock {
-                        kind: if band >= 10000 {
-                            SubBlockKind::Nr
+                    .map(|&band| {
+                        let (kind, band) = if band >= 10000 {
+                            (SubBlockKind::Nr, band - 10000)
                         } else {
-                            SubBlockKind::Lte
-                        },
-                        band: if band >= 10000 { band - 10000 } else { band },
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        ..Default::default()
+                            (SubBlockKind::Lte, band)
+                        };
+                        PatchSubBlock::bare(kind, band, Some(1), Some(1))
                     })
                     .collect(),
                 bit_mask: 0,

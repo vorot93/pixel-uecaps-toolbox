@@ -23,10 +23,7 @@ use crate::{
         ComboGroup, UeCaps,
         combo_group::{Combo, ComboHeader},
     },
-    raw_nr::{
-        RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count, derive_nr_dl_index,
-        derive_nr_ul_index, source_feature_index,
-    },
+    raw_nr::{RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
     report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
 };
 
@@ -746,22 +743,17 @@ pub(crate) fn nr_source_from_one_file(
                         band,
                         dl_bw_class: component.dl_bw_class,
                         ul_bw_class: component.ul_bw_class,
-                        dl_feature_index: source_feature_index(
-                            kind,
-                            component.dl_feature_index,
-                            derive_nr_dl_index(
-                                dl_feature.first().map(|&k| dl[k - 1].max_scs.unwrap_or(0)),
-                            ),
-                        ),
-                        ul_feature_index: source_feature_index(
-                            kind,
-                            component.ul_feature_index,
-                            derive_nr_ul_index(
-                                ul_feature
-                                    .first()
-                                    .map(|&k| ul[k - 1].max_mimo_cb.unwrap_or(0)),
-                            ),
-                        ),
+                        // The source format spells proto 4/5 only on `lte` nodes; NR derives
+                        // it from its feature set, so an NR component carries no index here
+                        // at all (`RawNrSubBlock` has no such field either).
+                        dl_feature_index: match kind {
+                            SubBlockKind::Lte => component.dl_feature_index,
+                            SubBlockKind::Nr => None,
+                        },
+                        ul_feature_index: match kind {
+                            SubBlockKind::Lte => component.ul_feature_index,
+                            SubBlockKind::Nr => None,
+                        },
                         // Resolves EVERY per-CC byte (mirrors `RawSubBlock::from_proto_sub_block`
                         // / `FeatureCatalogs::source_sub_block`), not just CC0: a non-uniform
                         // multi-CC sub-block's second-and-later CCs must show up in `inspect
@@ -834,16 +826,19 @@ mod tests {
             ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps,
             combo_group::{Combo, ComboHeader, combo::SubBlock},
         },
-        raw_nr::{RawNrPayload, RawSubBlock, RawSubBlockKey, SubBlockKind},
+        raw_nr::{NrDirection, RawNrPayload, RawNrSubBlock, RawSubBlock, RawSubBlockKey},
         report::combos::build_combos,
     };
 
-    fn cc(band: i32, dl_feature_index: i32) -> SubBlock {
+    /// A component that differs from its siblings only in `srs_tx_switch`. (It used to vary
+    /// `dl_feature_index`, but an NR component no longer stores one — the index is derived,
+    /// so two otherwise-identical NR components can no longer differ in it.)
+    fn cc(band: i32, srs_tx_switch: i32) -> SubBlock {
         SubBlock {
             band,
             dl_bw_class: Some(1),
             ul_bw_class: Some(1),
-            dl_feature_index: Some(dl_feature_index),
+            srstxswitch: Some(srs_tx_switch),
             ..Default::default()
         }
     }
@@ -1027,7 +1022,7 @@ mod tests {
             payloads[0]
                 .sub_blocks
                 .iter()
-                .map(|component| component.dl_feature_index)
+                .map(RawSubBlock::srs_tx_switch)
                 .collect::<Vec<_>>(),
             vec![Some(2), Some(9)],
             "all raw component fields participate in canonical ordering"
@@ -1076,16 +1071,17 @@ mod tests {
         assert_eq!(payload.bcs_nr, Some(0));
         assert_eq!(payload.power_class, Some(0));
         let component = &payload.sub_blocks[0];
-        assert_eq!(component.dl_bw_class, Some(0));
-        assert_eq!(component.srs_tx_switch, Some(0));
-        assert_eq!(component.dl_features.len(), 1);
-        assert_eq!(component.dl_features[0].max_scs, Some(0));
-        assert_eq!(component.dl_features[0].bw_90mhz_supported, Some(false));
+        assert_eq!(component.dl_bw_class(), Some(0));
+        assert_eq!(component.srs_tx_switch(), Some(0));
+        assert_eq!(component.dl_features().len(), 1);
+        assert_eq!(component.dl_features()[0].max_scs, Some(0));
+        assert_eq!(component.dl_features()[0].bw_90mhz_supported, Some(false));
         assert_eq!(
-            component.dl_cc_ids, None,
+            component.dl_selector(),
+            None,
             "resolved raw values must suppress the source selector"
         );
-        assert_eq!(component.ul_cc_ids, Some(vec![0, 2]));
+        assert_eq!(component.ul_selector(), Some([0, 2].as_slice()));
     }
 
     #[test]
@@ -1122,7 +1118,7 @@ mod tests {
             payload
                 .sub_blocks
                 .iter()
-                .map(|component| component.dl_cc_ids.clone())
+                .map(|component| component.dl_selector().map(<[u8]>::to_vec))
                 .collect::<Vec<_>>(),
             selectors
         );
@@ -1150,17 +1146,16 @@ mod tests {
         let payload = raw_payloads(&caps).pop().unwrap();
         let component = &payload.sub_blocks[0];
         assert_eq!(
-            component.dl_feature_set(),
+            component.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
-        assert_eq!(component.dl_cc_ids, None);
+        assert_eq!(component.dl_selector(), None);
         assert_ne!(
             RawSubBlockKey::from(component),
-            RawSubBlockKey::from(&RawSubBlock {
-                kind: SubBlockKind::Nr,
+            RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
                 band: 78,
                 ..Default::default()
-            })
+            }))
         );
     }
 
@@ -1589,17 +1584,21 @@ mod tests {
             // (A raw non-colliding selector-only sub-block — the dropped `dl-cc-id` fallback —
             // is no longer exercised: it cannot come from source and the strict self-verify
             // re-decode now rejects a non-placeholder unresolvable selector.)
-            sub_blocks: vec![RawSubBlock {
-                kind: SubBlockKind::Nr,
-                band: 78,
-                dl_bw_class: Some(1),
-                ul_bw_class: Some(0),
-                dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                    max_scs: Some(3),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
+            sub_blocks: vec![
+                RawNrSubBlock {
+                    band: 78,
+                    dl: NrDirection::with_features(
+                        1,
+                        vec![ShannonFeatureSetDlPerCcNr {
+                            max_scs: Some(3),
+                            ..Default::default()
+                        }],
+                    ),
+                    ul: NrDirection::bare(Some(0)),
+                    srs_tx_switch: None,
+                }
+                .into(),
+            ],
         };
         nr.set_combos(vec![ValidatedNrCombo {
             payload,
@@ -1643,28 +1642,34 @@ mod tests {
             bcs_eutra: Some(0),
             intra_band_en_dc_support: Some(0),
             sub_blocks: values
-                .map(|value| RawSubBlock {
-                    kind: SubBlockKind::Nr,
-                    band: value,
+                .map(|value| {
                     // Single-CC (bw_class 1) so the generated compact-list selector
                     // stays a single byte for `verify_compact_feature_list`'s cc_count check.
-                    dl_bw_class: Some(1),
-                    ul_bw_class: Some(1),
-                    dl_features: (direction == "DL")
-                        .then_some(ShannonFeatureSetDlPerCcNr {
-                            max_bw: Some(value),
-                            ..Default::default()
-                        })
-                        .into_iter()
-                        .collect(),
-                    ul_features: (direction == "UL")
-                        .then_some(ShannonFeatureSetUlPerCcNr {
-                            max_bw: Some(value),
-                            ..Default::default()
-                        })
-                        .into_iter()
-                        .collect(),
-                    ..Default::default()
+                    RawNrSubBlock {
+                        band: value,
+                        dl: NrDirection::with_features(
+                            1,
+                            (direction == "DL")
+                                .then_some(ShannonFeatureSetDlPerCcNr {
+                                    max_bw: Some(value),
+                                    ..Default::default()
+                                })
+                                .into_iter()
+                                .collect(),
+                        ),
+                        ul: NrDirection::with_features(
+                            1,
+                            (direction == "UL")
+                                .then_some(ShannonFeatureSetUlPerCcNr {
+                                    max_bw: Some(value),
+                                    ..Default::default()
+                                })
+                                .into_iter()
+                                .collect(),
+                        ),
+                        srs_tx_switch: None,
+                    }
+                    .into()
                 })
                 .collect(),
         }

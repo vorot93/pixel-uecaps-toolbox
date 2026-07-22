@@ -123,8 +123,8 @@ mod tests {
     use super::*;
     use crate::{
         patch::format::{
-            Kind, LtePatchCombo, LtePatchComponent, LteSetEntry, PatchCombo, PatchSubBlock,
-            SetEntry, SetKind, SubBlockKind,
+            Kind, LtePatchCombo, LtePatchComponent, LteSetEntry, NrDirection, PatchCombo, PerCc,
+            RawNrSubBlock, SetEntry, SetKind,
         },
         proto::ShannonFeatureSetDlPerCcNr,
     };
@@ -138,38 +138,56 @@ mod tests {
                 SetEntry {
                     kind: SetKind::Add,
                     combo: vec![PatchCombo {
-                        sub_blocks: vec![PatchSubBlock {
-                            kind: SubBlockKind::Nr,
-                            band: 2,
-                            dl_bw_class: Some(1),
-                            ul_bw_class: Some(1),
-                            dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                                max_bw: Some(40),
-                                max_mimo: Some(2),
-                                max_mod_order: Some(2),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        }],
+                        sub_blocks: vec![
+                            RawNrSubBlock {
+                                band: 2,
+                                dl: NrDirection {
+                                    bw_class: Some(1),
+                                    features: Some(PerCc::Resolved(vec![
+                                        ShannonFeatureSetDlPerCcNr {
+                                            max_bw: Some(40),
+                                            max_mimo: Some(2),
+                                            max_mod_order: Some(2),
+                                            ..Default::default()
+                                        },
+                                    ])),
+                                },
+                                ul: NrDirection {
+                                    bw_class: Some(1),
+                                    features: None,
+                                },
+                                srs_tx_switch: None,
+                            }
+                            .into(),
+                        ],
                         ..Default::default()
                     }],
                 },
                 SetEntry {
                     kind: SetKind::Change,
                     combo: vec![PatchCombo {
-                        sub_blocks: vec![PatchSubBlock {
-                            kind: SubBlockKind::Nr,
-                            band: 78,
-                            dl_bw_class: Some(1),
-                            ul_bw_class: Some(1),
-                            dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                                max_bw: Some(100),
-                                max_mimo: Some(3),
-                                max_mod_order: Some(2),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        }],
+                        sub_blocks: vec![
+                            RawNrSubBlock {
+                                band: 78,
+                                dl: NrDirection {
+                                    bw_class: Some(1),
+                                    features: Some(PerCc::Resolved(vec![
+                                        ShannonFeatureSetDlPerCcNr {
+                                            max_bw: Some(100),
+                                            max_mimo: Some(3),
+                                            max_mod_order: Some(2),
+                                            ..Default::default()
+                                        },
+                                    ])),
+                                },
+                                ul: NrDirection {
+                                    bw_class: Some(1),
+                                    features: None,
+                                },
+                                srs_tx_switch: None,
+                            }
+                            .into(),
+                        ],
                         ..Default::default()
                     }],
                 },
@@ -239,17 +257,24 @@ mod tests {
             set: vec![SetEntry {
                 kind: SetKind::Add,
                 combo: vec![PatchCombo {
-                    sub_blocks: vec![PatchSubBlock {
-                        kind: SubBlockKind::Nr,
-                        band: 78,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                            max_mimo: Some(7),
-                            ..Default::default()
-                        }],
-                        ..Default::default()
-                    }],
+                    sub_blocks: vec![
+                        RawNrSubBlock {
+                            band: 78,
+                            dl: NrDirection {
+                                bw_class: Some(1),
+                                features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr {
+                                    max_mimo: Some(7),
+                                    ..Default::default()
+                                }])),
+                            },
+                            ul: NrDirection {
+                                bw_class: Some(1),
+                                features: None,
+                            },
+                            srs_tx_switch: None,
+                        }
+                        .into(),
+                    ],
                     ..Default::default()
                 }],
             }],
@@ -270,17 +295,24 @@ mod tests {
             set: vec![SetEntry {
                 kind: SetKind::Add,
                 combo: vec![PatchCombo {
-                    sub_blocks: vec![PatchSubBlock {
-                        kind: SubBlockKind::Nr,
-                        band: 78,
-                        dl_bw_class: Some(1),
-                        ul_bw_class: Some(1),
-                        dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                            max_scs: Some(9),
-                            ..Default::default()
-                        }],
-                        ..Default::default()
-                    }],
+                    sub_blocks: vec![
+                        RawNrSubBlock {
+                            band: 78,
+                            dl: NrDirection {
+                                bw_class: Some(1),
+                                features: Some(PerCc::Resolved(vec![ShannonFeatureSetDlPerCcNr {
+                                    max_scs: Some(9),
+                                    ..Default::default()
+                                }])),
+                            },
+                            ul: NrDirection {
+                                bw_class: Some(1),
+                                features: None,
+                            },
+                            srs_tx_switch: None,
+                        }
+                        .into(),
+                    ],
                     ..Default::default()
                 }],
             }],

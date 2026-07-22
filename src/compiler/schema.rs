@@ -1328,7 +1328,7 @@ carrier "MAPPING" mapping-id=7 {
             cc.iter().map(|cc| cc.band_label()).collect::<Vec<_>>(),
             ["B1", "n78"]
         );
-        assert_eq!(cc[1].dl_cc_ids, None);
+        assert_eq!(cc[1].dl_selector(), None);
     }
 
     #[test]
@@ -1424,7 +1424,10 @@ carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
                 .collect::<Vec<_>>(),
             ["B1", "n78"]
         );
-        assert_eq!(canonical.nr.combo[0].payload.sub_blocks[1].dl_cc_ids, None);
+        assert_eq!(
+            canonical.nr.combo[0].payload.sub_blocks[1].dl_selector(),
+            None
+        );
         assert_eq!(
             canonical.nr.combo[1].payload.sub_blocks[0].band_label(),
             "B3"
