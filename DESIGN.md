@@ -583,11 +583,13 @@ be stored:
   one 1-based local selector byte per CC (a CC-count-long array, not a single byte). The
   global catalogs may exceed 255 records, but one generated file may use at most 255
   records independently in each direction.
-- Selector-only bytes remain exact. A positive leading byte that was out of range on
-  input must still exceed the **final compact local list** length or generation fails.
-  Inserting default filler to reserve its index would instead make it resolve and change
-  its meaning; strict generated-file re-ingest/self-verification exposed that failure,
-  so filler or reserved-slot generation must not return.
+- Selector-only bytes remain exact, and the only one that can reach generation is the
+  all-zero placeholder. A nonzero unresolvable selector is rejected upstream at both
+  entry points — `resolve_or_placeholder` on decode and `ensure_selector_resolved` on
+  `patch create` — so generation no longer re-checks it. The historical hazard this
+  guarded against still stands as a rule for any future change here: inserting default
+  filler to reserve a selector's index would make a previously out-of-range byte resolve
+  and silently change its meaning, so filler or reserved-slot generation must not return.
 
 NR compiler fidelity is canonical modeled-value equality, not protobuf byte identity.
 Feature-list layout, selectors, group packing, component order, and canonical proto3

@@ -8,7 +8,6 @@ use crate::{
         combo_group::combo::SubBlock as ProtoSubBlock,
     },
     raw_nr::{RawNrPayload, RawSubBlock, SubBlockKind},
-    report::combos::feature_index,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,30 +108,6 @@ pub(crate) struct LocalFeaturePlan {
     pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
-fn ensure_selector_only_unresolved(
-    ids: &Option<Vec<u8>>,
-    local_len: usize,
-    direction: &str,
-    basename: &str,
-    sku: &str,
-) -> anyhow::Result<()> {
-    if let Some(index) = ids
-        .as_deref()
-        .and_then(|values| values.first())
-        .copied()
-        .filter(|index| *index != 0)
-    {
-        // Complement of the resolution rule: a nonzero selector-only leading byte must NOT
-        // resolve against the compact local list (else its meaning would change). `> len` is
-        // exactly `feature_index(..).is_none()` for a nonzero byte — route through the authority.
-        ensure!(
-            feature_index(ids.as_deref(), local_len).is_none(),
-            "{basename} ({sku}) {direction} selector-only leading byte {index} would resolve against compact local list length {local_len}"
-        );
-    }
-    Ok(())
-}
-
 impl LocalFeaturePlan {
     pub(crate) fn new(
         catalogs: &FeatureCatalogs,
@@ -190,29 +165,6 @@ impl LocalFeaturePlan {
             "{basename} ({sku}) uses {} distinct UL feature records; local limit is 255",
             ul_source.len()
         );
-
-        for payload in payloads {
-            for component in &payload.sub_blocks {
-                if !component.dl_feature_set_is_present() {
-                    ensure_selector_only_unresolved(
-                        &component.dl_cc_ids,
-                        dl_source.len(),
-                        "DL",
-                        basename,
-                        sku,
-                    )?;
-                }
-                if !component.ul_feature_set_is_present() {
-                    ensure_selector_only_unresolved(
-                        &component.ul_cc_ids,
-                        ul_source.len(),
-                        "UL",
-                        basename,
-                        sku,
-                    )?;
-                }
-            }
-        }
 
         let dl = dl_source
             .iter()
@@ -603,27 +555,18 @@ mod tests {
     }
 
     #[test]
-    fn local_plan_rejects_selector_only_collision_without_filler() {
-        let catalogs = FeatureCatalogs::new(
-            vec![DlFeatureSource {
-                max_scs: Some(3),
-                ..Default::default()
-            }],
-            vec![],
-        );
-        let resolved = RawSubBlock {
-            kind: SubBlockKind::Nr,
-            band: 78,
-            dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                max_scs: Some(3),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let selector_only = RawSubBlock {
-            kind: SubBlockKind::Nr,
-            band: 41,
-            dl_cc_ids: Some(vec![1, 9]),
+    fn local_plan_passes_through_the_all_zero_placeholder_selector() {
+        // The all-zero placeholder is the ONLY unresolved selector that can reach
+        // generation: decode (`resolve_or_placeholder`) and `patch create`
+        // (`ensure_selector_resolved`) both fail closed on a non-placeholder one. It must
+        // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside nr.kdl combos
+        // and UL-disabled NR sub-blocks depend on this for byte-exact round-trip.
+        let sb = RawSubBlock {
+            kind: SubBlockKind::Lte,
+            band: 66,
+            dl_bw_class: Some(1), // cc_count(Lte, 1) == 1, matching the 1-byte selector
+            ul_bw_class: Some(1),
+            dl_cc_ids: Some(vec![0]),
             ..Default::default()
         };
         let payload = RawNrPayload {
@@ -632,14 +575,18 @@ mod tests {
             bcs_intra_endc: None,
             bcs_eutra: None,
             intra_band_en_dc_support: None,
-            sub_blocks: vec![resolved, selector_only],
+            sub_blocks: vec![sb.clone()],
         };
-        let error = LocalFeaturePlan::new(&catalogs, &[&payload], "A_1.binarypb", "G2YBB")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("DL selector-only leading byte 1"), "{error}");
-        assert!(error.contains("local list length 1"), "{error}");
-        assert!(error.contains("G2YBB"), "{error}");
+        let catalogs = FeatureCatalogs::from_payloads([&payload]);
+        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+
+        let out = plan.reconstruct_sub_block(&sb).unwrap();
+
+        assert_eq!(
+            out.dl_feature_per_cc_ids,
+            Some(vec![0]),
+            "the all-zero placeholder must survive generation byte-for-byte"
+        );
     }
 
     #[test]
