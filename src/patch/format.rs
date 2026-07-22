@@ -1053,7 +1053,7 @@ add {
                 .replace(new, &format!("{old}1 {new}"));
             let err = from_kdl(&text).unwrap_err().to_string();
             assert!(
-                err.contains("unknown property"),
+                err.contains("unknown property") && err.contains(old.trim_end_matches('=')),
                 "{old} should be rejected: {err}"
             );
         }
