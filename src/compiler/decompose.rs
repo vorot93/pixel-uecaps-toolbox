@@ -141,12 +141,13 @@ pub fn decompose(bitmask_dir: &Path, profiled_dir: &Path, out_dir: &Path) -> any
     if out_dir.exists() {
         ensure!(
             out_dir.is_dir(),
-            "decode output {} must be a directory",
+            "decompose output {} must be a directory",
             out_dir.display()
         );
     } else {
-        fs::create_dir_all(out_dir)
-            .with_context(|| format!("creating decode output directory {}", out_dir.display()))?;
+        fs::create_dir_all(out_dir).with_context(|| {
+            format!("creating decompose output directory {}", out_dir.display())
+        })?;
     }
 
     let nr_path = out_dir.join("nr.kdl");
