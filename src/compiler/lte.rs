@@ -57,7 +57,7 @@ impl From<&LteCombo> for RawLteCombo {
 /// `LteCaps` into compiler source DTOs. No `selection`. Preserves optional-field
 /// presence (`bcs`/`unknown1`/`unknown2`) so the writer can match lte.kdl's
 /// presence-sensitive semantics.
-pub(crate) fn lte_source_from_one_file(caps: &LteCaps) -> Vec<LteSourceCombo> {
+pub(super) fn lte_source_from_one_file(caps: &LteCaps) -> Vec<LteSourceCombo> {
     caps.combos
         .iter()
         .map(|combo| LteSourceCombo {

@@ -686,7 +686,7 @@ fn canonical_payloads(
 /// byte against the file's own feature lists the same way decode's `canonical_payloads`
 /// does. No validation, no cross-file normalization, no `selection`. Best-effort —
 /// inspect's lenient contract.
-pub(crate) fn nr_source_from_one_file(
+pub(super) fn nr_source_from_one_file(
     caps: &UeCaps,
 ) -> (
     Vec<DlFeatureSource>,

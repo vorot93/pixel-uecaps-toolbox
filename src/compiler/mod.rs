@@ -6,19 +6,16 @@ pub(crate) mod lte;
 pub(crate) mod nr;
 pub(crate) mod schema;
 pub(crate) mod selection;
+mod slice;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
 pub use build::{build, build_from_sources, load_sources};
 pub use decompose::decompose;
-pub(crate) use kdl_source::{
-    emit_dl_feature, emit_lte_combo, emit_nr_combo, emit_ul_feature, lte_from_kdl, lte_to_kdl,
-    nr_from_kdl, nr_to_kdl,
-};
-pub(crate) use lte::lte_source_from_one_file;
-pub(crate) use nr::nr_source_from_one_file;
+pub(crate) use kdl_source::{lte_from_kdl, lte_to_kdl, nr_from_kdl, nr_to_kdl};
 pub use schema::ValidatedSources;
+pub(crate) use slice::{lte_slice, nr_slice};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedFile {

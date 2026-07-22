@@ -2,11 +2,6 @@
 
 use super::read_ue_caps;
 use crate::{
-    compiler::{
-        emit_dl_feature, emit_lte_combo, emit_nr_combo, emit_ul_feature,
-        features::{DlFeatureSource, UlFeatureSource},
-        schema::{LteSourceCombo, NrSourceCombo},
-    },
     factor::{factor_display, gcd},
     kdl_support::{finish_doc, opt_int_prop, str_list_node},
     mapping::load_mapping,
@@ -97,9 +92,9 @@ pub fn inspect(path: &Path, full: bool, as_kdl: bool) -> anyhow::Result<i32> {
     })
 }
 
-/// The write-only `inspect --kdl` dump: builds compiler source DTOs from one file
-/// (`nr_source_from_one_file` / `lte_source_from_one_file`) and emits them via the
-/// compiler's `pub(crate)` writers. The Mapping branch is unchanged.
+/// The write-only `inspect --kdl` dump: delegates the capability branches to the
+/// compiler's one-file slice functions (`nr_slice` / `lte_slice`). The Mapping
+/// branch is unchanged.
 fn inspect_kdl(path: &Path, dir: &Path, base: &str) -> anyhow::Result<(String, i32)> {
     match parse_name(base) {
         Parsed::Mapping => {
@@ -119,90 +114,22 @@ fn inspect_kdl(path: &Path, dir: &Path, base: &str) -> anyhow::Result<(String, i
             Ok((v.to_kdl(), 0))
         }
         Parsed::Lte(number) => {
-            let caps = std::fs::read(path)
-                .ok()
-                .and_then(|d| crate::proto::LteCaps::decode(&d[..]).ok());
-            let readable = caps.is_some();
-            let text = match caps {
-                None => version_only_document(),
-                Some(caps) => {
-                    let combos = crate::compiler::lte_source_from_one_file(&caps);
-                    render_lte_slice(&combos)
-                }
-            };
             let _ = number;
-            Ok((text, i32::from(!readable)))
+            let bytes = std::fs::read(path).unwrap_or_default();
+            Ok(crate::compiler::lte_slice(&bytes))
         }
         Parsed::Carrier {
             carrier: _,
             number: _,
         } => {
-            // Single-file nr.kdl slice: version 1, per-file dl-feature/ul-feature
-            // catalogs, per-file combos. No diagnostic envelope (text report has it);
-            // no cross-file metadata (not synthesizable from one file).
-            let caps = read_ue_caps(path);
-            let code = i32::from(caps.is_none());
-            let text = match caps {
-                None => version_only_document(),
-                Some(caps) => {
-                    let (dl, ul, combos) = crate::compiler::nr_source_from_one_file(&caps);
-                    render_nr_slice(&dl, &ul, &combos)?
-                }
-            };
-            Ok((text, code))
+            let bytes = std::fs::read(path).unwrap_or_default();
+            crate::compiler::nr_slice(&bytes)
         }
         Parsed::Other => {
             eprintln!("Not a recognised uecaps filename: {base}");
             Ok((String::new(), 2))
         }
     }
-}
-
-/// Render the per-file NR slice as `version 1` + dl-feature/ul-feature catalogs +
-/// combos, all via the compiler's `pub(crate)` writers. No diagnostic envelope.
-fn render_nr_slice(
-    dl: &[DlFeatureSource],
-    ul: &[UlFeatureSource],
-    combos: &[NrSourceCombo],
-) -> anyhow::Result<String> {
-    let mut doc = KdlDocument::new();
-    let mut version = KdlNode::new("version");
-    version.push(KdlEntry::new(1i128));
-    doc.nodes_mut().push(version);
-    for f in dl {
-        doc.nodes_mut().push(emit_dl_feature(f));
-    }
-    for f in ul {
-        doc.nodes_mut().push(emit_ul_feature(f));
-    }
-    for combo in combos {
-        doc.nodes_mut().push(emit_nr_combo(combo)?);
-    }
-    Ok(finish_doc(doc))
-}
-
-/// Render the per-file LTE slice as `version 1` + combos, via the compiler's
-/// `pub(crate)` writer. No diagnostic envelope.
-fn render_lte_slice(combos: &[LteSourceCombo]) -> String {
-    let mut doc = KdlDocument::new();
-    let mut version = KdlNode::new("version");
-    version.push(KdlEntry::new(1i128));
-    doc.nodes_mut().push(version);
-    for combo in combos {
-        doc.nodes_mut().push(emit_lte_combo(combo));
-    }
-    finish_doc(doc)
-}
-
-/// What inspect --kdl emits for an unreadable file: just `version 1` (no combos,
-/// no catalogs). The text report carries the diagnostic; the slice is intentionally
-/// empty so a stale `--kdl | build` round-trip can't fabricate data.
-fn version_only_document() -> String {
-    let mut doc = KdlDocument::new();
-    let mut version = KdlNode::new("version");
-    version.push(KdlEntry::new(1i128));
-    doc.nodes_mut().push(version);
-    finish_doc(doc)
 }
 
 fn inspect_lte(path: &Path, number: u64, full: bool) -> i32 {
@@ -537,27 +464,6 @@ mod tests {
     }
 
     #[test]
-    fn inspect_kdl_carrier_emits_nr_kdl_slice() {
-        let dir = std::env::temp_dir().join(format!("uecaps-kdl-slice-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let base = "VZW_3616442437.binarypb";
-        let path = dir.join(base);
-        std::fs::write(&path, caps_bytes()).unwrap();
-
-        let (text, _code) = super::inspect_kdl(&path, &dir, base).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-
-        // Shape matches a one-file slice of nr.kdl.
-        assert!(text.starts_with("version 1"), "{text}");
-        assert!(text.contains("nr 78"), "{text}");
-        assert!(!text.contains("type=carrier"), "{text}"); // envelope gone
-        assert!(!text.contains("dl-scs-khz"), "{text}"); // display extension gone
-        assert!(!text.contains("fingerprint-status"), "{text}");
-        // The sample's only component has no resolved feature records (catalog empty):
-        // no dl-feature/ul-feature top-level nodes, no dl-feature=N on the cc.
-    }
-
-    #[test]
     fn inspect_kdl_readable_file_exits_zero_even_when_ambiguous() {
         // R8 history: 3347 * 3539 is divisible by two anchors → ambiguous. Under the
         // one-file-slice shape, ambiguity is no longer a --kdl-level exit condition
@@ -577,44 +483,6 @@ mod tests {
             "a readable carrier file with an ambiguous NUMBER still exits 0; \
              the diagnostic moves to the text report"
         );
-    }
-
-    #[test]
-    fn inspect_kdl_lte_emits_lte_kdl_slice() {
-        use crate::proto::{LteCaps, LteCombo, LteComponent};
-        use prost::Message;
-
-        let dir = std::env::temp_dir().join(format!("uecaps-kdl-lte-slice-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let base = "lte_2160127815.binarypb";
-        let path = dir.join(base);
-        let caps = LteCaps {
-            fingerprint: 862_505_271,
-            bitmask: 0,
-            combos: vec![LteCombo {
-                components: vec![LteComponent {
-                    band: 1,
-                    dl_bw_class_mimo: 32768,
-                    ul_bw_class_mimo: None,
-                }],
-                bcs: None,
-                unknown1: None,
-                unknown2: None,
-            }],
-        };
-        std::fs::write(&path, caps.encode_to_vec()).unwrap();
-
-        let (text, code) = super::inspect_kdl(&path, &dir, base).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
-
-        assert_eq!(code, 0, "a readable LTE file exits 0");
-        assert!(text.starts_with("version 1"), "{text}");
-        assert!(text.contains("subblock 1 dl-bw-class-mimo=32768"), "{text}");
-        // ul-bw-class-mimo is None — must be omitted (presence semantics match lte.kdl)
-        assert!(!text.contains("ul-bw-class-mimo"), "{text}");
-        // No diagnostic envelope
-        assert!(!text.contains("config-family"), "{text}");
-        assert!(!text.contains("fingerprint="), "{text}");
     }
 
     #[test]
