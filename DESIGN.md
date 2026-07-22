@@ -309,7 +309,8 @@ the ecosystem has changed.
 `decompose` builds the `KdlDocument` and renders it with `kdl::KdlDocument::autoformat()`: 4-space
 indent, `#true`/`#false` booleans, native i128-backed integers, and bare identifiers except where
 KDL requires quoting — a numeric-leading string (a map key like `profile "66813533"`) or one with
-separators. Autoformat is deterministic, so a given `kdl` version's output is byte-stable — but the
+separators. `decode`'s capability slices go through this same writer (`compiler/slice.rs`), so the
+same formatting rules apply there too. Autoformat is deterministic, so a given `kdl` version's output is byte-stable — but the
 exact bare-vs-quoted and spacing rules belong to the crate, not to us, so **a `kdl` version bump can
 change formatting**. `kdl` is version-pinned in `Cargo.toml` for this reason; if it's ever bumped,
 treat a golden/corpus byte-diff as expected and regenerate the fixtures rather than chase it as a
@@ -569,9 +570,9 @@ be stored:
   **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
   fails, the entire raw array stays unresolved (`[0, 2]` and `[2, 99]` both fail to
-  resolve). `resolve_all` itself only reports that; the decode boundary that consumes it
+  resolve). `resolve_all` itself only reports that; the decompose boundary that consumes it
   (`resolve_or_placeholder`) then **rejects** any unresolved array that is not the
-  all-zero placeholder, so neither `[0, 2]` nor `[2, 99]` can survive decode as raw
+  all-zero placeholder, so neither `[0, 2]` nor `[2, 99]` can survive decompose as raw
   bytes. Decompose then deduplicates and sorts each catalog by complete raw field
   identity. A referenced all-absent record remains a real identity; every unreferenced
   input record is ignored, whether default, explicit-zero/false, or value-bearing. A

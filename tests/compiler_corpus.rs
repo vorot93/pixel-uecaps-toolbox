@@ -595,7 +595,7 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
     let temp = tempfile::tempdir().expect("creating regression test workspace");
     let source_dir = temp.path().join("source");
     decompose(bitmask, profiled, &source_dir).expect("decoding the corpus for the regression test");
-    let sources = load_sources(&source_dir).expect("parsing the decoded canonical source");
+    let sources = load_sources(&source_dir).expect("parsing the decomposed canonical source");
     let model = PHONE_MODELS
         .iter()
         .find(|model| model.is_bitmask())
