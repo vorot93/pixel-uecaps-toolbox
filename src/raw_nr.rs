@@ -220,16 +220,16 @@ impl RawSubBlock {
             let derived = self.derived_dl_feature_index();
             anyhow::ensure!(
                 stored == derived,
-                "NR component n{} stored DL feature index {stored} != derived {derived}",
-                self.band
+                "NR component {} stored DL feature index {stored} != derived {derived}",
+                self.band_label()
             );
         }
         if let Some(stored) = self.ul_feature_index {
             let derived = self.derived_ul_feature_index();
             anyhow::ensure!(
                 stored == derived,
-                "NR component n{} stored UL feature index {stored} != derived {derived}",
-                self.band
+                "NR component {} stored UL feature index {stored} != derived {derived}",
+                self.band_label()
             );
         }
         Ok(())
@@ -258,14 +258,14 @@ impl RawSubBlock {
         };
         anyhow::ensure!(
             !unresolved(self.dl_feature_set_is_present(), &self.dl_cc_ids),
-            "NR component n{} DL selector {:?} resolves to no feature and is not the all-zero placeholder",
-            self.band,
+            "NR component {} DL selector {:?} resolves to no feature and is not the all-zero placeholder",
+            self.band_label(),
             self.dl_cc_ids
         );
         anyhow::ensure!(
             !unresolved(self.ul_feature_set_is_present(), &self.ul_cc_ids),
-            "NR component n{} UL selector {:?} resolves to no feature and is not the all-zero placeholder",
-            self.band,
+            "NR component {} UL selector {:?} resolves to no feature and is not the all-zero placeholder",
+            self.band_label(),
             self.ul_cc_ids
         );
         Ok(())
@@ -453,7 +453,7 @@ impl RawSubBlock {
             "component band must be the plain band number, not raw protobuf encoding"
         );
         if self.kind == SubBlockKind::Lte && self.has_nr_only_fields() {
-            anyhow::bail!("LTE component B{} carries NR-only fields", self.band);
+            anyhow::bail!("LTE component {} carries NR-only fields", self.band_label());
         }
         self.validate_dl_cc_count()?;
         self.validate_ul_cc_count()?;
@@ -472,8 +472,8 @@ impl RawSubBlock {
         }
         let dl_bw_class = self.dl_bw_class.ok_or_else(|| {
             anyhow::anyhow!(
-                "component B{} carries per-CC DL data without a dl_bw_class",
-                self.band
+                "component {} carries per-CC DL data without a dl_bw_class",
+                self.band_label()
             )
         })?;
         let expected = cc_count(self.kind, dl_bw_class)?;
@@ -484,8 +484,8 @@ impl RawSubBlock {
         };
         anyhow::ensure!(
             len == expected,
-            "component B{} DL per-CC list length {len} does not match cc_count {expected} for dl_bw_class {dl_bw_class}",
-            self.band
+            "component {} DL per-CC list length {len} does not match cc_count {expected} for dl_bw_class {dl_bw_class}",
+            self.band_label()
         );
         Ok(())
     }
@@ -500,8 +500,8 @@ impl RawSubBlock {
         }
         let ul_bw_class = self.ul_bw_class.ok_or_else(|| {
             anyhow::anyhow!(
-                "component B{} carries per-CC UL data without a ul_bw_class",
-                self.band
+                "component {} carries per-CC UL data without a ul_bw_class",
+                self.band_label()
             )
         })?;
         if ul_bw_class == 0 {
@@ -515,8 +515,8 @@ impl RawSubBlock {
         };
         anyhow::ensure!(
             len == expected,
-            "component B{} UL per-CC list length {len} does not match cc_count {expected} for ul_bw_class {ul_bw_class}",
-            self.band
+            "component {} UL per-CC list length {len} does not match cc_count {expected} for ul_bw_class {ul_bw_class}",
+            self.band_label()
         );
         Ok(())
     }
@@ -535,8 +535,8 @@ impl RawSubBlock {
                 let got = derive_nr_dl_index(Some(feature.max_scs.unwrap_or(0)));
                 anyhow::ensure!(
                     got == want,
-                    "component B{} CCs disagree on derived DL feature index ({want} vs {got}); cannot aggregate FR1+FR2 in one band",
-                    self.band
+                    "component {} CCs disagree on derived DL feature index ({want} vs {got}); cannot aggregate FR1+FR2 in one band",
+                    self.band_label()
                 );
             }
         }
@@ -546,8 +546,8 @@ impl RawSubBlock {
                 let got = derive_nr_ul_index(Some(feature.max_mimo_cb.unwrap_or(0)));
                 anyhow::ensure!(
                     got == want,
-                    "component B{} CCs disagree on derived UL feature index ({want} vs {got})",
-                    self.band
+                    "component {} CCs disagree on derived UL feature index ({want} vs {got})",
+                    self.band_label()
                 );
             }
         }
@@ -1310,6 +1310,62 @@ mod tests {
 
         let error = cc.validate().unwrap_err().to_string();
         assert!(error.contains("LTE component B66 carries NR-only fields"));
+    }
+
+    #[test]
+    fn nr_component_validation_errors_use_the_n_band_label() {
+        // `validate()` used to hardcode `B{}`, misprinting every NR band (n78 as B78).
+        // Route through `band_label()` so the label always matches the component's kind.
+        // DL branch: cc_count(Nr, 1) == 1, so two per-CC features is a length mismatch.
+        let dl_mismatch = RawSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 78,
+            dl_bw_class: Some(1),
+            ul_bw_class: Some(0),
+            dl_features: vec![
+                ShannonFeatureSetDlPerCcNr {
+                    max_scs: Some(1),
+                    ..Default::default()
+                },
+                ShannonFeatureSetDlPerCcNr {
+                    max_scs: Some(1),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let error = dl_mismatch.validate().unwrap_err().to_string();
+        assert!(error.contains("component n78"), "{error}");
+        assert!(
+            !error.contains("B78"),
+            "must not misprint an NR band as B78: {error}"
+        );
+
+        // Cross-CC agreement branch (NR-only function — the label there was always wrong):
+        // scs 1 derives DL index 1, scs 4 derives 2, so two CCs disagree.
+        let disagreeing = RawSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 41,
+            dl_bw_class: Some(2), // cc_count(Nr, 2) == 2, so the length check passes first
+            ul_bw_class: Some(0),
+            dl_features: vec![
+                ShannonFeatureSetDlPerCcNr {
+                    max_scs: Some(1),
+                    ..Default::default()
+                },
+                ShannonFeatureSetDlPerCcNr {
+                    max_scs: Some(4),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let error = disagreeing.validate().unwrap_err().to_string();
+        assert!(error.contains("component n41"), "{error}");
+        assert!(
+            !error.contains("B41"),
+            "must not misprint an NR band as B41: {error}"
+        );
     }
 
     #[test]
