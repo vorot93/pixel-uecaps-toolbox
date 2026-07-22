@@ -587,6 +587,37 @@ mod tests {
             Some(vec![0]),
             "the all-zero placeholder must survive generation byte-for-byte"
         );
+
+        // The other half of the claim above: a UL-disabled NR sub-block carries the same
+        // all-zero placeholder on the UL side (`validate_ul_cc_count` skips the length check
+        // entirely when `ul_bw_class == 0`), and it must survive generation identically.
+        let nr_sb = RawSubBlock {
+            kind: SubBlockKind::Nr,
+            band: 78,
+            dl_bw_class: Some(1), // valid NR class; DL is not exercised by this assertion
+            ul_bw_class: Some(0), // UL disabled
+            ul_cc_ids: Some(vec![0]),
+            ..Default::default()
+        };
+        let nr_payload = RawNrPayload {
+            power_class: None,
+            bcs_nr: None,
+            bcs_intra_endc: None,
+            bcs_eutra: None,
+            intra_band_en_dc_support: None,
+            sub_blocks: vec![nr_sb.clone()],
+        };
+        let nr_catalogs = FeatureCatalogs::from_payloads([&nr_payload]);
+        let nr_plan =
+            LocalFeaturePlan::new(&nr_catalogs, &[&nr_payload], "A.binarypb", "legacy").unwrap();
+
+        let nr_out = nr_plan.reconstruct_sub_block(&nr_sb).unwrap();
+
+        assert_eq!(
+            nr_out.ul_feature_per_cc_ids,
+            Some(vec![0]),
+            "the UL-disabled NR placeholder must survive generation byte-for-byte"
+        );
     }
 
     #[test]

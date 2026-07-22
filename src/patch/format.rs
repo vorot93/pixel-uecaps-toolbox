@@ -1037,7 +1037,7 @@ add {
             );
             let err = from_kdl(&text).unwrap_err().to_string();
             assert!(
-                err.contains("unknown property"),
+                err.contains("unknown property") && err.contains(key.trim_end_matches("=1")),
                 "{key} should be rejected: {err}"
             );
         }

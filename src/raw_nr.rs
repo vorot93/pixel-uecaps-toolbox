@@ -1184,9 +1184,9 @@ mod tests {
     #[test]
     fn from_proto_accepts_the_all_zero_placeholder_selector() {
         // Counterpart to `from_proto_rejects_non_placeholder_unresolvable_selector`: the
-        // all-zero placeholder resolves to no feature set and is re-derivable from
-        // bw_class/cc_count, so it must pass through unresolved rather than be rejected
-        // (do not over-guard).
+        // all-zero placeholder resolves to no feature set and its bytes are kept verbatim,
+        // so `from_proto_sub_block` must pass it through rather than reject it (do not
+        // over-guard).
         let proto = ProtoSubBlock {
             band: NR_BAND_OFFSET + 78,
             dl_bw_class: Some(1),
