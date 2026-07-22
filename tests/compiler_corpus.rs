@@ -6,7 +6,7 @@ use std::{
 };
 
 use pixel_uecaps_toolbox::{
-    compiler::{build_from_sources, decode, load_sources},
+    compiler::{build_from_sources, decompose, load_sources},
     model::PHONE_MODELS,
     proto::{LteCaps, LteCombo, UeCaps},
 };
@@ -307,8 +307,8 @@ fn optional_corpora_decode_and_build_every_registered_target() {
     // directory-order-independent source bytes at the public boundary. The two decodes are
     // independent (distinct output dirs) and each is CPU-bound, so run them concurrently.
     rayon::join(
-        || decode(bitmask, profiled, &first_source).expect("decoding both optional corpora"),
-        || decode(bitmask, profiled, &second_source).expect("re-decoding both optional corpora"),
+        || decompose(bitmask, profiled, &first_source).expect("decoding both optional corpora"),
+        || decompose(bitmask, profiled, &second_source).expect("re-decoding both optional corpora"),
     );
     for document in ["nr.kdl", "lte.kdl"] {
         assert_eq!(
@@ -352,7 +352,7 @@ fn optional_corpora_decode_and_build_every_registered_target() {
 
 /// Independently verify (against the real corpus) that every NR component's stored
 /// `dl/ul_feature_index` equals what we derive from its per-CC feature set. This is the
-/// invariant that lets `decode`/`create` omit the field and `build`/`apply` re-derive it.
+/// invariant that lets `decompose`/`create` omit the field and `build`/`apply` re-derive it.
 /// Env-gated exactly like the other corpus test.
 #[test]
 fn nr_feature_index_matches_derivation_formula() {
@@ -530,14 +530,14 @@ fn resolve_selector<T: Clone>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec<T>> 
         .collect()
 }
 
-/// The bug this regression pins was invisible to a plain decode->build round trip: `decode`
+/// The bug this regression pins was invisible to a plain decompose->build round trip: `decompose`
 /// collapsed a non-uniform multi-CC NR sub-block (one whose per-CC DL feature selector bytes
 /// resolve to *different* records for different CCs) down to its first CC, and `build`
 /// faithfully reproduced that same collapsed value. Comparing rebuilt-vs-rebuilt therefore
 /// compared collapsed-vs-collapsed and passed, silently dropping the second (and any further)
 /// CC's feature set. The only way to catch that class of bug is to compare the pipeline's
 /// output against the ORIGINAL raw corpus file's per-CC features, captured independently of
-/// `decode`/`build` — which is what this test does.
+/// `decompose`/`build` — which is what this test does.
 ///
 /// Ground truth (verified against the real corpus, see task-10 report): `ATT.binarypb`'s NR
 /// band `n48` (`band == NR_BAND_OFFSET + 48`) carries a class-B (`dl_bw_class == 2`, 2-CC)
@@ -594,7 +594,7 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
     let temp = tempfile::tempdir().expect("creating regression test workspace");
     let source_dir = temp.path().join("source");
-    decode(bitmask, profiled, &source_dir).expect("decoding the corpus for the regression test");
+    decompose(bitmask, profiled, &source_dir).expect("decoding the corpus for the regression test");
     let sources = load_sources(&source_dir).expect("parsing the decoded canonical source");
     let model = PHONE_MODELS
         .iter()

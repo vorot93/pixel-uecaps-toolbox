@@ -377,7 +377,7 @@ fn read_carrier(node: &KdlNode) -> Result<(String, CarrierSource)> {
     } else if let Some(marker) = r.opt_child("plmns")? {
         // Bare marker = an empty-but-present PLMN list. It must be truly bare: reject a
         // stale `plmns "a" "b"` list rather than silently dropping its entries — PLMNs are
-        // now `plmn mcc=… mnc=…` nodes (regenerate this file with `decode` to migrate).
+        // now `plmn mcc=… mnc=…` nodes (regenerate this file with `decompose` to migrate).
         NodeReader::new(marker).finish()?;
         Some(Vec::new())
     } else {

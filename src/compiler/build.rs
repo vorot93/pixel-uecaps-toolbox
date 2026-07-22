@@ -4,7 +4,7 @@ use anyhow::{Context, ensure};
 
 use super::{
     GeneratedFile,
-    decode::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
+    decompose::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
     lte::generate_lte_file,
     nr::{NrTarget, generate_nr_files},
     schema::{ValidatedNr, ValidatedSources, parse_sources},
@@ -249,7 +249,7 @@ mod tests {
     use crate::{
         compiler::{
             GeneratedFile,
-            decode::decode,
+            decompose::decompose,
             features::{DlFeatureSource, NrSourceSubBlock},
             schema::{
                 BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
@@ -559,8 +559,8 @@ mod tests {
             fs::write(source.join("lte.kdl"), b"old lte source").unwrap();
         }
 
-        decode(&first_bitmask, &first_profiled, &first_source).unwrap();
-        decode(&second_bitmask, &second_profiled, &second_source).unwrap();
+        decompose(&first_bitmask, &first_profiled, &first_source).unwrap();
+        decompose(&second_bitmask, &second_profiled, &second_source).unwrap();
 
         let first_nr = fs::read(first_source.join("nr.kdl")).unwrap();
         let first_lte = fs::read(first_source.join("lte.kdl")).unwrap();

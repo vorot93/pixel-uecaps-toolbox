@@ -128,7 +128,7 @@ pub(crate) struct ValidatedNrCombo {
 /// Inverted index from an interned `(carrier_id, sku_id)` target to the `combo` indices whose
 /// relation contains it, built once per [`ValidatedNr`]. It replaces `selected_payloads`' former
 /// per-target linear scan over every combo (each an O(log n) [`NrRelation::contains`] probe) with
-/// one O(1) lookup — the dominant `decode`/`build` cost, since generation runs `selected_payloads`
+/// one O(1) lookup — the dominant `decompose`/`build` cost, since generation runs `selected_payloads`
 /// once per carrier per target. Indices are stored ascending, so a lookup yields payloads in the
 /// exact order the old `combo.iter().filter(..)` produced them, keeping generated output
 /// byte-identical. Combo order is fixed once [`validate_nr_combos`] returns
@@ -214,7 +214,7 @@ pub struct ValidatedSources {
 impl ValidatedSources {
     /// Serialize these already-validated, canonical sources to `(nr.kdl, lte.kdl)` **without**
     /// re-validating. `validate_documents` leaves `nr.source`/`lte.source` canonical, so serializing
-    /// them directly reproduces exactly what [`to_kdl`] would — letting `decode` drop a redundant
+    /// them directly reproduces exactly what [`to_kdl`] would — letting `decompose` drop a redundant
     /// third `validate_documents` pass while its byte-idempotence assertion still proves the emitted
     /// documents are a fixed point.
     pub(crate) fn to_kdl(&self) -> anyhow::Result<(String, String)> {
@@ -272,7 +272,7 @@ pub(crate) fn validate_documents(
     Ok(validated)
 }
 
-/// Validate + canonicalize + serialize in one step. Now used only by tests (the `decode`/`build`
+/// Validate + canonicalize + serialize in one step. Now used only by tests (the `decompose`/`build`
 /// paths validate once and reuse via [`ValidatedSources::to_kdl`]); kept as a convenient fixture
 /// helper.
 #[cfg(test)]

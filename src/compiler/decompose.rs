@@ -127,13 +127,13 @@ pub(crate) fn decode_documents(
 
     verify_internal_targets(&validated, &original_mapping, &original_lte)?;
     // `nr_text`/`lte_text` are the canonical documents already validated above (reparse +
-    // reserialize byte-idempotent). Return them so `decode` need not recompute to_kdl (E4).
+    // reserialize byte-idempotent). Return them so `decompose` need not recompute to_kdl (E4).
     Ok((validated.nr.source, validated.lte.source, nr_text, lte_text))
 }
 
-/// Decode both required folders and atomically replace the two canonical source documents.
+/// Decompose both required folders and atomically replace the two canonical source documents.
 /// Validation, encoding, and self-verification finish before the output directory is created.
-pub fn decode(bitmask_dir: &Path, profiled_dir: &Path, out_dir: &Path) -> anyhow::Result<i32> {
+pub fn decompose(bitmask_dir: &Path, profiled_dir: &Path, out_dir: &Path) -> anyhow::Result<i32> {
     let (_nr, _lte, nr_text, lte_text) = decode_documents(bitmask_dir, profiled_dir)?;
     let nr_bytes = nr_text.into_bytes();
     let lte_bytes = lte_text.into_bytes();
@@ -457,7 +457,7 @@ mod tests {
     use prost::Message;
     use tempfile::tempdir;
 
-    use super::{decode, decode_documents};
+    use super::{decode_documents, decompose};
     use crate::{
         compiler::{
             schema::{parse_sources, to_kdl},
@@ -485,7 +485,7 @@ mod tests {
         fs::write(out.join("nr.kdl"), b"old nr\n").unwrap();
         fs::write(out.join("lte.kdl"), b"old lte\n").unwrap();
 
-        let error = decode(&bitmask, &profiled, &out).unwrap_err();
+        let error = decompose(&bitmask, &profiled, &out).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains(expected), "unexpected error: {error}");
         assert_eq!(fs::read(out.join("nr.kdl")).unwrap(), b"old nr\n");
@@ -620,11 +620,11 @@ mod tests {
         let first_out = first.path().join("out");
         let second_out = second.path().join("out");
         assert_eq!(
-            decode(&first_bitmask, &first_profiled, &first_out).unwrap(),
+            decompose(&first_bitmask, &first_profiled, &first_out).unwrap(),
             0
         );
         assert_eq!(
-            decode(&second_bitmask, &second_profiled, &second_out).unwrap(),
+            decompose(&second_bitmask, &second_profiled, &second_out).unwrap(),
             0
         );
         assert_eq!(
@@ -648,12 +648,12 @@ mod tests {
     }
 
     #[test]
-    fn decode_writes_exactly_two_newline_terminated_idempotent_documents() {
+    fn decompose_writes_exactly_two_newline_terminated_idempotent_documents() {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
         let out = temp.path().join("source");
 
-        assert_eq!(decode(&bitmask, &profiled, &out).unwrap(), 0);
+        assert_eq!(decompose(&bitmask, &profiled, &out).unwrap(), 0);
 
         let mut names = fs::read_dir(&out)
             .unwrap()
@@ -729,7 +729,7 @@ mod tests {
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
 
         assert_eq!(
-            decode(&bitmask, &profiled, &temp.path().join("out")).unwrap(),
+            decompose(&bitmask, &profiled, &temp.path().join("out")).unwrap(),
             0
         );
     }

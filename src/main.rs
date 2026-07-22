@@ -15,8 +15,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Decode complete bitmask and profiled folders into canonical compiler sources
-    Decode {
+    /// Decompose complete bitmask and profiled folders into canonical compiler sources
+    Decompose {
         /// Legacy bitmask-based uecapconfig folder
         #[arg(long)]
         bitmask: PathBuf,
@@ -246,11 +246,11 @@ fn run() -> anyhow::Result<i32> {
 impl Cmd {
     fn run(self) -> anyhow::Result<i32> {
         match self {
-            Self::Decode {
+            Self::Decompose {
                 bitmask,
                 profiled,
                 out,
-            } => compiler::decode(&bitmask, &profiled, &out),
+            } => compiler::decompose(&bitmask, &profiled, &out),
             Self::Build {
                 model,
                 source,
@@ -362,10 +362,10 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_compiler_decode() {
+    fn parses_compiler_decompose() {
         let cli = Cli::parse_from([
             "x",
-            "decode",
+            "decompose",
             "--bitmask",
             "OLD",
             "--profiled",
@@ -373,13 +373,13 @@ mod tests {
             "-o",
             "SOURCE",
         ]);
-        let Cmd::Decode {
+        let Cmd::Decompose {
             bitmask,
             profiled,
             out,
         } = cli.cmd
         else {
-            panic!("expected compiler decode")
+            panic!("expected compiler decompose")
         };
         assert_eq!(bitmask, PathBuf::from("OLD"));
         assert_eq!(profiled, PathBuf::from("NEW"));
@@ -387,11 +387,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_compiler_decode_requires_both_folders_and_output() {
+    fn parses_compiler_decompose_requires_both_folders_and_output() {
         for args in [
-            vec!["x", "decode", "--profiled", "NEW", "-o", "SOURCE"],
-            vec!["x", "decode", "--bitmask", "OLD", "-o", "SOURCE"],
-            vec!["x", "decode", "--bitmask", "OLD", "--profiled", "NEW"],
+            vec!["x", "decompose", "--profiled", "NEW", "-o", "SOURCE"],
+            vec!["x", "decompose", "--bitmask", "OLD", "-o", "SOURCE"],
+            vec!["x", "decompose", "--bitmask", "OLD", "--profiled", "NEW"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }

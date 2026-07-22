@@ -134,7 +134,7 @@ fn selected_payloads<'a>(nr: &'a ValidatedNr, carrier: &str, sku: &Sku) -> Vec<&
     // Intern the (carrier, sku) probe once against the domain, then fetch the combos it selects
     // from the prebuilt inverted index — an O(1) lookup that replaces the former per-combo scan
     // (E1 made each probe O(log n); this indexes the scan away entirely). Generation calls this
-    // once per carrier per target, so the scan was the dominant `decode`/`build` cost. A carrier or
+    // once per carrier per target, so the scan was the dominant `decompose`/`build` cost. A carrier or
     // sku outside the domain selects nothing. Stored indices are ascending, so payload order
     // matches the old `combo.iter().filter(..)` order and generated output stays byte-identical.
     let Some(target) = nr.domain.probe(carrier, sku) else {

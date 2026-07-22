@@ -97,9 +97,9 @@ impl Fixture {
         }
     }
 
-    fn decode(&self) -> Output {
+    fn decompose(&self) -> Output {
         command()
-            .args(["decode", "--bitmask"])
+            .args(["decompose", "--bitmask"])
             .arg(&self.bitmask)
             .arg("--profiled")
             .arg(&self.profiled)
@@ -173,7 +173,7 @@ fn stderr(output: &Output) -> String {
 fn decode_then_build_runs_the_real_compiler_pipeline() {
     let fixture = Fixture::new();
 
-    let decoded = fixture.decode();
+    let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
     let mut source_names = fs::read_dir(&fixture.source)
         .unwrap()
@@ -232,7 +232,7 @@ fn decode_then_build_runs_the_real_compiler_pipeline() {
 #[test]
 fn build_unknown_model_is_a_hard_error_that_lists_registered_models() {
     let fixture = Fixture::new();
-    let decoded = fixture.decode();
+    let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
 
     let built = fixture.build("NOT-A-MODEL");
