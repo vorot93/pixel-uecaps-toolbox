@@ -146,7 +146,7 @@ impl MiniCorpus {
             },
         ];
 
-        // Deliberately avoid lexical fixture order so decode determinism cannot accidentally
+        // Deliberately avoid lexical fixture order so decompose determinism cannot accidentally
         // rely on the helper's construction sequence.
         profiled.rotate_left(2);
         Self {

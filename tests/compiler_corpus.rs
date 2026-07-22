@@ -288,7 +288,7 @@ fn assert_module_nr_features(path: &Path, model_code: &str) {
 }
 
 #[test]
-fn optional_corpora_decode_and_build_every_registered_target() {
+fn optional_corpora_decompose_and_build_every_registered_target() {
     let (Some(bitmask), Some(profiled)) =
         (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
     else {
@@ -302,9 +302,9 @@ fn optional_corpora_decode_and_build_every_registered_target() {
     let first_source = temp.path().join("source-a");
     let second_source = temp.path().join("source-b");
 
-    // A successful decode has already reparsed/reserialized both canonical documents and
+    // A successful decompose has already reparsed/reserialized both canonical documents and
     // self-verified every internal NR anchor, LTE ID, and mapping target. Repeating it also pins
-    // directory-order-independent source bytes at the public boundary. The two decodes are
+    // directory-order-independent source bytes at the public boundary. The two decompose runs are
     // independent (distinct output dirs) and each is CPU-bound, so run them concurrently.
     rayon::join(
         || decompose(bitmask, profiled, &first_source).expect("decoding both optional corpora"),
@@ -590,7 +590,7 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
          cannot distinguish a preserved round trip from a collapsed one"
     );
 
-    // Run the real pipeline: decode the full corpus into canonical sources, then build a
+    // Run the real pipeline: decompose the full corpus into canonical sources, then build a
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
     let temp = tempfile::tempdir().expect("creating regression test workspace");
     let source_dir = temp.path().join("source");

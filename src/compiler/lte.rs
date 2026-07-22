@@ -53,7 +53,7 @@ impl From<&LteCombo> for RawLteCombo {
     }
 }
 
-/// One-file slice of the LTE source model for inspect --kdl: convert a single decoded
+/// One-file slice of the LTE source model for `decode`: convert a single decoded
 /// `LteCaps` into compiler source DTOs. No `selection`. Preserves optional-field
 /// presence (`bcs`/`unknown1`/`unknown2`) so the writer can match lte.kdl's
 /// presence-sensitive semantics.

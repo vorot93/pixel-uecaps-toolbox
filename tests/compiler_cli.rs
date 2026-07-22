@@ -170,7 +170,7 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn decode_then_build_runs_the_real_compiler_pipeline() {
+fn decompose_then_build_runs_the_real_compiler_pipeline() {
     let fixture = Fixture::new();
 
     let decoded = fixture.decompose();

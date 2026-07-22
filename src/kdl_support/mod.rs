@@ -1,5 +1,5 @@
 //! Crate-level KDL toolkit: strict `NodeReader` combinator + writer helpers,
-//! shared by the compiler, patch, mapping, and inspect (de)serializers.
+//! shared by the compiler, patch, and mapping (de)serializers.
 
 use std::collections::BTreeSet;
 
@@ -10,9 +10,9 @@ use crate::{compiler::schema::one_trailing_newline, raw_nr::SubBlockKind};
 
 // ---- component radio-kind codec (shared by compiler `cc` + patch `nr`/`lte`) ----
 /// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
-/// crate (compiler `nr.kdl`, NR-carrier patch, inspect `--kdl` NR view) emits it as the
+/// crate (compiler `nr.kdl`, NR-carrier patch, `decode` NR view) emits it as the
 /// `nr`/`lte` node NAME; uniformly-LTE surfaces (compiler `lte.kdl`, LTE-fallback patch,
-/// inspect `--kdl` LTE view) use plain `cc` with no kind tag. One source of truth.
+/// `decode` LTE view) use plain `cc` with no kind tag. One source of truth.
 pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
     match k {
         SubBlockKind::Nr => "nr",

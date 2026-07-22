@@ -1,4 +1,4 @@
-//! KDL (de)serialization for the PLMN legend (`mapping decode`/`encode`).
+//! KDL (de)serialization for the PLMN legend (`decode`/`mapping encode`).
 
 use anyhow::{Context, Result, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode};

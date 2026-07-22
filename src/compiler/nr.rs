@@ -681,11 +681,11 @@ fn canonical_payloads(
     Ok(payloads)
 }
 
-/// One-file slice of the source model for inspect --kdl: convert a single decoded
+/// One-file slice of the source model for `decode`: convert a single decoded
 /// `UeCaps` into compiler source DTOs, resolving each component's leading selector
-/// byte against the file's own feature lists the same way decode's `canonical_payloads`
+/// byte against the file's own feature lists the same way decompose's `canonical_payloads`
 /// does. No validation, no cross-file normalization, no `selection`. Best-effort —
-/// inspect's lenient contract.
+/// `decode`'s lenient contract.
 pub(super) fn nr_source_from_one_file(
     caps: &UeCaps,
 ) -> (
@@ -756,8 +756,8 @@ pub(super) fn nr_source_from_one_file(
                         },
                         // Resolves EVERY per-CC byte (mirrors `RawSubBlock::from_proto_sub_block`
                         // / `FeatureCatalogs::source_sub_block`), not just CC0: a non-uniform
-                        // multi-CC sub-block's second-and-later CCs must show up in `inspect
-                        // --kdl` too.
+                        // multi-CC sub-block's second-and-later CCs must show up in `decode`
+                        // too.
                         dl_feature,
                         ul_feature,
                         srs_tx_switch: component.srstxswitch,
@@ -786,7 +786,7 @@ pub(super) fn nr_source_from_one_file(
 /// only unresolved form a real file carries is the all-zero placeholder, which
 /// `NrSourceSubBlock::resolve` re-derives from `bw_class` on the way back. (A non-placeholder
 /// unresolvable selector is corpus-impossible and rejected outright by the strict decode
-/// boundary, `RawSubBlock::from_proto_sub_block`; this lenient `inspect --kdl` path has
+/// boundary, `RawSubBlock::from_proto_sub_block`; this lenient `decode` path has
 /// always dropped it from the emitted text, since `cc_to_node` never wrote raw bytes.)
 fn resolve_selector_all(ids: Option<&[u8]>, len: usize) -> Vec<usize> {
     match ids {

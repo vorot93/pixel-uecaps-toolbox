@@ -58,20 +58,22 @@ models rather than inventing IDs for them.
 | `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fp_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR CC/payload representation, canonical identity, feature resolution, and reconstruction used by compiler and patch paths. |
-| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), the `join_u8_ids`/`parse_u8_ids` id-list codec, the shared `plmn_to_node`/`read_plmn` PLMN codec, and the `cckind_to_str`/`str_to_cckind` (`SubBlockKind`↔`nr`/`lte`) codec (`str_to_cckind` takes a `what:` label so each caller keeps its own error phrasing) — consumed by the compiler, patch, mapping, and inspect (de)serializers. |
+| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), the `join_u8_ids`/`parse_u8_ids` id-list codec, the shared `plmn_to_node`/`read_plmn` PLMN codec, and the `cckind_to_str`/`str_to_cckind` (`SubBlockKind`↔`nr`/`lte`) codec (`str_to_cckind` takes a `what:` label so each caller keeps its own error phrasing) — consumed by the compiler, patch, and mapping (de)serializers. |
 | `src/wire.rs` | Recursive modeled-field/wire-type validation and strict decoders for `UeCaps`, `LteCaps`, and `PlmnMap`. |
-| `src/compiler/mod.rs` | Public folder-compiler `decode`/`build` entry points, generated-file type, and module boundary. |
+| `src/decode.rs` | `decode`: filename-dispatched (or `--kind`-overridden) one-file decode to KDL, spanning `compiler`'s NR/LTE slice writers and `mapping`'s legend decode. |
+| `src/compiler/mod.rs` | Public folder-compiler `decompose`/`build` entry points, generated-file type, and module boundary. |
 | `src/compiler/selection.rs` | Finite NR/LTE eligibility domains, SKU tokens, expanded applicability relations, validation, and canonical rectangle serialization. |
 | `src/compiler/features.rs` | Compiler-only global DL/UL feature DTOs, canonical source references, and compact per-file projection; deliberately separate from the patch's own KDL mapping. |
 | `src/compiler/schema.rs` | Strict version-1 `nr.kdl`/`lte.kdl` DTOs, shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
 | `src/compiler/kdl_source.rs` | Hand-written `nr.kdl`/`lte.kdl` (de)serialization (`nr_to_kdl`/`nr_from_kdl`, `lte_to_kdl`/`lte_from_kdl`) over the shared `kdl_support` toolkit. |
 | `src/compiler/nr.rs` | Bitmask/profiled NR ingestion, carrier metadata derivation, raw payload normalization, model-targeted generation, and canonical self-verification. |
 | `src/compiler/lte.rs` | Ordered LTE payload identity, applicability, global DAG/topological ordering, byte-identical regeneration, and self-verification. |
-| `src/compiler/decode.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and paired source writes. |
+| `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and paired source writes. |
+| `src/compiler/slice.rs` | The write-only one-file `nr.kdl`/`lte.kdl` slices behind `decode`'s capability branches — compiler code, called from `src/decode.rs`. |
 | `src/compiler/build.rs` | Real-model resolution, complete file-set assembly, protobuf self-check, replacement-module construction, and atomic ZIP output. |
 | `src/compiler/test_support.rs` | `#[cfg(test)]` miniature bitmask/profiled folders and exact canonical-source fixtures shared by compiler unit tests. |
 | `src/mapping/mod.rs` | Reader for the `ap_plmn_mapping.binarypb` legend; `load_mapping(dir)`. |
-| `src/mapping/edit.rs` | Legend ops: `decode`/`encode`/`inject` PLMN (stdin↔stdout), plus `add_plmns_strict`. |
+| `src/mapping/edit.rs` | Legend ops: `decode_bytes` (used by the top-level `decode` command), `encode`/`inject` PLMN (stdin↔stdout), plus `add_plmns_strict`. |
 | `src/mapping/plmn.rs` | The `Plmn(u32)` newtype: packed-BCD `from_encoded`, `nibbles`, `Display`. |
 | `src/mapping/schema.rs` | The editable mapping schema (`Root`/`MappingEntry`) ↔ proto `PlmnMap` (`map_to_root`/`root_to_map`). |
 | `src/mapping/kdl_format.rs` | KDL (de)serialization for the schema above (`root_to_kdl`/`root_from_kdl`), `version 1` header, structured `plmn mcc=/mnc=` nodes via the shared codec. |
@@ -89,19 +91,19 @@ models rather than inventing IDs for them.
 | `src/report/matrix.rs` | Carrier × profile matrix as CSV. |
 | `src/report/lte.rs` | LTE-fallback decode + text rendering for `inspect`. |
 | `src/report/compare.rs` | Diff two files' band combinations. |
-| `src/report/inspect.rs` | Single-file analysis (text) for carrier / LTE / mapping files; `--kdl` emits a one-file slice of `nr.kdl`/`lte.kdl` via the compiler's `pub(crate)` writer helpers. |
+| `src/report/inspect.rs` | Single-file analysis (text) for carrier / LTE / mapping files. |
 | `src/report/selftest.rs` | Data-independent runtime sanity checks; prints `ALL TESTS PASSED`. |
 | `src/provision.rs` | `provision`: build one phone's Magisk module (select files by SKU, apply lte/nr patches, add PLMNs). |
 | `proto/ue_caps.proto` | The reverse-engineered protobuf schema; compiled at build time. |
-| `tests/compiler_cli.rs` | Hermetic end-to-end CLI decode/build tests over miniature folders. |
-| `tests/compiler_corpus.rs` | Opt-in full-corpus decode/build and observed LTE-order checks, guarded by two explicit environment variables. |
+| `tests/compiler_cli.rs` | Hermetic end-to-end CLI decompose/build tests over miniature folders. |
+| `tests/compiler_corpus.rs` | Opt-in full-corpus decompose/build and observed LTE-order checks, guarded by two explicit environment variables. |
 
 ## Invariants that must not break
 
 **Re-encode fidelity differs by file kind — this is the subtlest contract here.**
 
 - **NR carrier files: value-level fidelity, *not* byte-identity.** `patch apply` re-encodes with a plain `encode_to_vec()`; proto3 canonicalization reorders/omits, so the bytes legitimately differ from Google's original (byte-identity is an explicit non-goal). The contract is that every *value* survives: `decode_base` pre-scans the raw wire and **bails on the first field number not in the schema** (prost would silently drop unmodeled fields and lose data), and `caps = base.clone()` carries every field through untouched except the rewritten `combo_groups` and the two feature lists. NR apply then **self-verifies** its result.
-- **LTE fallback and PLMN legend: genuine bit-for-bit round-trip.** LTE's four `optional` fields (`ul_bw_class_mimo`, `bcs`, `unknown1`, `unknown2`) and NR's `optional` scalars preserve *explicit zeros* — `Some(0)` re-encodes as a present field instead of being canonicalized away (plain proto3 would drop them, yielding a ~4 KB-smaller LTE file). The legend's `Carrier.plmns` is `[packed = false]` (unpacked repeated), which is **required** for bit-for-bit identity; `mapping decode`/`encode` round-trips bit-identically (tested). Reads use `.unwrap_or(0)`; writes set `Some(value)`.
+- **LTE fallback and PLMN legend: genuine bit-for-bit round-trip.** LTE's four `optional` fields (`ul_bw_class_mimo`, `bcs`, `unknown1`, `unknown2`) and NR's `optional` scalars preserve *explicit zeros* — `Some(0)` re-encodes as a present field instead of being canonicalized away (plain proto3 would drop them, yielding a ~4 KB-smaller LTE file). The legend's `Carrier.plmns` is `[packed = false]` (unpacked repeated), which is **required** for bit-for-bit identity; `decode`/`mapping encode` round-trips bit-identically (tested). Reads use `.unwrap_or(0)`; writes set `Some(value)`.
 
 **Every re-encoding write path fails closed on unmodeled input.** A plain `prost` decode
 silently drops field numbers it doesn't model, losing data on the rewrite — so every
@@ -109,8 +111,8 @@ surface that decodes → edits → re-encodes goes through the `wire.rs` strict 
 (`decode_uecaps` / `decode_lte_caps` / `decode_plmn_map`), which reject an unknown field
 number or wrong wire type (including packed `plmns`) *before* re-encoding: `patch apply`
 (NR via `build::decode_base`, LTE via `decode_lte_caps`), `patch create` (NR via
-`load_carrier_combos_strict`, LTE via `load_lte`), `mapping decode`/`inject-plmn`, and
-`provision --lte-patch`/`--add-plmn`. The **read-only** reports
+`load_carrier_combos_strict`, LTE via `load_lte`), the `decode` command's legend branch,
+`mapping inject-plmn`, and `provision --lte-patch`/`--add-plmn`. The **read-only** reports
 (`inspect`/`compare`/`check`/`matrix`) deliberately stay lenient (`read_ue_caps` /
 `load_carrier_combos` / `load_mapping` swallow decode errors) so a junk file yields a
 best-effort view, not a hard error — do not tighten those shared readers. `load_mapping`
@@ -145,7 +147,7 @@ neither.
 
 ## Full-folder compiler
 
-The `decode`/`build` workflow is a second, deliberately separate editing surface from
+The `decompose`/`build` workflow is a second, deliberately separate editing surface from
 single-file `mapping`, combo-transplant `patch`, partial `provision`, and opaque-file
 `magisk`. It normalizes two complete offline layouts into `nr.kdl` + `lte.kdl`, then
 builds one complete model-selected directory replacement. Do not route compiler source
@@ -154,10 +156,10 @@ source, not one protobuf template per input file: each exact payload is stored o
 an applicability relation. Both layouts are required together so that relation is
 derived across generations rather than composed from incomplete sources later.
 
-### Decode assembly walkthrough (parsed protobufs → normalized model)
+### Decompose assembly walkthrough (parsed protobufs → normalized model)
 
 The subsections after this one are the reference; this is the pipeline `decode_documents`
-(`src/compiler/decode.rs`) runs, in order, to assemble every parsed protobuf from both
+(`src/compiler/decompose.rs`) runs, in order, to assemble every parsed protobuf from both
 folders into the one normalized model. The organizing idea: **each distinct payload is
 stored exactly once, and which files carried it is accumulated into its applicability
 relation** — assembly is "deduplicate payloads, accumulate relations, derive or store the
@@ -239,11 +241,11 @@ rest".
    `fingerprint`/`bitmask`, plus the step-6 global combo order.
 8. **Serialize, reparse, require a fixed point.** The assembled documents pass through
    `validate_documents` — the same cross-reference validation a hand-edited `build` source
-   gets; decode has no private fast path — and are serialized once. The emitted text is
+   gets; decompose has no private fast path — and are serialized once. The emitted text is
    then reparsed with `parse_sources` and reserialized, and both documents must come back
    byte-identical. Serialization is itself a validation boundary: everything the ingest
    computed is re-derived from the text form and must agree (`validate_documents` therefore
-   runs twice per decode — canonicalize the ingest, then reparse as the validation
+   runs twice per decompose — canonicalize the ingest, then reparse as the validation
    boundary; see the perf note in [CONTRIBUTING](CONTRIBUTING.md#performance-dont-de-optimize)).
 9. **Regenerate every internal target and compare** (`verify_internal_targets`): the
    legacy target must produce exactly the whitelist's file set; every stored anchor must
@@ -268,9 +270,9 @@ pointed at one registered model, packaged per
 
 Every persisted or emitted format in this crate is KDL, hand-mapped the same way — the
 compiler's `nr.kdl`/`lte.kdl`, the combo patch (`src/patch/format.rs`), the PLMN legend
-(`src/mapping/schema.rs` + `kdl_format.rs`), and the write-only `inspect --kdl` dump
-(`src/report/inspect.rs`/`lte.rs`) all follow this section's pattern. `serde` and `toml` are
-deliberately absent from `Cargo.toml` entirely.
+(`src/mapping/schema.rs` + `kdl_format.rs`), and the write-only capability slice `decode`
+emits (`src/compiler/slice.rs`, reached via `src/decode.rs`) all follow this section's
+pattern. `serde` and `toml` are deliberately absent from `Cargo.toml` entirely.
 
 `nr.kdl`/`lte.kdl` are KDL v2 documents (the `kdl` crate, pinned to `6.7.1` in `Cargo.toml`),
 (de)serialized by hand-written mapping in `src/compiler/kdl_source.rs` — **not** `serde`. Each
@@ -278,8 +280,8 @@ document type has one `_to_kdl`/`_from_kdl` pair (`nr_to_kdl`/`nr_from_kdl`,
 `lte_to_kdl`/`lte_from_kdl`, re-exported `pub(crate)` from `compiler/mod.rs`), built over a small
 set of `NodeReader` combinators in the crate-wide `src/kdl_support/` module (named
 `kdl_support`, **not** `kdl`, because a crate-root module named `kdl` collides with the external
-`kdl` crate) so the compiler, patch, mapping, and inspect mappers all share one toolkit instead of
-four copies: `key_str`/`key_int` read the leading positional argument (a record's key or
+`kdl` crate) so the compiler, patch, and mapping mappers all share one toolkit instead of
+three copies: `key_str`/`key_int` read the leading positional argument (a record's key or
 identifying value); `req_str`/`req_int`/`opt_str`/`opt_int`/`opt_bool` read properties;
 `rest_strings` drains a list node's remaining positional args;
 `repeated_int`/`push_repeated_int_prop` read/write every occurrence of a same-named property in
@@ -304,7 +306,7 @@ structural mismatch. Hand-mapping is the only route that delivers readable nesti
 rejection, and byte-identical output together — don't revisit the serde route without new evidence
 the ecosystem has changed.
 
-`decode` builds the `KdlDocument` and renders it with `kdl::KdlDocument::autoformat()`: 4-space
+`decompose` builds the `KdlDocument` and renders it with `kdl::KdlDocument::autoformat()`: 4-space
 indent, `#true`/`#false` booleans, native i128-backed integers, and bare identifiers except where
 KDL requires quoting — a numeric-leading string (a map key like `profile "66813533"`) or one with
 separators. Autoformat is deterministic, so a given `kdl` version's output is byte-stable — but the
@@ -321,12 +323,12 @@ uniformly LTE — its `subblock` node carries no kind tag. Whenever a single com
 components (an EN-DC combo), the radio kind **is** the node name (`nr 78 …` / `lte 66 …`), not a
 `kind=` property: `RawSubBlock`/`PatchSubBlock` is an *enum over the two radio kinds* for exactly
 that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field is gone), and
-compiler `nr.kdl` and inspect's NR view follow the same rule. The
+compiler `nr.kdl` and `decode`'s NR view follow the same rule. The
 **LTE-fallback patch** is uniformly LTE, so its component node is likewise `subblock`. A set-entry's
 add/change marker is likewise the **node name** (`add { … }` / `change { … }`, `SetKind` in
 `src/patch/format.rs`), not a `kind=` property. The naming rule is uniform across every KDL surface:
-NR-carrier/EN-DC combos (compiler `nr.kdl`, inspect `--kdl` NR view, NR-carrier patch) spell the kind
-as the node name; uniformly-LTE combos (compiler `lte.kdl`, inspect `--kdl` LTE view, LTE-fallback
+NR-carrier/EN-DC combos (compiler `nr.kdl`, `decode` NR view, NR-carrier patch) spell the kind
+as the node name; uniformly-LTE combos (compiler `lte.kdl`, `decode` LTE view, LTE-fallback
 patch) use plain `subblock` with no kind tag. `band` is the sole leading positional argument on
 `nr`/`lte`/`subblock` in both the compiler (`nr.kdl`/`lte.kdl`) and patch formats — written via
 `KdlEntry::new` and read via `NodeReader::key_int`, before any property. **Direction-paired
@@ -337,7 +339,8 @@ ul-feature…`), with the direction-agnostic `srs-tx-switch` last. Readers are p
 order is an emit convention only; re-spelling or reordering is a surface change with no wire effect.
 
 **PLMN representation: one `plmn mcc=… mnc=…` node per entry, everywhere a PLMN appears** — the
-compiler `nr.kdl` carrier PLMN list, the mapping legend, and the inspect mapping view. `mcc`/`mnc`
+compiler `nr.kdl` carrier PLMN list and the mapping legend (the latter shared verbatim by
+`decode`'s legend branch and `mapping encode`). `mcc`/`mnc`
 are **numeric**: `mcc` is always zero-padded to 3 digits on read; the all-`F` wildcard MNC (`ff`)
 omits `mnc=` entirely (rejected if `mnc=` is present and equals the wildcard); and `mnc-digits=3`
 marks the one ambiguous case — a 3-digit MNC below 100 (a leading zero, e.g. `310-004` →
@@ -440,7 +443,7 @@ run proves only that its environment-variable guard works.
 
 ### Input and output boundaries
 
-- `decode --bitmask DIR --profiled DIR -o DIR` always requires both inputs. The bitmask
+- `decompose --bitmask DIR --profiled DIR -o DIR` always requires both inputs. The bitmask
   directory must contain at least one unnumbered `<CARRIER>.binarypb` and rejects every
   numbered carrier, mapping, LTE, empty carrier name, or otherwise unsupported
   `.binarypb` name. The profiled directory must contain exactly one
@@ -455,7 +458,7 @@ run proves only that its environment-variable guard works.
   carrier metadata by name while generation canonically rebuilds legend entries by that
   independent ID; accepting a different original order would violate the legend's
   byte-identity contract.
-- Decode reads and validates both directories, serializes both documents, strictly
+- Decompose reads and validates both directories, serializes both documents, strictly
   reparses/reserializes them, regenerates every internal legacy/anchor/LTE/mapping
   target, and self-checks fidelity before preparing output. Expected generated basename
   lists are sorted before exact comparison, including for prefix-related carrier names.
@@ -478,7 +481,7 @@ refs (`dl-feature=`/`ul-feature=`) are a
 deliberate, explicit **exception** to last-wins: `NodeReader::repeated_int` (`src/kdl_support/mod.rs`)
 collects *every* occurrence of the named property in document order instead of collapsing to the last
 one, because each occurrence is one CC's value, not an accidental duplicate — every other property
-keeps last-wins. This only affects hand-edited `build` input — `decode` never emits duplicates and its
+keeps last-wins. This only affects hand-edited `build` input — `decompose` never emits duplicates and its
 reparse/idempotence self-check guards that path. Carrier names and selection tokens are
 case-sensitive canonical identifiers in source; only CLI model lookup trims and uppercases input.
 Filename factors and opaque filename-related `u64` values are native KDL integers (i128-backed, so
@@ -539,7 +542,7 @@ be stored:
   must be zero on ingest and is regenerated as zero. Input combo masks are intentionally
   discarded; every generated legacy combo gets the catch-all `65535` until individual
   model bits are mapped.
-- For each profiled carrier, decode derives `signature` as the GCD of all its numbered
+- For each profiled carrier, decompose derives `signature` as the GCD of all its numbered
   filenames and stores the exact per-anchor `multiplier = NUMBER / signature`.
   Generation uses checked `signature * multiplier`; the result must reconstruct the
   original number, be divisible by exactly the keyed registered anchor, and by no other
@@ -562,14 +565,14 @@ be stored:
   explicit-zero combo masks and always regenerates explicit `0`; a nonzero profiled
   mask is unsupported.
 - Top-level `dl-feature` and `ul-feature` nodes are shared compiler-only source
-  catalogs. Decode resolves a component's whole per-CC selector-byte array
+  catalogs. Decompose resolves a component's whole per-CC selector-byte array
   **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
   fails, the entire raw array stays unresolved (`[0, 2]` and `[2, 99]` both fail to
   resolve). `resolve_all` itself only reports that; the decode boundary that consumes it
   (`resolve_or_placeholder`) then **rejects** any unresolved array that is not the
   all-zero placeholder, so neither `[0, 2]` nor `[2, 99]` can survive decode as raw
-  bytes. Decode then deduplicates and sorts each catalog by complete raw field
+  bytes. Decompose then deduplicates and sorts each catalog by complete raw field
   identity. A referenced all-absent record remains a real identity; every unreferenced
   input record is ignored, whether default, explicit-zero/false, or value-bearing. A
   sub-block node's `dl-feature`/`ul-feature` properties are **repeated**, one canonical
@@ -605,7 +608,7 @@ be stored:
   with `placeholder_ids`, which returns `[0; cc_count]` and nothing else; the removed
   `dl-cc-id`/`ul-cc-id` escape hatches have no replacement, and the strict reader rejects
   any stray property. Generation therefore no longer re-checks the collision case.
-  (Decode and `patch create` fail closed on a nonzero unresolvable selector too, via
+  (Decompose and `patch create` fail closed on a nonzero unresolvable selector too, via
   `resolve_or_placeholder` and `ensure_selector_resolved`, but those govern their own
   pipelines and are not what protects generation.) The hazard the removed check guarded
   against still stands as a rule for any future change here: inserting default filler to
@@ -615,7 +618,7 @@ be stored:
 NR compiler fidelity is canonical modeled-value equality, not protobuf byte identity.
 Feature-list layout, selectors, group packing, component order, and canonical proto3
 encoding may change; all modeled raw identity values must survive except the explicit
-legacy/modern mask normalizations above. Decode rejects a value-bearing header on an
+legacy/modern mask normalizations above. Decompose rejects a value-bearing header on an
 otherwise empty group, but unreferenced feature records carry no modeled payload and
 normalize away regardless of their values. A referenced all-absent feature record does
 carry modeled identity and survives. Canonically equal payloads merge only within a
@@ -637,7 +640,7 @@ sequence, ingest makes each payload a DAG node and every adjacent in-file pair a
 It rejects a duplicate payload within one file and any cycle across files. Kahn
 topological sorting uses the full raw payload order as a deterministic tie-breaker;
 generation filters that one global order by the target SKU relation. Unedited
-decode/build must therefore reproduce each `lte_*.binarypb` byte-for-byte.
+decompose/build must therefore reproduce each `lte_*.binarypb` byte-for-byte.
 
 ### Complete replacement and determinism
 
@@ -677,7 +680,7 @@ Do **not** derive a model's anchor from equal NR payloads or its LTE ID from con
 do not classify a newer unverified model as bitmask to make it build. The nine published
 profile-layout codes `GLBW0`, `GL066`, `GK2MP`, `G4QUR`, `GN4F5`, `GEHN3`, `GE1GQ`,
 `GV0BP`, and `G4H7L` intentionally remain absent until independent evidence establishes
-their anchors. Decode preserves unbuildable known anchors/IDs with `prime:<anchor>` and
+their anchors. Decompose preserves unbuildable known anchors/IDs with `prime:<anchor>` and
 `lte:<id>` tokens. Adding a profiled target requires evidence for both its registered
 anchor and LTE ID plus presence in `PIXEL_BANDS`; update the exact registry tests and
 all consumers together.
@@ -739,7 +742,7 @@ features are alternatives, and a flat struct let all three sit side by side:
   fields that kind actually has.
 
 - **A `SubBlock` is one band+CA-bandwidth-class entry, not one component carrier** — it contains `cc_count(kind, bw_class)` physical CCs (e.g. band 78 class C = `n78C` = 2 CCs; this is how a Pixel expresses `7C-3A`, not just `7A-3A`). `cc_count(kind, bw_class)` (`src/raw_nr.rs`) is a fail-closed lookup over the Samsung Shannon `bw_class` enumeration; NR and LTE tables (`NR_CC_COUNTS`/`LTE_CC_COUNTS`) are distinct and non-monotonic relative to each other (NR class 2/3/7 all count 2; LTE class 2/3 both count 2 — the class carries strictly more information than the CC count, which is why `bw_class` is never derived from it), and an unknown class errors rather than mis-deriving a length (the tables are corpus-validated with zero exceptions across all **3.46M sub-blocks**). `RawSubBlock::validate` fails closed (checked on both source parse and regenerated output) if a stored per-CC list's length doesn't equal `cc_count` for its `bw_class`, and separately if the sub-block's CCs would derive disagreeing `dl_feature_index`/`ul_feature_index` values (physically you cannot mix FR1+FR2 or mixed MIMO-presence within one band+class entry).
-- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decode pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
+- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
 - **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — spelled `dl-feature`/`ul-feature` in KDL, dropping the `-index` suffix (LTE-only — an
 `nr` node carries no feature index in source at all), with `ul-feature=0` omitted per the
 omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl` and patches) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE, and `source_dl_feature_index()` returns nothing for NR. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on build/decode. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from`, `RawSubBlock::to_sub_block()`, and both `reconstruct_sub_block` sites all read the index through the same `dl_feature_index()` accessor, so dedup, `CanonCc` change-detection, and `apply` self-verify cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
@@ -942,15 +945,29 @@ someone editing a patch; keep reconstruction, comparison, and parser rationale h
   capability fields; string bandwidth classes; hex-string selector IDs; and stored
   derived keys. Do not add compatibility aliases without an explicit format-version
   design.
-- `inspect --kdl` is a write-only per-file slice of `nr.kdl`/`lte.kdl` for spot-checking one
-  file. It builds compiler source DTOs from the single file (via
-  `nr_source_from_one_file`/`lte_source_from_one_file`) and emits them through the same
-  `pub(crate)` writer helpers `decode` uses, so the combo/cc spelling matches `nr.kdl`/`lte.kdl`
-  exactly. It is not a `build` input: the slice carries no cross-file metadata
-  (`bitmask-carriers`/`bitmask-fingerprint`/`carrier … { profile … }`/`file` whitelist) and no
-  `selection` (single file). Diagnostic fields (file path, fingerprint status, profile ambiguity,
-  mapping info) live only in the text report; a stale `--kdl | build` round-trip can't fabricate
-  data the file doesn't contain.
+- `decode`'s capability branches emit a write-only per-file slice of `nr.kdl`/`lte.kdl`
+  (`src/compiler/slice.rs`). Each builds compiler source DTOs from the single file (via
+  `nr_source_from_one_file`/`lte_source_from_one_file`) and emits them through the same writer
+  helpers `decompose` uses — they are compiler code and call `emit_nr_combo` directly — so the
+  combo/sub-block spelling matches `nr.kdl`/`lte.kdl` exactly. A slice is **not** a `build`
+  input: it carries no cross-file metadata (`bitmask-carriers`/`bitmask-fingerprint`/`carrier …
+  { profile … }`/`file` whitelist) and no `selection` (single file). Diagnostic fields (file
+  path, fingerprint status, profile ambiguity, mapping info) live only in `inspect`'s text
+  report, so a stale `decode | build` round-trip can't fabricate data the file doesn't contain.
+- **`decode`'s legend branch is the opposite on both counts**, and deliberately so. Its
+  document round-trips bit-for-bit through `mapping encode`, and decoding is strict —
+  `wire::decode_plmn_map` fails closed on an unmodeled field or packed `plmns`, because a
+  dropped field would corrupt that round-trip. Capability decoding is lenient: undecodable
+  bytes yield a `version 1`-only document and exit 1, since nothing consumes a slice.
+- **A file that cannot be read at all exits `2`, before either branch's leniency or
+  strictness applies.** `render` (`src/decode.rs`) does one `std::fs::read` up front; a
+  nonexistent path, permission error, or other I/O failure propagates as a hard error (`main`'s
+  generic `Err` → exit `2`), the same as any other argument error — distinct from an existing
+  file whose *content* fails to decode (lenient exit 1 for a capability file, strict exit 2 for
+  the legend).
+- **`--kind` overrides filename dispatch**, so a renamed or backed-up file still decodes. It
+  is the whole of what a stdin route would have bought; `decode` is otherwise
+  filename-dispatched like `inspect` and `check`.
 
 ## Design conventions & rationale
 

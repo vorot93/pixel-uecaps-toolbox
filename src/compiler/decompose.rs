@@ -418,7 +418,7 @@ fn verify_internal_targets(
     let rebuilt_mapping = rebuild_mapping(sources)?;
     ensure!(
         rebuilt_mapping == original_mapping,
-        "PLMN mapping decode self-verification was not byte-identical"
+        "PLMN mapping round-trip self-verification was not byte-identical"
     );
     Ok(())
 }
