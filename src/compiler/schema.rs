@@ -921,7 +921,7 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     }
 
     #[test]
-    fn feature_references_reject_zero_range_conflicts_and_old_inline_fields() {
+    fn feature_references_reject_zero_out_of_range_and_old_inline_fields() {
         for (cc_line, expected) in [
             ("nr 78 dl-feature=0", "dl_feature index must be 1-based"),
             ("nr 78 dl-feature=2", "exceeds the dl catalog length 1"),

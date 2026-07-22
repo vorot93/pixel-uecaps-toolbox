@@ -1008,7 +1008,12 @@ add {
     fn patch_source_rejects_removed_props() {
         // The escape-hatch surface keys were dropped from the patch format too (proto
         // machinery kept). The strict reader must now reject each as an unknown property.
-        for key in ["dl-feature-index=1", "dl-cc-id=1", "ul-cc-id=1"] {
+        for key in [
+            "dl-feature-index=1",
+            "ul-feature-index=1",
+            "dl-cc-id=1",
+            "ul-cc-id=1",
+        ] {
             let text = format!(
                 "kind nr\nversion 1\nadd {{\n    combo bit-mask=0 {{\n        nr 78 dl-bw-class=1 {key}\n    }}\n}}\n"
             );
@@ -1016,6 +1021,40 @@ add {
             assert!(
                 err.contains("unknown property"),
                 "{key} should be rejected: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_source_rejects_old_bw_class_spellings() {
+        // The direction-first rename applies to the patch format too, and the patch reader
+        // had no old-spelling guard at all. NR components carry `dl/ul-bw-class`; LTE
+        // sub-blocks carry `dl/ul-bw-class-mimo`. All four pre-rename spellings must be
+        // unknown properties now.
+        for key in ["bw-class-dl=1", "bw-class-ul=1"] {
+            let text = format!(
+                "kind nr\nversion 1\nadd {{\n    combo bit-mask=0 {{\n        nr 78 dl-bw-class=1 {key}\n    }}\n}}\n"
+            );
+            let err = from_kdl(&text).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown property"),
+                "{key} should be rejected: {err}"
+            );
+        }
+        for (new, old) in [
+            ("dl-bw-class-mimo=", "bw-class-mimo-dl="),
+            ("ul-bw-class-mimo=", "bw-class-mimo-ul="),
+        ] {
+            // Both mimo props are required by the LTE sub-block reader, so append the old
+            // spelling rather than substituting it — otherwise the missing-required error
+            // fires first and hides the unknown-property rejection under test.
+            let text = to_kdl(&sample_lte())
+                .unwrap()
+                .replace(new, &format!("{old}1 {new}"));
+            let err = from_kdl(&text).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown property"),
+                "{old} should be rejected: {err}"
             );
         }
     }

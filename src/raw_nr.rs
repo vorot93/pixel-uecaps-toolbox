@@ -1182,6 +1182,76 @@ mod tests {
     }
 
     #[test]
+    fn from_proto_accepts_the_all_zero_placeholder_selector() {
+        // Counterpart to `from_proto_rejects_non_placeholder_unresolvable_selector`: the
+        // all-zero placeholder resolves to no feature set and is re-derivable from
+        // bw_class/cc_count, so it must pass through unresolved rather than be rejected
+        // (do not over-guard).
+        let proto = ProtoSubBlock {
+            band: NR_BAND_OFFSET + 78,
+            dl_bw_class: Some(1),
+            ul_bw_class: Some(0),
+            dl_feature_per_cc_ids: Some(vec![0]),
+            ..Default::default()
+        };
+
+        let raw = RawSubBlock::from_proto_sub_block(&proto, &[], &[]).unwrap();
+
+        assert!(
+            raw.dl_features.is_empty(),
+            "placeholder resolves to no feature set"
+        );
+        assert_eq!(
+            raw.dl_cc_ids,
+            Some(vec![0]),
+            "placeholder bytes are kept verbatim"
+        );
+    }
+
+    #[test]
+    fn from_proto_accepts_a_matching_nr_feature_index() {
+        // Counterpart to `from_proto_rejects_nr_feature_index_mismatch`: a stored index that
+        // AGREES with the derivation round-trips fine and must not be rejected.
+        // derive_nr_dl_index(Some(1)) == 1.
+        let list = vec![ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(1),
+            ..Default::default()
+        }];
+        let proto = ProtoSubBlock {
+            band: NR_BAND_OFFSET + 78,
+            dl_bw_class: Some(1),
+            ul_bw_class: Some(0),
+            dl_feature_index: Some(derive_nr_dl_index(Some(1))),
+            dl_feature_per_cc_ids: Some(vec![1]),
+            ..Default::default()
+        };
+
+        let raw = RawSubBlock::from_proto_sub_block(&proto, &list, &[]).unwrap();
+
+        assert_eq!(raw.dl_feature_index, Some(1));
+        assert_eq!(raw.dl_features.len(), 1);
+    }
+
+    #[test]
+    fn from_proto_does_not_apply_the_index_derivation_guard_to_lte() {
+        // The derivation guard is NR-only (kind-gated). An E-UTRA component's
+        // dl_feature_index is a genuine stored value with no derivation to check against,
+        // so an arbitrary one must NOT trip the guard (do not over-guard).
+        let proto = ProtoSubBlock {
+            band: 66, // < NR_BAND_OFFSET -> SubBlockKind::Lte
+            dl_bw_class: Some(1),
+            ul_bw_class: Some(1),
+            dl_feature_index: Some(99),
+            ..Default::default()
+        };
+
+        let raw = RawSubBlock::from_proto_sub_block(&proto, &[], &[]).unwrap();
+
+        assert_eq!(raw.kind, SubBlockKind::Lte);
+        assert_eq!(raw.dl_feature_index, Some(99));
+    }
+
+    #[test]
     fn from_proto_combo_rejects_missing_header_or_header_fields() {
         // Task 8: a real combo always carries a header with the four always-`Some` fields
         // set (all but `bcs_intra_endc`); a missing header, or a header missing one of

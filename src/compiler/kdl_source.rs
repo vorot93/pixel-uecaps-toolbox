@@ -1244,6 +1244,26 @@ mod lte_tests {
     }
 
     #[test]
+    fn lte_rejects_the_old_mimo_bw_class_spelling() {
+        // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which
+        // covers only the NR combo pair. The lte.kdl mimo pair shares the same strict
+        // `finish()` and must reject the pre-rename suffix spelling just as firmly.
+        for (new, old) in [
+            ("dl-bw-class-mimo=", "bw-class-mimo-dl="),
+            ("ul-bw-class-mimo=", "bw-class-mimo-ul="),
+        ] {
+            // Additive: keep the required new-spelling property and append the old one, so
+            // the reader reports the unknown property rather than a missing required one.
+            let text = lte_to_kdl(&sample()).replace(new, &format!("{old}1 {new}"));
+            let err = lte_from_kdl(&text).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown property") && err.contains(old.trim_end_matches('=')),
+                "{old} must be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn lte_rejects_duplicate_file() {
         let text = format!(
             "{}\nfile \"3\" fingerprint=1 bitmask=1\n",
