@@ -23,7 +23,7 @@ const LTE_SOURCE: &str = "lte.kdl";
 const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
 /// Build and atomically persist one complete model-specific uecapconfig replacement module.
-pub fn build(
+pub fn provision(
     model_code: &str,
     source_dir: &Path,
     out: &Path,
@@ -33,12 +33,12 @@ pub fn build(
     write_module(model, files, out, name)
 }
 
-/// Build one registered model's replacement module from **already-parsed** sources. A caller that
-/// builds many models from the same folder — release tooling, or the corpus test — parses the
-/// ~19 MB source once with [`load_sources`] and calls this per model, rather than re-parsing and
-/// re-validating for every target. `build` is the single-model convenience wrapper over
-/// `load_sources` + this.
-pub fn build_from_sources(
+/// Provision one registered model's replacement module from **already-parsed** sources. A caller
+/// that provisions many models from the same folder — release tooling, or the corpus test —
+/// parses the ~19 MB source once with [`load_sources`] and calls this per model, rather than
+/// re-parsing and re-validating for every target. `provision` is the single-model convenience
+/// wrapper over `load_sources` + this.
+pub fn provision_from_sources(
     sources: &ValidatedSources,
     model_code: &str,
     out: &Path,
@@ -245,7 +245,7 @@ mod tests {
     use prost::Message;
     use tempfile::tempdir;
 
-    use super::{build, finalize_files, generate_files, load_and_generate, load_sources};
+    use super::{finalize_files, generate_files, load_and_generate, load_sources, provision};
     use crate::{
         compiler::{
             GeneratedFile,
@@ -430,7 +430,7 @@ mod tests {
         to_kdl(&nr, &lte).unwrap()
     }
 
-    fn assert_build_prewrite_failure(
+    fn assert_provision_prewrite_failure(
         nr: Option<String>,
         lte: Option<String>,
         model: &str,
@@ -449,7 +449,7 @@ mod tests {
         fs::write(&output, b"existing module bytes").unwrap();
         let before = directory_names(temp.path());
 
-        let error = build(model, &source, &output, None).unwrap_err();
+        let error = provision(model, &source, &output, None).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains(expected), "unexpected error: {error}");
         assert_eq!(fs::read(&output).unwrap(), b"existing module bytes");
@@ -579,14 +579,14 @@ mod tests {
         let second_legacy = second.path().join("legacy.zip");
         fs::write(&first_legacy, b"old legacy module").unwrap();
         fs::write(&second_legacy, b"old legacy module").unwrap();
-        build(
+        provision(
             "G0DZQ",
             &first_source,
             &first_legacy,
             Some("Hermetic round trip"),
         )
         .unwrap();
-        build(
+        provision(
             "G0DZQ",
             &second_source,
             &second_legacy,
@@ -604,14 +604,14 @@ mod tests {
         let second_profiled_out = second.path().join("profiled.zip");
         fs::write(&first_profiled_out, b"old profiled module").unwrap();
         fs::write(&second_profiled_out, b"old profiled module").unwrap();
-        build(
+        provision(
             TARGET_MODEL,
             &first_source,
             &first_profiled_out,
             Some("Hermetic round trip"),
         )
         .unwrap();
-        build(
+        provision(
             TARGET_MODEL,
             &second_source,
             &second_profiled_out,
@@ -932,14 +932,14 @@ mod tests {
     }
 
     #[test]
-    fn build_writes_closed_replacement_zip_with_default_model_name() {
+    fn provision_writes_closed_replacement_zip_with_default_model_name() {
         let temp = tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
         write_sources(&source);
         let output = temp.path().join("module.zip");
 
-        assert_eq!(build(TARGET_MODEL, &source, &output, None).unwrap(), 0);
+        assert_eq!(provision(TARGET_MODEL, &source, &output, None).unwrap(), 0);
 
         let bytes = fs::read(&output).unwrap();
         let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn build_failures_preserve_existing_zip_without_temporary_sibling() {
+    fn provision_failures_preserve_existing_zip_without_temporary_sibling() {
         let temp = tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
@@ -970,7 +970,7 @@ mod tests {
         let original_names = directory_names(temp.path());
 
         fs::write(source.join("lte.kdl"), "version 1\nunknown 1\n").unwrap();
-        let error = build("NOT-A-MODEL", &source, &output, None).unwrap_err();
+        let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("parsing lte.kdl"),
             "{error:#}"
@@ -979,7 +979,7 @@ mod tests {
         assert_eq!(directory_names(temp.path()), original_names);
 
         write_sources(&source);
-        let error = build("NOT-A-MODEL", &source, &output, None).unwrap_err();
+        let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(error.to_string().contains("unknown model"), "{error:#}");
         assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
         assert_eq!(directory_names(temp.path()), original_names);
@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn source_validation_and_generation_failures_preserve_an_existing_zip() {
         let (base_nr, base_lte) = source_texts();
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(base_nr.clone()),
             None,
             TARGET_MODEL,
@@ -1005,14 +1005,14 @@ mod tests {
         )]);
         missing_lte.combo.clear();
         let (_, missing_lte) = to_kdl(&miniature_documents().0, &missing_lte).unwrap();
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(base_nr.clone()),
             Some(missing_lte),
             TARGET_MODEL,
             "absent from the LTE source domain",
         );
 
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(base_nr.replacen("profile \"66813533\"", "profile \"066813533\"", 1)),
             Some(base_lte.clone()),
             TARGET_MODEL,
@@ -1025,7 +1025,7 @@ mod tests {
             1,
         );
         assert_ne!(invalid_selection, base_nr);
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(invalid_selection),
             Some(base_lte.clone()),
             TARGET_MODEL,
@@ -1037,7 +1037,7 @@ mod tests {
         // fails to reconstruct into a valid PLMN.
         let invalid_plmn = base_nr.replacen("plmn mcc=250 mnc=1", "plmn mcc=250 mnc=99999", 1);
         assert_ne!(invalid_plmn, base_nr);
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(invalid_plmn),
             Some(base_lte.clone()),
             TARGET_MODEL,
@@ -1045,7 +1045,7 @@ mod tests {
         );
 
         let overflow = base_nr.replacen("signature=11", "signature=18446744073709551615", 1);
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(overflow),
             Some(base_lte.clone()),
             TARGET_MODEL,
@@ -1067,7 +1067,7 @@ mod tests {
             })
             .collect();
         let (too_many_features, _) = to_kdl(&too_many_features, &lte).unwrap();
-        assert_build_prewrite_failure(
+        assert_provision_prewrite_failure(
             Some(too_many_features),
             Some(base_lte),
             "G0DZQ",
@@ -1091,7 +1091,7 @@ mod tests {
         fs::write(&output, b"original zip bytes").unwrap();
         let original_names = directory_names(temp.path());
 
-        let error = build("G0DZQ", &source, &output, None).unwrap_err();
+        let error = provision("G0DZQ", &source, &output, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("control or line-separator"),
             "{error:#}"

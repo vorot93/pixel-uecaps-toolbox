@@ -27,8 +27,8 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: PathBuf,
     },
-    /// Build a complete model-specific replacement Magisk module from compiler sources
-    Build {
+    /// Provision a complete model-specific replacement Magisk module from compiler sources
+    Provision {
         /// Registered Google 5-character hardware model code
         model: String,
         /// Directory containing nr.kdl and lte.kdl
@@ -96,12 +96,12 @@ impl Cmd {
                 profiled,
                 out,
             } => compiler::decompose(&bitmask, &profiled, &out),
-            Self::Build {
+            Self::Provision {
                 model,
                 source,
                 out,
                 name,
-            } => compiler::build(&model, &source, &out, name.as_deref()),
+            } => compiler::provision(&model, &source, &out, name.as_deref()),
             Self::Inspect { file, full } => report::inspect(&file, full),
             Self::Check { dir } => report::check_folder(&dir),
             Self::Matrix { dir, out } => report::matrix(&dir, out.as_deref()),
@@ -158,16 +158,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_compiler_build() {
-        let cli = Cli::parse_from(["x", "build", "GUL82", "SOURCE", "-o", "module.zip"]);
-        let Cmd::Build {
+    fn parses_provision() {
+        let cli = Cli::parse_from(["x", "provision", "GUL82", "SOURCE", "-o", "module.zip"]);
+        let Cmd::Provision {
             model,
             source,
             out,
             name,
         } = cli.cmd
         else {
-            panic!("expected compiler build")
+            panic!("expected provision")
         };
         assert_eq!(model, "GUL82");
         assert_eq!(source, PathBuf::from("SOURCE"));
@@ -176,10 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_compiler_build_with_name() {
+    fn parses_provision_with_name() {
         let cli = Cli::parse_from([
             "x",
-            "build",
+            "provision",
             "GUL82",
             "SOURCE",
             "-o",
@@ -187,29 +187,29 @@ mod tests {
             "--name",
             "My module",
         ]);
-        let Cmd::Build { name, .. } = cli.cmd else {
-            panic!("expected compiler build")
+        let Cmd::Provision { name, .. } = cli.cmd else {
+            panic!("expected provision")
         };
         assert_eq!(name.as_deref(), Some("My module"));
     }
 
     #[test]
-    fn parses_compiler_build_requires_model_source_and_output() {
+    fn parses_provision_requires_model_source_and_output() {
         for args in [
-            vec!["x", "build"],
-            vec!["x", "build", "GUL82"],
-            vec!["x", "build", "GUL82", "SOURCE"],
+            vec!["x", "provision"],
+            vec!["x", "provision", "GUL82"],
+            vec!["x", "provision", "GUL82", "SOURCE"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
     }
 
     #[test]
-    fn parses_compiler_build_rejects_destination_override() {
+    fn parses_provision_rejects_destination_override() {
         assert!(
             Cli::try_parse_from([
                 "x",
-                "build",
+                "provision",
                 "GUL82",
                 "SOURCE",
                 "-o",
@@ -222,11 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_compiler_build_has_no_legacy_layout_positional() {
+    fn parses_provision_has_no_legacy_layout_positional() {
         assert!(
             Cli::try_parse_from([
                 "x",
-                "build",
+                "provision",
                 "legacy",
                 "GUL82",
                 "SOURCE",

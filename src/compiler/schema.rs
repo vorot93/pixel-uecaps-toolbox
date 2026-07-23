@@ -202,9 +202,9 @@ pub(crate) struct ValidatedLteCombo {
 
 /// A fully parsed, cross-referenced, canonicalized source set. Produced once by
 /// [`load_sources`](crate::compiler::load_sources) and consumed by
-/// [`build_from_sources`](crate::compiler::build_from_sources) for every model, so a batch build
-/// parses the ~19 MB source a single time. Fields are crate-internal; externally it is an opaque
-/// handle.
+/// [`provision_from_sources`](crate::compiler::provision_from_sources) for every model, so a
+/// batch build parses the ~19 MB source a single time. Fields are crate-internal; externally it
+/// is an opaque handle.
 #[derive(Clone, Debug)]
 pub struct ValidatedSources {
     pub(crate) nr: ValidatedNr,

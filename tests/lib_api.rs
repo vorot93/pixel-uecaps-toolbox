@@ -10,7 +10,7 @@ fn lib_exposes_folder_compiler_entry_points() {
     let _: fn(&Path, &Path, &Path) -> anyhow::Result<i32> =
         pixel_uecaps_toolbox::compiler::decompose;
     let _: fn(&str, &Path, &Path, Option<&str>) -> anyhow::Result<i32> =
-        pixel_uecaps_toolbox::compiler::build;
+        pixel_uecaps_toolbox::compiler::provision;
 }
 
 #[test]

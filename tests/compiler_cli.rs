@@ -109,9 +109,9 @@ impl Fixture {
             .unwrap()
     }
 
-    fn build(&self, model: &str) -> Output {
+    fn provision(&self, model: &str) -> Output {
         command()
-            .arg("build")
+            .arg("provision")
             .arg(model)
             .arg(&self.source)
             .arg("-o")
@@ -170,7 +170,7 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn decompose_then_build_runs_the_real_compiler_pipeline() {
+fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     let fixture = Fixture::new();
 
     let decoded = fixture.decompose();
@@ -189,8 +189,8 @@ fn decompose_then_build_runs_the_real_compiler_pipeline() {
     assert!(!nr_source.contains("max-scs=1"), "{nr_source}");
     assert!(nr_source.contains("dl-feature=1"), "{nr_source}");
 
-    let built = fixture.build(MODEL);
-    assert!(built.status.success(), "{}", stderr(&built));
+    let provisioned = fixture.provision(MODEL);
+    assert!(provisioned.status.success(), "{}", stderr(&provisioned));
     let zip = fs::read(&fixture.module).unwrap();
     let mut archive = ZipArchive::new(Cursor::new(zip)).unwrap();
     assert!(
@@ -230,14 +230,14 @@ fn decompose_then_build_runs_the_real_compiler_pipeline() {
 }
 
 #[test]
-fn build_unknown_model_is_a_hard_error_that_lists_registered_models() {
+fn provision_unknown_model_is_a_hard_error_that_lists_registered_models() {
     let fixture = Fixture::new();
     let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
 
-    let built = fixture.build("NOT-A-MODEL");
-    assert_eq!(built.status.code(), Some(2));
-    let stderr = stderr(&built);
+    let provisioned = fixture.provision("NOT-A-MODEL");
+    assert_eq!(provisioned.status.code(), Some(2));
+    let stderr = stderr(&provisioned);
     assert!(stderr.contains("unknown model"), "{stderr}");
     assert!(stderr.contains(MODEL), "{stderr}");
     assert!(!fixture.module.exists());

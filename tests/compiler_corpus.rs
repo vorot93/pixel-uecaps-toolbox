@@ -6,7 +6,7 @@ use std::{
 };
 
 use pixel_uecaps_toolbox::{
-    compiler::{build_from_sources, decompose, load_sources},
+    compiler::{decompose, load_sources, provision_from_sources},
     model::PHONE_MODELS,
     proto::{LteCaps, LteCombo, UeCaps},
 };
@@ -288,7 +288,7 @@ fn assert_module_nr_features(path: &Path, model_code: &str) {
 }
 
 #[test]
-fn optional_corpora_decompose_and_build_every_registered_target() {
+fn optional_corpora_decompose_and_provision_every_registered_target() {
     let (Some(bitmask), Some(profiled)) =
         (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
     else {
@@ -333,8 +333,8 @@ fn optional_corpora_decompose_and_build_every_registered_target() {
         .enumerate()
         .for_each(|(index, model)| {
             let out = temp.path().join(format!("model-{index}.zip"));
-            build_from_sources(&sources, model.code, &out, None).unwrap_or_else(|error| {
-                panic!("building registered model {}: {error:#}", model.code)
+            provision_from_sources(&sources, model.code, &out, None).unwrap_or_else(|error| {
+                panic!("provisioning registered model {}: {error:#}", model.code)
             });
             let module_len = fs::metadata(&out)
                 .unwrap_or_else(|error| {
@@ -604,8 +604,12 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
         .find(|model| model.is_bitmask())
         .expect("the registered model list must include at least one bitmask-layout model");
     let module_path = temp.path().join("module.zip");
-    build_from_sources(&sources, model.code, &module_path, None)
-        .unwrap_or_else(|error| panic!("building bitmask-layout model {}: {error:#}", model.code));
+    provision_from_sources(&sources, model.code, &module_path, None).unwrap_or_else(|error| {
+        panic!(
+            "provisioning bitmask-layout model {}: {error:#}",
+            model.code
+        )
+    });
 
     // Extract the rebuilt ATT.binarypb from the generated module and resolve its n48
     // sub-block(s) the same way.
