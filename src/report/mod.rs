@@ -53,22 +53,11 @@ pub(crate) struct CarrierCombos {
 /// build its combos. Errors on the legend / `lte_*` names, undecodable content, and
 /// reference stubs (no band combinations). The name checks run before any file read.
 ///
-/// This is the **lenient** reader for read-only reports (`compare`): a body prost can
-/// decode is accepted even if it carries unmodeled fields. Write paths that re-encode
-/// the file must use [`load_carrier_combos_strict`] so those bytes cannot be silently
-/// dropped on the rewrite.
+/// **Lenient by design**: `compare` is read-only, so a body prost can decode is accepted even
+/// if it carries unmodeled fields. The compiler's write paths never come through here — they
+/// get fail-closed decoding from `wire::{decode_uecaps, decode_lte_caps, decode_plmn_map}`
+/// directly.
 pub(crate) fn load_carrier_combos(path: &Path) -> anyhow::Result<CarrierCombos> {
-    load_carrier_combos_inner(path, false)
-}
-
-/// Strict variant of [`load_carrier_combos`] for the re-encoding write paths
-/// (`patch create`): a field number outside the modeled schema fails closed here,
-/// mirroring how NR `patch apply` guards its base via `patch::build::decode_base`.
-pub(crate) fn load_carrier_combos_strict(path: &Path) -> anyhow::Result<CarrierCombos> {
-    load_carrier_combos_inner(path, true)
-}
-
-fn load_carrier_combos_inner(path: &Path, strict: bool) -> anyhow::Result<CarrierCombos> {
     let filename = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -84,13 +73,8 @@ fn load_carrier_combos_inner(path: &Path, strict: bool) -> anyhow::Result<Carrie
         Parsed::Carrier { number, .. } => Some(number),
         Parsed::Other => None,
     };
-    let caps = if strict {
-        let data = std::fs::read(path).with_context(|| format!("reading {filename}"))?;
-        crate::wire::decode_uecaps(&data, &filename)?
-    } else {
-        read_ue_caps(path)
-            .ok_or_else(|| anyhow::anyhow!("cannot decode {filename} as a UE-capability file"))?
-    };
+    let caps = read_ue_caps(path)
+        .ok_or_else(|| anyhow::anyhow!("cannot decode {filename} as a UE-capability file"))?;
     let combos = build_combos(&caps);
     if combos.is_empty() {
         anyhow::bail!("{filename} has no band combinations (reference stub)");

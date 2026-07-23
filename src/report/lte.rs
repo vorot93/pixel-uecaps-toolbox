@@ -44,14 +44,6 @@ fn component_label(c: &LteComponent) -> String {
     render_component(c.band, dl_idx, ul_idx)
 }
 
-/// Order-normalized LTE combo identity: the sorted `component_label`s joined ` + `.
-/// Mirrors the carrier `combos::combo_key`.
-pub(crate) fn lte_combo_key(combo: &LteCombo) -> String {
-    let mut parts: Vec<String> = combo.components.iter().map(component_label).collect();
-    parts.sort_unstable();
-    parts.join(" + ")
-}
-
 /// A combo's components joined ` + `, e.g. `B1A↓ + B5A`.
 fn combo_bands(combo: &LteCombo) -> String {
     combo
@@ -138,17 +130,6 @@ mod tests {
             dl_bw_class_mimo: dl,
             ul_bw_class_mimo: Some(ul),
         }
-    }
-
-    #[test]
-    fn lte_combo_key_is_order_normalized() {
-        let a = LteCombo {
-            components: vec![comp(5, 32768, 32768), comp(1, 32768, 0)],
-            bcs: Some(0),
-            unknown1: Some(0),
-            unknown2: Some(0),
-        };
-        assert_eq!(lte_combo_key(&a), "B1A↓ + B5A"); // sorted: B1A↓ before B5A
     }
 
     #[test]

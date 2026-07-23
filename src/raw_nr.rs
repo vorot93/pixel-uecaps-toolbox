@@ -5,9 +5,7 @@ use crate::{
         ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
         combo_group::{Combo as ProtoCombo, ComboHeader, combo::SubBlock as ProtoSubBlock},
     },
-    report::combos::{
-        Combo, NR_BAND_OFFSET, SubBlock, band_label_for, raw_band, render_component, resolve_all,
-    },
+    report::combos::{Combo, NR_BAND_OFFSET, SubBlock, band_label_for, raw_band, resolve_all},
 };
 
 /// Per-component radio kind for a raw NR combo payload.
@@ -222,41 +220,6 @@ pub(crate) enum RawSubBlock {
     Nr(RawNrSubBlock),
 }
 
-#[cfg(test)]
-impl RawSubBlock {
-    /// Test helper: a component of either kind with bandwidth classes but no per-CC data —
-    /// the shape most patch/provision tests want. Anything richer builds the variant struct
-    /// directly, which is the point: the kind decides which fields even exist.
-    pub(crate) fn bare(
-        kind: SubBlockKind,
-        band: i32,
-        dl_bw_class: Option<i32>,
-        ul_bw_class: Option<i32>,
-    ) -> Self {
-        match kind {
-            SubBlockKind::Lte => RawLteSubBlock {
-                band,
-                dl: LteDirection {
-                    bw_class: dl_bw_class,
-                    ..Default::default()
-                },
-                ul: LteDirection {
-                    bw_class: ul_bw_class,
-                    ..Default::default()
-                },
-            }
-            .into(),
-            SubBlockKind::Nr => RawNrSubBlock {
-                band,
-                dl: NrDirection::bare(dl_bw_class),
-                ul: NrDirection::bare(ul_bw_class),
-                srs_tx_switch: None,
-            }
-            .into(),
-        }
-    }
-}
-
 impl From<RawLteSubBlock> for RawSubBlock {
     fn from(component: RawLteSubBlock) -> Self {
         Self::Lte(component)
@@ -413,9 +376,8 @@ pub(crate) fn cc_count(kind: SubBlockKind, bw_class: i32) -> anyhow::Result<usiz
 
 /// Whether `bytes` is a non-placeholder selector: at least one non-zero byte. The all-zero
 /// placeholder always resolves to no feature set and is valid; any other selector that
-/// resolves to no feature set cannot be carried and must be rejected by the caller. Shared by
-/// the decode boundary ([`resolve_or_placeholder`]) and its write-path mirror
-/// ([`RawSubBlock::ensure_selector_resolved`]).
+/// resolves to no feature set cannot be carried and must be rejected by the caller. Used at
+/// the decode boundary ([`resolve_or_placeholder`]).
 fn is_non_placeholder(bytes: &[u8]) -> bool {
     bytes.iter().any(|&b| b != 0)
 }
@@ -469,37 +431,6 @@ impl RawNrSubBlock {
                 self.band_label()
             );
         }
-        Ok(())
-    }
-
-    /// Write-path mirror of the decode boundary's [`resolve_or_placeholder`]: an NR direction
-    /// whose raw selector carries a non-placeholder byte (per [`is_non_placeholder`]) but
-    /// resolved to no feature set. `from_proto_sub_block` (decode) already rejects this state
-    /// via `resolve_or_placeholder`; a component built by the lenient report-DTO path
-    /// (`from_sub_block`, e.g. `patch create`'s `build_combos` ingest) does not construct it
-    /// through that guard, so [`try_from_sub_block`](RawSubBlock::try_from_sub_block) —
-    /// `patch create`'s pre-diff gate — calls this explicitly. Without it, `create` used to
-    /// silently drop the component instead of erroring: `patch::format::sub_block_to_node`
-    /// emits no `dl-cc`/`ul-cc` children for an unresolved direction, and nothing else in the
-    /// `create` write path notices. Deliberately NOT folded into
-    /// [`validate`](RawSubBlock::validate): that method is also reached by `patch apply`'s
-    /// reconstruction (`reconstruct_sub_block`), which legitimately preserves a selector-only
-    /// component byte-for-byte when one is handed to it directly (see
-    /// `reconstruct_sub_block_without_feature_set_preserves_raw_selector_ids` in
-    /// `src/patch/build.rs`) — that capability is out of scope for this guard.
-    fn ensure_selector_resolved(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            !self.dl.selector().is_some_and(is_non_placeholder),
-            "NR component {} DL selector {:?} resolves to no feature and is not the all-zero placeholder",
-            self.band_label(),
-            self.dl.selector()
-        );
-        anyhow::ensure!(
-            !self.ul.selector().is_some_and(is_non_placeholder),
-            "NR component {} UL selector {:?} resolves to no feature and is not the all-zero placeholder",
-            self.band_label(),
-            self.ul.selector()
-        );
         Ok(())
     }
 
@@ -710,41 +641,6 @@ impl RawSubBlock {
         Ok(raw.into())
     }
 
-    /// Fallible sibling of [`from_sub_block`](Self::from_sub_block) for the `patch create` load path:
-    /// rejects a band label `raw_band` cannot invert (`from_sub_block` would panic on it) and a
-    /// band outside the plain `1..NR_BAND_OFFSET` range (which would yield a patch the
-    /// parser rejects), returning the validated component. See DESIGN.md "Invariants".
-    pub(crate) fn try_from_sub_block(cc: &SubBlock) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            raw_band(&cc.band).is_some(),
-            "component band {:?} is not a valid band label (expected n<1..9999> or B<1..9999>)",
-            cc.band
-        );
-        // The flat DTO can carry NR-only data on an E-UTRA component, which
-        // [`RawLteSubBlock`] cannot represent. `from_sub_block` would silently drop it, so
-        // reject it here rather than let a hand-built DTO lose fields — the typed model has
-        // replaced the old `has_nr_only_fields` check inside `validate`.
-        let is_nr = raw_band(&cc.band).is_some_and(|band| band >= NR_BAND_OFFSET);
-        anyhow::ensure!(
-            is_nr
-                || (cc.dl_features.is_empty()
-                    && cc.ul_features.is_empty()
-                    && cc.srs_tx_switch.is_none()),
-            "LTE component {} carries NR-only fields",
-            cc.band
-        );
-        let raw = Self::from_sub_block(cc);
-        raw.validate()?;
-        // Fail closed on a corpus-impossible selector-only-unresolved NR component: `create`'s
-        // report-DTO ingest (`from_sub_block`, unlike the proto decode boundary's
-        // `from_proto_sub_block`) builds this leniently, with no other check catching it before
-        // the patch emitter silently drops the component. See `ensure_selector_resolved`.
-        if let Self::Nr(component) = &raw {
-            component.ensure_selector_resolved()?;
-        }
-        Ok(raw)
-    }
-
     /// Invariants that the type cannot express. "LTE carries NR-only fields" is no longer
     /// among them — [`RawLteSubBlock`] simply has no feature-set or `srs_tx_switch` field.
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
@@ -809,36 +705,8 @@ impl RawSubBlock {
         }
     }
 
-    pub(crate) fn to_sub_block(&self) -> anyhow::Result<SubBlock> {
-        self.validate()?;
-        // Shared 11-field display projection with the folder compiler's combo builder (C-proj).
-        // The kind is asserted, not inferred: `self.kind` already classifies the component, so
-        // we pass it through explicitly and `band` stays the plain band number it always is.
-        // The index is materialized, not raw, so this projection matches the value a decoded
-        // binary actually carries (an NR component that omitted it derives one) — patch
-        // self-verify builds its "want" side through this path and compares it against exactly
-        // that decoded, materialized "got" side.
-        Ok(SubBlock::from_raw_fields(
-            matches!(self, Self::Nr(_)),
-            self.band(),
-            self.dl_bw_class(),
-            self.ul_bw_class(),
-            self.dl_feature_index(),
-            self.ul_feature_index(),
-            self.dl_selector().map(<[u8]>::to_vec),
-            self.ul_selector().map(<[u8]>::to_vec),
-            self.srs_tx_switch(),
-            self.dl_features().to_vec(),
-            self.ul_features().to_vec(),
-        ))
-    }
-
     pub(crate) fn band_label(&self) -> String {
         band_label_for(matches!(self, Self::Nr(_)), self.band())
-    }
-
-    pub(crate) fn component_label(&self) -> String {
-        render_component(self.raw_band(), self.dl_bw_class(), self.ul_bw_class())
     }
 }
 
@@ -1125,77 +993,6 @@ impl From<&RawNrPayload> for RawNrPayloadKey {
             sub_blocks,
         }
     }
-}
-
-/// Shared top-level feature-set lists used while rebuilding raw components.
-#[derive(Default)]
-pub(crate) struct FeatureLists {
-    pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
-}
-
-/// Find an equal entry or append `item`; return its 0-based index.
-fn find_or_append<T: PartialEq>(list: &mut Vec<T>, item: T) -> usize {
-    if let Some(i) = list.iter().position(|x| *x == item) {
-        i
-    } else {
-        list.push(item);
-        list.len() - 1
-    }
-}
-
-/// One selector byte per `features` entry (find-or-append dedup into `list`, 1-based), or
-/// the raw fallback bytes verbatim when `features` is empty. Patch-build counterpart of the
-/// compiler's `compiler::features::LocalFeaturePlan::reconstruct_sub_block`: that one
-/// resolves against a pre-scanned local catalog (`binary_search`), this one grows `lists`
-/// on the fly (`find_or_append`) since the patch-apply path has no such pre-pass.
-fn per_cc_ids<T: PartialEq + Copy>(
-    list: &mut Vec<T>,
-    features: &[T],
-    raw: Option<&[u8]>,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    if features.is_empty() {
-        return Ok(raw.map(<[u8]>::to_vec));
-    }
-    let mut ids = Vec::with_capacity(features.len());
-    for &feature in features {
-        let idx = find_or_append(list, feature) + 1;
-        if idx > u8::MAX as usize {
-            anyhow::bail!("feature-set list exceeds 255 entries");
-        }
-        ids.push(idx as u8);
-    }
-    Ok(Some(ids))
-}
-
-/// Rebuild one protobuf component. Every resolved per-CC feature set is deduplicated into
-/// `lists` and wins over raw selector bytes. Any failure restores both lists.
-pub(crate) fn reconstruct_sub_block(
-    cc: &RawSubBlock,
-    lists: &mut FeatureLists,
-) -> anyhow::Result<ProtoSubBlock> {
-    let dl_mark = lists.dl.len();
-    let ul_mark = lists.ul.len();
-    let result = (|| {
-        cc.validate()?;
-        let dl_ids = per_cc_ids(&mut lists.dl, cc.dl_features(), cc.dl_selector())?;
-        let ul_ids = per_cc_ids(&mut lists.ul, cc.ul_features(), cc.ul_selector())?;
-        Ok(ProtoSubBlock {
-            band: cc.raw_band(),
-            dl_bw_class: cc.dl_bw_class(),
-            ul_bw_class: cc.ul_bw_class(),
-            dl_feature_index: cc.dl_feature_index(),
-            ul_feature_index: cc.ul_feature_index(),
-            dl_feature_per_cc_ids: dl_ids,
-            ul_feature_per_cc_ids: ul_ids,
-            srstxswitch: cc.srs_tx_switch(),
-        })
-    })();
-    if result.is_err() {
-        lists.dl.truncate(dl_mark);
-        lists.ul.truncate(ul_mark);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -1645,29 +1442,6 @@ mod tests {
     }
 
     #[test]
-    fn lte_component_rejects_nr_only_fields() {
-        // `RawLteSubBlock` has no feature-set field, so this can no longer be built and
-        // rejected after the fact — the flat report DTO is where the state still exists, and
-        // `try_from_sub_block` is the boundary that refuses it.
-        let cc = SubBlock {
-            band: "B66".into(),
-            dl_features: vec![ShannonFeatureSetDlPerCcNr {
-                max_bw: Some(0),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let error = RawSubBlock::try_from_sub_block(&cc)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("LTE component B66 carries NR-only fields"),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn nr_component_validation_errors_use_the_n_band_label() {
         // `validate()` used to hardcode `B{}`, misprinting every NR band (n78 as B78).
         // Route through `band_label()` so the label always matches the component's kind.
@@ -1737,155 +1511,6 @@ mod tests {
             RawNrPayloadKey::from(&first),
             RawNrPayloadKey::from(&second)
         );
-    }
-
-    #[test]
-    fn reconstruct_sub_block_uses_resolved_values_and_preserves_selector_only_bytes() {
-        // The DL selector bytes a resolved direction used to carry alongside its values are
-        // gone by construction; the UL side is the selector-only passthrough case.
-        let cc: RawSubBlock = RawNrSubBlock {
-            dl: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetDlPerCcNr {
-                    max_scs: Some(0),
-                    ..Default::default()
-                }],
-            ),
-            // 2 raw UL selector bytes need a UL class with cc_count 2.
-            ul: NrDirection::with_selector(2, vec![0, 2]),
-            ..nr_cc(78)
-        }
-        .into();
-        let mut lists = FeatureLists::default();
-
-        let reconstructed = reconstruct_sub_block(&cc, &mut lists).unwrap();
-
-        assert_eq!(reconstructed.dl_feature_per_cc_ids, Some(vec![1]));
-        assert_eq!(reconstructed.ul_feature_per_cc_ids, Some(vec![0, 2]));
-        assert_eq!(lists.dl.len(), 1);
-        assert_eq!(lists.dl[0].max_scs, Some(0));
-        assert!(lists.ul.is_empty());
-    }
-
-    #[test]
-    fn reconstruct_sub_block_rolls_back_both_feature_lists_on_error() {
-        let mut lists = FeatureLists {
-            dl: Vec::new(),
-            ul: (1..=255)
-                .map(|max_scs| ShannonFeatureSetUlPerCcNr {
-                    max_scs: Some(max_scs),
-                    ..Default::default()
-                })
-                .collect(),
-        };
-        let before_dl = lists.dl.clone();
-        let before_ul = lists.ul.clone();
-        let cc: RawSubBlock = RawNrSubBlock {
-            dl: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetDlPerCcNr {
-                    max_scs: Some(1),
-                    ..Default::default()
-                }],
-            ),
-            ul: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetUlPerCcNr {
-                    max_scs: Some(999),
-                    ..Default::default()
-                }],
-            ),
-            ..nr_cc(78)
-        }
-        .into();
-
-        let error = reconstruct_sub_block(&cc, &mut lists)
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("feature-set list exceeds 255 entries"));
-        assert_eq!(lists.dl, before_dl);
-        assert_eq!(lists.ul, before_ul);
-    }
-
-    #[test]
-    fn reconstruct_sub_block_uses_every_single_byte_one_based_selector_through_255() {
-        let mut lists = FeatureLists::default();
-        for value in 1..=255 {
-            let component: RawSubBlock = RawNrSubBlock {
-                dl: NrDirection::with_features(
-                    1,
-                    vec![ShannonFeatureSetDlPerCcNr {
-                        max_bw: Some(value),
-                        ..Default::default()
-                    }],
-                ),
-                ..nr_cc(78)
-            }
-            .into();
-            let reconstructed = reconstruct_sub_block(&component, &mut lists).unwrap();
-            assert_eq!(reconstructed.dl_feature_per_cc_ids, Some(vec![value as u8]));
-        }
-        assert_eq!(lists.dl.len(), 255);
-
-        let duplicate: RawSubBlock = RawNrSubBlock {
-            dl: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetDlPerCcNr {
-                    max_bw: Some(255),
-                    ..Default::default()
-                }],
-            ),
-            ..nr_cc(78)
-        }
-        .into();
-        let reconstructed = reconstruct_sub_block(&duplicate, &mut lists).unwrap();
-        assert_eq!(reconstructed.dl_feature_per_cc_ids, Some(vec![255]));
-        assert_eq!(lists.dl.len(), 255, "an equal entry must deduplicate");
-    }
-
-    #[test]
-    fn reconstruct_sub_block_rejects_and_rolls_back_the_256th_feature_entry() {
-        let mut lists = FeatureLists {
-            dl: (1..=255)
-                .map(|max_bw| ShannonFeatureSetDlPerCcNr {
-                    max_bw: Some(max_bw),
-                    ..Default::default()
-                })
-                .collect(),
-            ul: vec![ShannonFeatureSetUlPerCcNr {
-                max_bw: Some(1),
-                ..Default::default()
-            }],
-        };
-        let before_dl = lists.dl.clone();
-        let before_ul = lists.ul.clone();
-        let component: RawSubBlock = RawNrSubBlock {
-            dl: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetDlPerCcNr {
-                    max_bw: Some(256),
-                    ..Default::default()
-                }],
-            ),
-            ul: NrDirection::with_features(
-                1,
-                vec![ShannonFeatureSetUlPerCcNr {
-                    max_bw: Some(2),
-                    ..Default::default()
-                }],
-            ),
-            ..nr_cc(78)
-        }
-        .into();
-
-        let error = reconstruct_sub_block(&component, &mut lists)
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("feature-set list exceeds 255 entries"));
-        assert_eq!(lists.dl, before_dl);
-        assert_eq!(lists.ul, before_ul);
     }
 
     #[test]
@@ -2034,73 +1659,5 @@ mod tests {
         assert!(cc_count(SubBlockKind::Nr, 4).is_err());
         assert!(cc_count(SubBlockKind::Lte, 6).is_err());
         assert!(cc_count(SubBlockKind::Nr, 0).is_err()); // 0 = disabled, handled by callers, not here
-    }
-
-    // Final review, Fix 1: `try_from_sub_block` is `patch create`'s pre-diff gate
-    // (`patch::validate_nr_combo_bands`) — it must reject a corpus-impossible NR component
-    // whose per-CC selector is present, non-placeholder, and unresolved, mirroring the decode
-    // boundary's `resolve_or_placeholder`. These are the direct, fast-running counterpart of
-    // `patch::tests::create_nr_rejects_selector_only_unresolved_component`, which drives the
-    // same guard through the actual `patch create` entry point end to end.
-
-    #[test]
-    fn try_from_sub_block_rejects_selector_only_unresolved_dl() {
-        let cc = report_cc(Some(vec![5]), None); // non-zero, no resolved DL feature set
-        let err = RawSubBlock::try_from_sub_block(&cc)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("DL") && err.contains("selector") && err.contains("placeholder"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn try_from_sub_block_rejects_selector_only_unresolved_ul() {
-        let mut cc = report_cc(None, None);
-        cc.ul_feature_per_cc_ids = Some(vec![3]); // non-zero, no resolved UL feature set
-        let err = RawSubBlock::try_from_sub_block(&cc)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("UL") && err.contains("selector") && err.contains("placeholder"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn try_from_sub_block_accepts_all_zero_placeholder_selector() {
-        // The all-zero placeholder is re-derivable from bw_class/cc_count and is valid —
-        // must NOT be rejected by the new guard (do not over-guard).
-        let cc = report_cc(Some(vec![0]), None);
-        assert!(RawSubBlock::try_from_sub_block(&cc).is_ok());
-    }
-
-    #[test]
-    fn try_from_sub_block_accepts_normally_resolved_component() {
-        // A component with an actual resolved feature set must NOT be rejected (do not
-        // over-guard) — this is the ordinary, corpus-common shape.
-        let cc = report_cc(
-            Some(vec![1]),
-            Some(ShannonFeatureSetDlPerCcNr {
-                max_scs: Some(1),
-                ..Default::default()
-            }),
-        );
-        assert!(RawSubBlock::try_from_sub_block(&cc).is_ok());
-    }
-
-    #[test]
-    fn try_from_sub_block_does_not_guard_lte_selector_only_bytes() {
-        // The new guard is NR-only (kind-gated): an LTE component's raw selector bytes are
-        // not this guard's concern and must not trip it (do not over-guard).
-        let cc = SubBlock {
-            band: "B66".to_string(),
-            dl_bw_class: Some(1),
-            ul_bw_class: Some(1),
-            dl_feature_per_cc_ids: Some(vec![5]),
-            ..Default::default()
-        };
-        assert!(RawSubBlock::try_from_sub_block(&cc).is_ok());
     }
 }
