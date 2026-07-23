@@ -132,7 +132,7 @@ fn selected_payloads<'a>(nr: &'a ValidatedNr, carrier: &str, sku: &Sku) -> Vec<&
     // Intern the (carrier, sku) probe once against the domain, then fetch the combos it selects
     // from the prebuilt inverted index — an O(1) lookup that replaces the former per-combo scan
     // (E1 made each probe O(log n); this indexes the scan away entirely). Generation calls this
-    // once per carrier per target, so the scan was the dominant `decompose`/`build` cost. A carrier or
+    // once per carrier per target, so the scan was the dominant `decompose`/`provision` cost. A carrier or
     // sku outside the domain selects nothing. Stored indices are ascending, so payload order
     // matches the old `combo.iter().filter(..)` order and generated output stays byte-identical.
     let Some(target) = nr.domain.probe(carrier, sku) else {
@@ -219,8 +219,8 @@ fn build_generated_file(
 /// `entries` yields `(raw_band, bw_class, selector)` per component — `dl_bw_class`/DL or
 /// `ul_bw_class`/UL depending on `direction`. A selector counts as a resolved catalog
 /// reference (checked against `cc_count`, and its bytes fold into the coverage set) only
-/// when its FIRST byte resolves against `records` — same leading-byte gate the report/patch
-/// paths use (C-sel). By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
+/// when its FIRST byte resolves against `records` — the same leading-byte gate the report path
+/// uses (C-sel). By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
 /// resolved reference's bytes are ALL catalog indices, never a mix with raw selector-only
 /// data, so it is enough to gate on the first byte and then trust every byte.
 fn verify_compact_feature_list<T>(
@@ -1048,7 +1048,7 @@ mod tests {
         // `cc()` seeds `dl_feature_index = Some(0)`, but selector `[2]` resolves to the
         // max_scs=3 (FR1) record whose derived index is 1. NR no longer carries a source
         // index override, so the strict decode boundary rejects a stored≠derived index —
-        // clear it (the derived 1 is materialized on build) so decompose is about pruning, not
+        // clear it (the derived 1 is materialized on provision) so decompose is about pruning, not
         // the dropped override.
         component.dl_feature_index = None;
         caps.dl_feature_per_cc_list = vec![

@@ -355,7 +355,7 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
 
 /// Independently verify (against the real corpus) that every NR component's stored
 /// `dl/ul_feature_index` equals what we derive from its per-CC feature set. This is the
-/// invariant that lets `decompose`/`create` omit the field and `build`/`apply` re-derive it.
+/// invariant that lets `decompose` omit the field and `provision` re-derive it.
 /// Env-gated exactly like the other corpus test.
 #[test]
 fn nr_feature_index_matches_derivation_formula() {
@@ -533,14 +533,14 @@ fn resolve_selector<T: Clone>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec<T>> 
         .collect()
 }
 
-/// The bug this regression pins was invisible to a plain decompose->build round trip: `decompose`
+/// The bug this regression pins was invisible to a plain decompose->provision round trip: `decompose`
 /// collapsed a non-uniform multi-CC NR sub-block (one whose per-CC DL feature selector bytes
-/// resolve to *different* records for different CCs) down to its first CC, and `build`
+/// resolve to *different* records for different CCs) down to its first CC, and `provision`
 /// faithfully reproduced that same collapsed value. Comparing rebuilt-vs-rebuilt therefore
 /// compared collapsed-vs-collapsed and passed, silently dropping the second (and any further)
 /// CC's feature set. The only way to catch that class of bug is to compare the pipeline's
 /// output against the ORIGINAL raw corpus file's per-CC features, captured independently of
-/// `decompose`/`build` — which is what this test does.
+/// `decompose`/`provision` — which is what this test does.
 ///
 /// Ground truth (verified against the real corpus, see task-10 report): `ATT.binarypb`'s NR
 /// band `n48` (`band == NR_BAND_OFFSET + 48`) carries a class-B (`dl_bw_class == 2`, 2-CC)
@@ -593,7 +593,7 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
          cannot distinguish a preserved round trip from a collapsed one"
     );
 
-    // Run the real pipeline: decompose the full corpus into canonical sources, then build a
+    // Run the real pipeline: decompose the full corpus into canonical sources, then provision a
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
     let temp = tempfile::tempdir().expect("creating regression test workspace");
     let source_dir = temp.path().join("source");

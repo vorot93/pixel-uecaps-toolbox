@@ -128,7 +128,7 @@ pub(crate) struct ValidatedNrCombo {
 /// Inverted index from an interned `(carrier_id, sku_id)` target to the `combo` indices whose
 /// relation contains it, built once per [`ValidatedNr`]. It replaces `selected_payloads`' former
 /// per-target linear scan over every combo (each an O(log n) [`NrRelation::contains`] probe) with
-/// one O(1) lookup — the dominant `decompose`/`build` cost, since generation runs `selected_payloads`
+/// one O(1) lookup — the dominant `decompose`/`provision` cost, since generation runs `selected_payloads`
 /// once per carrier per target. Indices are stored ascending, so a lookup yields payloads in the
 /// exact order the old `combo.iter().filter(..)` produced them, keeping generated output
 /// byte-identical. Combo order is fixed once [`validate_nr_combos`] returns
@@ -203,7 +203,7 @@ pub(crate) struct ValidatedLteCombo {
 /// A fully parsed, cross-referenced, canonicalized source set. Produced once by
 /// [`load_sources`](crate::compiler::load_sources) and consumed by
 /// [`provision_from_sources`](crate::compiler::provision_from_sources) for every model, so a
-/// batch build parses the ~19 MB source a single time. Fields are crate-internal; externally it
+/// batch `provision` run parses the ~19 MB source a single time. Fields are crate-internal; externally it
 /// is an opaque handle.
 #[derive(Clone, Debug)]
 pub struct ValidatedSources {
@@ -272,7 +272,7 @@ pub(crate) fn validate_documents(
     Ok(validated)
 }
 
-/// Validate + canonicalize + serialize in one step. Now used only by tests (the `decompose`/`build`
+/// Validate + canonicalize + serialize in one step. Now used only by tests (the `decompose`/`provision`
 /// paths validate once and reuse via [`ValidatedSources::to_kdl`]); kept as a convenient fixture
 /// helper.
 #[cfg(test)]

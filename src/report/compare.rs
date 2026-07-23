@@ -49,16 +49,15 @@ fn combo_signature(combo: &Combo) -> Signature {
         .collect();
     sig.sort_unstable();
     // Prepend the combo-header identity so two combos with identical CC lists but a
-    // different power_class / bcs_* / intra_band / bit_mask are still a change, matching
-    // `patch create`'s `CanonCombo`. The `(hdr)` label cannot collide with a real
-    // component label (`n78A` / `B1`) and renders the header diff as its own line (R4).
+    // different power_class / bcs_* / intra_band / bit_mask are still a change. The `(hdr)`
+    // label cannot collide with a real component label (`n78A` / `B1`) and renders the
+    // header diff as its own line (R4).
     sig.insert(0, ("(hdr)".to_string(), header_signature(combo)));
     sig
 }
 
-/// The combo-header identity fields `combo_signature` folds in — the same set
-/// `patch::CanonCombo` compares (power_class, the three `bcs_*`, intra-band EN-DC, and
-/// the per-combo `bit_mask`).
+/// The combo-header identity fields `combo_signature` folds in: `power_class`, the three
+/// `bcs_*`, intra-band EN-DC, and the per-combo `bit_mask`.
 fn header_signature(combo: &Combo) -> String {
     format!(
         "pc={:?} bcs_nr={:?} bcs_intra_endc={:?} bcs_eutra={:?} intra_endc={:?} mask={}",
@@ -519,7 +518,7 @@ mod tests {
     #[test]
     fn header_field_change_is_detected() {
         // R4: identical CC lists but a different combo-header field (power_class) must be
-        // a difference, matching `patch create`'s notion of change.
+        // a difference.
         let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
         a.power_class = Some(3);
         let mut b = combo(vec![nr_cc(78, 1, "4x4")]);
@@ -532,7 +531,7 @@ mod tests {
 
     #[test]
     fn bitmask_change_is_detected() {
-        // R4: per-combo bit_mask is part of identity for `patch create`; compare must agree.
+        // R4: per-combo bit_mask is part of a combo's identity; compare must agree.
         let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
         a.bit_mask = 1;
         let b = combo(vec![nr_cc(78, 1, "4x4")]); // bit_mask 0

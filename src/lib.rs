@@ -1,5 +1,5 @@
-//! Library API for pixel-uecaps-toolbox: decode/validate/patch Pixel UE-capability
-//! files and provision flashable Magisk modules.
+//! Library API for pixel-uecaps-toolbox: inspect and audit Pixel UE-capability files, and
+//! compile a complete offline `uecapconfig` folder into a flashable replacement module.
 
 pub(crate) mod atomic;
 pub mod compiler;

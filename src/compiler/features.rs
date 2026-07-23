@@ -90,7 +90,7 @@ impl From<&UlFeatureSource> for ShannonFeatureSetUlPerCcNr {
 /// Exactly one representation per direction is populated, discriminated by [`kind`](Self::kind):
 /// an `lte` node carries the scalar `dl_feature_index` (proto 4/5, `parseLteFeatureIndex`) and
 /// never a catalog list; an `nr` node carries the per-CC `dl_feature` list and never an index
-/// (NR derives proto 4/5 from its feature set on build). The raw all-zero placeholder selector
+/// (NR derives proto 4/5 from its feature set on provision). The raw all-zero placeholder selector
 /// is deliberately NOT a field: it is a pure function of `kind` + `bw_class`, so KDL omits it
 /// and [`resolve`](Self::resolve) materializes it via [`placeholder_ids`]. Keeping it here
 /// would let the type express a component with a catalog reference *and* a raw selector for
@@ -204,8 +204,8 @@ impl LocalFeaturePlan {
         // One selector byte per `dl_features`/`ul_features` entry — a CC-count-long array,
         // not a single byte. Paired with `LocalFeaturePlan::new`'s used_dl/used_ul scan
         // above: every per-CC record referenced here was inserted there, so `binary_search`
-        // (not find_or_append) is enough. Falls back to the raw selector bytes when the
-        // sub-block carries no resolved feature sets at all.
+        // finds it directly. Falls back to the raw selector bytes when the sub-block
+        // carries no resolved feature sets at all.
         let dl_feature_per_cc_ids = if component.dl_features().is_empty() {
             component.dl_selector().map(<[u8]>::to_vec)
         } else {
@@ -336,7 +336,7 @@ fn resolve_index<T: Clone>(index: usize, records: &[T], direction: &str) -> anyh
 
 /// The all-zero placeholder selector a direction carries when it references no catalog
 /// record: `bw_class` supplies the CC count to fill with zero bytes. KDL omits these bytes
-/// because they are fully derivable, so the build path materializes them here instead of
+/// because they are fully derivable, so the provision path materializes them here instead of
 /// storing them on [`NrSourceSubBlock`]. `None` when there is no bandwidth class to derive a
 /// count from — an absent DL class, or UL disabled (the caller filters `ul_bw_class == 0`),
 /// both of which mean the direction carries no proto field 6/7 at all.
@@ -445,10 +445,8 @@ mod tests {
         // A class-2 NR n48 sub-block with two *different* resolved DL features must
         // reconstruct a 2-byte `dl_feature_per_cc_ids`, not a single byte (the bug this
         // per-CC catalog model fixes: the old CC0-only projection silently dropped every
-        // CC after the first). Note: this exercises the COMPILER's `LocalFeaturePlan`,
-        // which resolves against a pre-scanned local catalog (`binary_search`); the free
-        // `raw_nr::reconstruct_sub_block` (the patch-build path) also emits one selector
-        // per CC as of Task 7, but grows its lists on the fly (`find_or_append`) instead.
+        // CC after the first). This exercises the compiler's `LocalFeaturePlan`, which
+        // resolves each entry against a pre-scanned local catalog via `binary_search`.
         let a = ShannonFeatureSetDlPerCcNr {
             max_bw: Some(40),
             ..Default::default()
@@ -614,8 +612,8 @@ mod tests {
     #[test]
     fn local_plan_passes_through_the_all_zero_placeholder_selector() {
         // The all-zero placeholder is the ONLY unresolved selector that can reach
-        // generation: decompose (`resolve_or_placeholder`) and `patch create`
-        // (`ensure_selector_resolved`) both fail closed on a non-placeholder one. It must
+        // generation: decompose (`RawSubBlock::from_proto_sub_block`, via
+        // `resolve_or_placeholder`) fails closed on a non-placeholder one. It must
         // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside nr.kdl combos
         // and UL-disabled NR sub-blocks depend on this for byte-exact round-trip.
         let sb: RawSubBlock = RawLteSubBlock {
@@ -685,13 +683,13 @@ mod tests {
     }
 
     #[test]
-    fn referenced_all_absent_record_is_resolved_on_both_the_compiler_and_patch_axes() {
+    fn referenced_all_absent_record_is_resolved_on_the_ingest_axis() {
         // Before Task 7, the compiler's `resolve()` (via `with_resolved_feature_sets`)
         // treated an all-absent referenced catalog record as genuinely resolved/present,
-        // while the patch axis's `RawSubBlock::from_sub_block` additionally gated presence
-        // on "does the entry have any field set", collapsing the very same all-`None`
-        // record to selector-only. Task 7 removed that patch-only gate (a non-empty
-        // `dl_features` vec IS presence, full stop), so the two axes now agree.
+        // while the flat DTO ingest path's `RawSubBlock::from_sub_block` additionally gated
+        // presence on "does the entry have any field set", collapsing the very same all-`None`
+        // record to selector-only. Task 7 removed that ingest-only gate (a non-empty
+        // `dl_features` vec IS presence, full stop), so both ingest paths now agree.
         let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
         let source = NrSourceSubBlock {
             kind: SubBlockKind::Nr,
@@ -714,23 +712,22 @@ mod tests {
             }))
         );
 
-        let patch = RawSubBlock::from_sub_block(&SubBlock {
+        let ingested = RawSubBlock::from_sub_block(&SubBlock {
             band: "n78".into(),
             dl_feature_per_cc_ids: Some(vec![7]),
             dl_features: vec![ShannonFeatureSetDlPerCcNr::default()],
             ..Default::default()
         });
         assert_eq!(
-            patch.dl_features().first().copied(),
+            ingested.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
         // The flat DTO offered both a selector and resolved values; `PerCc` keeps only the
         // resolution, so the bytes are gone rather than merely masked from identity (they
-        // used to survive on the struct and be filtered out by `RawSubBlockKey::from` and
-        // `patch::format::sub_block_to_node`).
-        assert_eq!(patch.dl_selector(), None);
+        // used to survive on the struct and be filtered out by `RawSubBlockKey::from`).
+        assert_eq!(ingested.dl_selector(), None);
         assert_eq!(
-            RawSubBlockKey::from(&patch),
+            RawSubBlockKey::from(&ingested),
             RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
                 band: 78,
                 // The DTO under test carries no bandwidth class, so neither does this.

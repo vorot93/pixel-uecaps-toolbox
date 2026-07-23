@@ -155,8 +155,8 @@ pub fn tier_profile_count(tier: Tier) -> usize {
 /// The single profile whose anchor prime divides `number` (the normal case).
 ///
 /// Returns `None` for `0` even though `0.is_multiple_of(x)` is true for every nonzero `x`:
-/// `<CARRIER>_0.binarypb` is a degenerate filename that belongs to no profile, and callers
-/// (e.g. `provision::select_nr_file`) already reject it explicitly.
+/// `<CARRIER>_0.binarypb` is a degenerate filename that belongs to no profile, and without
+/// this guard `identify_profile(0)` would spuriously return the *first* profile.
 pub fn identify_profile(number: u64) -> Option<&'static Profile> {
     if number == 0 {
         return None;
@@ -280,9 +280,10 @@ impl PhoneModel {
     }
 }
 
-/// Registered build models keyed by Google's 5-character hardware code. The bitmask
+/// Registered provision targets keyed by Google's 5-character hardware code. The bitmask
 /// entries are the complete legacy Tensor set in the pinned `pixel-bands` snapshot;
-/// the profiled entries retain the exact evidence-backed mappings used by `provision`.
+/// the profiled entries retain the exact evidence-backed anchor/LTE-id mappings the
+/// compiler resolves a `provision` target against.
 pub static PHONE_MODELS: &[PhoneModel] = &[
     PhoneModel {
         code: "G0DZQ",
@@ -641,7 +642,7 @@ pub fn known_model_codes() -> Vec<&'static str> {
 }
 
 /// A device model resolved from its hardware SKU — the fields a caller needs to
-/// select and patch its capability files. Owned + `'static` so it crosses the
+/// select and provision its capability files. Owned + `'static` so it crosses the
 /// wasm-bindgen boundary cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelInfo {
@@ -1056,8 +1057,7 @@ mod tests {
     fn identify_profile_rejects_zero() {
         // `0.is_multiple_of(x)` is true for every nonzero `x`; without an explicit guard,
         // `identify_profile(0)` would spuriously return the first profile. `<CARRIER>_0.binarypb`
-        // is a real degenerate filename (provision's select_nr_file rejects it) and must not be
-        // classified as belonging to any profile.
+        // is a real degenerate filename and must not be classified as belonging to any profile.
         assert!(identify_profile(0).is_none());
     }
 

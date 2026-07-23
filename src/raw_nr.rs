@@ -1,4 +1,4 @@
-//! Protobuf-shaped NR combo payloads shared by patching and folder compilation.
+//! Protobuf-shaped NR combo payloads shared by the compiler's ingest and generation paths.
 
 use crate::{
     proto::{
@@ -206,8 +206,8 @@ pub(crate) struct RawNrSubBlock {
 /// hold the other's fields. `band` is the plain human band number (`78`, not the protobuf's
 /// internal `10078`); the variant supplies `B`/`n`.
 ///
-/// (De)serialized by hand as KDL — see `patch::format::{sub_block_to_node, read_sub_block}`;
-/// the KDL reader's `NodeReader::finish()` is the strictness equivalent of the former
+/// (De)serialized by hand as KDL — see `compiler::kdl_source`; the KDL reader's
+/// `NodeReader::finish()` is the strictness equivalent of the former
 /// `#[serde(deny_unknown_fields)]`, and the reader simply skips a field to leave it absent
 /// instead of a `skip_serializing_if` attribute.
 ///
@@ -518,8 +518,8 @@ impl RawSubBlock {
     /// same presence rule [`dl_feature_set_is_present`](Self::dl_feature_set_is_present)
     /// and [`with_resolved_feature_sets`](Self::with_resolved_feature_sets) already use;
     /// prior to Task 7 this conversion additionally truncated to CC0 and gated presence on
-    /// "does CC0 have any field set", both now removed — the patch format is per-CC end to
-    /// end, so there is no longer a lossy report/patch axis here.
+    /// "does CC0 have any field set", both now removed — the per-CC model is uniform across
+    /// the crate, so there is no longer a lossy report axis here.
     ///
     /// The DTO is flat — it can hold a stored NR feature index and both a selector and
     /// resolved values for one direction — so this is where those redundant encodings
@@ -779,8 +779,8 @@ impl From<&Combo> for RawNrPayload {
 }
 
 impl RawNrPayload {
-    /// The combo header (`ComboHeader`) for this payload. The single source shared by
-    /// compiler NR generation and patch reconstruction — the compiler↔patch axis (C-hdr).
+    /// The combo header (`ComboHeader`) for this payload, materialized for compiler NR
+    /// generation (C-hdr).
     ///
     /// Four of the five header fields (all but `bcs_intra_endc`) are corpus-verified
     /// always `Some` once a payload has passed through the strict decode boundary

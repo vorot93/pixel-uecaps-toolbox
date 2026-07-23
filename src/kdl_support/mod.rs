@@ -1,5 +1,5 @@
 //! Crate-level KDL toolkit: strict `NodeReader` combinator + writer helpers,
-//! shared by the compiler and patch (de)serializers.
+//! shared by the compiler's (de)serializers.
 
 use std::collections::BTreeSet;
 
@@ -8,11 +8,10 @@ use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
 use crate::{compiler::schema::one_trailing_newline, raw_nr::SubBlockKind};
 
-// ---- component radio-kind codec (shared by compiler `cc` + patch `nr`/`lte`) ----
+// ---- component radio-kind codec (compiler `cc`) ----
 /// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
-/// crate (compiler `nr.kdl`, NR-carrier patch) emits it as the `nr`/`lte` node NAME;
-/// uniformly-LTE surfaces (compiler `lte.kdl`, LTE-fallback patch) use plain `subblock`
-/// with no kind tag. One source of truth.
+/// crate (compiler `nr.kdl`) emits it as the `nr`/`lte` node NAME; uniformly-LTE surfaces
+/// (compiler `lte.kdl`) use plain `subblock` with no kind tag. One source of truth.
 pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
     match k {
         SubBlockKind::Nr => "nr",
@@ -20,7 +19,7 @@ pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
     }
 }
 /// Parse a radio kind from its KDL spelling. `what` names the surface in the error message
-/// (e.g. `"NR/EN-DC component kind"` for the compiler `nr.kdl`/patch), so each caller
+/// (e.g. `"NR/EN-DC component kind"` for the compiler's `nr.kdl`), so each caller
 /// keeps its own phrasing.
 pub(crate) fn str_to_cckind(s: &str, what: &str) -> Result<SubBlockKind> {
     match s {
@@ -391,7 +390,7 @@ mod reader_tests {
 
     #[test]
     fn autoformat_keeps_leading_positional_arg() {
-        // The nr.kdl and patch formats emit `band` as the sole leading positional arg
+        // The nr.kdl and lte.kdl formats emit `band` as the sole leading positional arg
         // (`nr 78 dl-bw-class=2 …`); the pinned kdl 6.7.1 autoformatter must keep it
         // leading and stay idempotent, or a reformatted source would misparse.
         let src = "nr 78 dl-bw-class=2 dl-feature=1\n";

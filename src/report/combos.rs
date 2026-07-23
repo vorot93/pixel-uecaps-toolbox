@@ -34,10 +34,9 @@ pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 /// The band label for a component of a **known** radio kind: `n<num>` (NR) or `B<num>`
 /// (E-UTRA). The single source of the band-prefix convention for every caller that can see
 /// *both* kinds — `band_label` (which *infers* the kind from `NR_BAND_OFFSET`),
-/// `RawSubBlock::band_label` and all of `raw_nr`'s validation/guard messages, provision's
-/// band-drop labels, and `patch filter`'s LTE matching (C-band). Display code that is
-/// statically single-kind — `report::lte` and `patch::show`'s `render_lte` — formats `B`
-/// inline instead; that is correct there because no NR component can reach it.
+/// `RawSubBlock::band_label`, and all of `raw_nr`'s validation/guard messages (C-band).
+/// Display code that is statically single-kind — `report::lte` — formats `B` inline
+/// instead; that is correct there because no NR component can reach it.
 pub(crate) fn band_label_for(is_nr: bool, band: i32) -> String {
     if is_nr {
         format!("n{band}")
@@ -179,7 +178,7 @@ pub(crate) struct SubBlock {
     /// fields below (`dl_scs_khz`, `dl_mimo`, …) always project CC0 — text reports
     /// render one line per component, so `--full` shows only the first CC's decoded
     /// values. The full per-CC vec is here for callers that need every CC; since Task 7,
-    /// `RawSubBlock::from_sub_block` (the patch diff/build axis) carries every entry too.
+    /// `RawSubBlock::from_sub_block` carries every entry too.
     pub(crate) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
     pub(crate) srs_tx_switch: Option<i32>,
@@ -213,14 +212,14 @@ pub(crate) struct Combo {
 }
 
 /// Build combo views together with their exact optional wire bitmask presence.
-/// Most report and patch callers intentionally use [`build_combos`], whose
+/// Most report callers intentionally use [`build_combos`], whose
 /// historical scalar view maps absence to zero. Folder ingestion needs the
 /// optional form to distinguish the modern input contract at its boundary.
 impl SubBlock {
     /// Build a display `SubBlock` from a component's raw protobuf fields plus its resolved DL/UL
     /// feature sets. The one place the 11 derived display fields (SCS / MIMO / max-BW /
-    /// mod-order / 90 MHz, per direction) are projected from the feature sets — shared by the
-    /// folder compiler's `build_combos_with_bitmasks` and `RawSubBlock::to_sub_block` (C-proj).
+    /// mod-order / 90 MHz, per direction) are projected from the feature sets — used by the
+    /// folder compiler's `build_combos_with_bitmasks` (C-proj).
     ///
     /// `is_nr` is the explicit kind assertion: the caller already knows whether this is an
     /// NR or E-UTRA component, so it routes through `band_label_for` directly instead of the
@@ -341,7 +340,7 @@ pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u3
     combo
 }
 
-/// Build the historical scalar combo view used by reports and patching.
+/// Build the historical scalar combo view used by reports.
 pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
     build_combos_with_bitmasks(caps)
         .into_iter()

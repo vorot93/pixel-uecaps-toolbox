@@ -61,9 +61,9 @@ pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     opt_int_prop(&mut node, "dl-bw-class", cc.dl_bw_class.map(|v| v as i128));
     // The proto-4/5 feature index and the proto-6/7 per-CC catalog list are spelled per node
     // kind:
-    //   * `nr`: the index is NOT surfaced — NR derives it from its feature set on build (the
+    //   * `nr`: the index is NOT surfaced — NR derives it from its feature set on provision (the
     //     former `dl-feature-index`/`ul-feature-index` source override was dropped; the proto
-    //     field is still materialized on build/decompose). Per-CC list → repeated
+    //     field is still materialized on provision/decompose). Per-CC list → repeated
     //     `dl-feature=`/`ul-feature=`; an unresolved NR selector is only ever the all-zero
     //     placeholder (corpus: 0 of 1.74M non-zero), omitted here and re-derived by the reader.
     //   * `lte`: index → single scalar `dl-feature`/`ul-feature` (the LTE MIMO × CC-count value).
@@ -457,7 +457,7 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     // Kind-aware inverse of `cc_to_node`'s feature emit. On `lte`, `dl-feature`/`ul-feature`
     // are the single scalar proto-4/5 index and there is no per-CC list; an absent `ul-feature`
     // re-defaults to `Some(0)` (Task 8 omit-when-0, LTE-only). On `nr` the index is not
-    // surfaced at all — it is derived from the feature set on build — so the reader carries no
+    // surfaced at all — it is derived from the feature set on provision — so the reader carries no
     // NR index (`None`); the source override (`dl-feature-index`/`ul-feature-index`) was dropped.
     let (dl_feature_index, ul_feature_index, dl_feature, ul_feature) = match kind {
         SubBlockKind::Lte => (
@@ -467,7 +467,7 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
             Vec::new(),
         ),
         _ => (
-            None, // NR derives the index on build; no source override
+            None, // NR derives the index on provision; no source override
             None,
             r.repeated_int::<usize>("dl-feature")?,
             r.repeated_int::<usize>("ul-feature")?,
@@ -477,7 +477,7 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     r.finish()?; // now rejects any stray dl-cc-id / *-feature-index as unknown properties
     // The raw selector bytes are NOT reconstructed here. An unresolved direction only ever
     // carries the all-zero placeholder, which is a pure function of `kind` + `bw_class`, so
-    // `cc_to_node` omits it and `NrSourceSubBlock::resolve` (the single build-path boundary
+    // `cc_to_node` omits it and `NrSourceSubBlock::resolve` (the single provision-path boundary
     // that needs the bytes) re-derives it. Carrying it on the source model would let a
     // component hold a catalog reference and a raw selector for the same direction.
     Ok(NrSourceSubBlock {
@@ -853,7 +853,7 @@ mod nr_tests {
         // LTE sub-block: no per-CC references at all. The all-zero placeholder selector
         // that the binary carries for it is NOT part of the source model — the reader
         // leaves it out entirely (`NrSourceSubBlock::resolve` derives it from
-        // `dl-bw-class=1` on the build path; see `resolve_derives_the_omitted_placeholder`
+        // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
         // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
         // point.
         let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr 48 dl-bw-class=2 dl-feature=5 dl-feature=8\n    lte 66 dl-bw-class=1\n}\n";
