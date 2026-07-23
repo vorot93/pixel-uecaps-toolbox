@@ -130,7 +130,7 @@ pub(crate) fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
     node
 }
 
-pub(super) fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
+fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
     let mut node = KdlNode::new("dl-feature");
     opt_int_prop(&mut node, "max-scs", f.max_scs.map(|v| v as i128));
     opt_int_prop(&mut node, "max-mimo", f.max_mimo.map(|v| v as i128));
@@ -144,7 +144,7 @@ pub(super) fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
     node
 }
 
-pub(super) fn emit_ul_feature(f: &UlFeatureSource) -> KdlNode {
+fn emit_ul_feature(f: &UlFeatureSource) -> KdlNode {
     let mut node = KdlNode::new("ul-feature");
     opt_int_prop(&mut node, "max-scs", f.max_scs.map(|v| v as i128));
     opt_int_prop(&mut node, "max-mimo-cb", f.max_mimo_cb.map(|v| v as i128));
@@ -176,7 +176,7 @@ fn derive_bcs_intra_endc(intra_band_en_dc_support: Option<i32>) -> Option<u32> {
     }
 }
 
-pub(super) fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
+fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     let mut node = KdlNode::new("combo");
     // `power-class`/`bcs-nr`/`bcs-eutra`/`intra-band-en-dc-support` are corpus-verified
     // always `Some` on a real combo header (never `None`), so `Some(0)` is omitted here and
@@ -236,7 +236,7 @@ pub(super) fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     Ok(node)
 }
 
-pub(super) fn emit_lte_combo(combo: &LteSourceCombo) -> KdlNode {
+fn emit_lte_combo(combo: &LteSourceCombo) -> KdlNode {
     let mut node = KdlNode::new("combo");
     opt_int_prop(&mut node, "bcs", combo.bcs.map(|v| v as i128));
     opt_int_prop(&mut node, "unknown1", combo.unknown1.map(|v| v as i128));

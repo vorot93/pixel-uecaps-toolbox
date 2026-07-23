@@ -454,49 +454,6 @@ fn second_lte() -> LteCaps {
     }
 }
 
-/// A minimal one-file NR carrier fixture: `version` + a single band-78 sub-block. Shared
-/// by `compiler::slice`'s and `decode`'s one-file tests so the encoded bytes live in one
-/// place (both used to carry byte-identical copies of this same fixture).
-pub(crate) fn carrier_bytes() -> Vec<u8> {
-    UeCaps {
-        version: 874_888_686,
-        combo_groups: vec![ComboGroup {
-            combo_header: None,
-            combo: vec![Combo {
-                bitmask: Some(0),
-                sub_blocks: vec![SubBlock {
-                    band: 10078,
-                    dl_bw_class: Some(1),
-                    ul_bw_class: Some(1),
-                    ..Default::default()
-                }],
-            }],
-        }],
-        ..Default::default()
-    }
-    .encode_to_vec()
-}
-
-/// A minimal one-file LTE fallback fixture: a single band-1 component. Shared the same
-/// way as [`carrier_bytes`].
-pub(crate) fn lte_bytes() -> Vec<u8> {
-    LteCaps {
-        fingerprint: 862_505_271,
-        bitmask: 0,
-        combos: vec![LteCombo {
-            components: vec![LteComponent {
-                band: 1,
-                dl_bw_class_mimo: 32768,
-                ul_bw_class_mimo: None,
-            }],
-            bcs: None,
-            unknown1: None,
-            unknown2: None,
-        }],
-    }
-    .encode_to_vec()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

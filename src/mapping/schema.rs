@@ -7,8 +7,9 @@ use anyhow::{Context, ensure};
 use prost::Message;
 use std::collections::HashSet;
 
-/// The editable PLMN-legend schema, (de)serialized by hand as KDL — see
-/// `mapping::kdl_format::{root_to_kdl, root_from_kdl}`.
+/// The editable mapping model: proto `PlmnMap` ↔ `Root`/`MappingEntry`, order-preserving in
+/// both directions. The compiler's generated legend is built from this and verified by
+/// `encode_root_verified`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Root {
     pub(crate) mappings: Vec<MappingEntry>,
@@ -153,22 +154,5 @@ mod tests {
         assert_eq!(root.mappings[0].id, 7);
         assert_eq!(root.mappings[0].name, "X");
         assert_eq!(root.mappings[0].plmns, vec!["250-01".to_string()]);
-    }
-
-    #[test]
-    fn mapping_legend_kdl_rejects_unknown_fields() {
-        // Unlike the old TOML `Root`/`MappingEntry` (no `#[serde(deny_unknown_fields)]`,
-        // so unrecognized keys were silently accepted), the KDL reader's `NodeReader`
-        // combinator tracks every consumed arg/property/child and `finish()` rejects
-        // anything left over — matching the strictness the rest of the KDL migration
-        // uses (compiler's nr.kdl/lte.kdl readers). This documents the (now strict)
-        // behavior for an unknown top-level node and an unknown `mapping` property.
-        assert!(super::super::kdl_format::root_from_kdl("version 1\nunknown 1\n").is_err());
-        assert!(
-            super::super::kdl_format::root_from_kdl(
-                "version 1\nmapping id=1 name=A unknown=true\n",
-            )
-            .is_err()
-        );
     }
 }

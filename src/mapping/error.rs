@@ -1,6 +1,7 @@
 use thiserror::Error;
 
-/// Errors from the PLMN-mapping editor (`mapping` subcommand).
+/// Errors from the PLMN-mapping codec: PLMN parsing/formatting, and the legend's proto ↔
+/// editable-model conversion (`mapping::schema`), used by the compiler and `check`.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("protobuf decode error: {0}")]
@@ -15,19 +16,4 @@ pub enum Error {
     DuplicateName(String),
     #[error("mapping #{0} has an empty name")]
     EmptyName(u64),
-    #[error("no mapping named `{0}`")]
-    MappingNotFound(String),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-
-    #[test]
-    fn displays_mapping_not_found() {
-        assert_eq!(
-            Error::MappingNotFound("VZW".into()).to_string(),
-            "no mapping named `VZW`"
-        );
-    }
 }

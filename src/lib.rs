@@ -3,7 +3,6 @@
 
 pub(crate) mod atomic;
 pub mod compiler;
-pub mod decode;
 pub mod factor;
 pub(crate) mod kdl_support;
 pub mod magisk;

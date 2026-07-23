@@ -53,31 +53,6 @@ impl From<&LteCombo> for RawLteCombo {
     }
 }
 
-/// One-file slice of the LTE source model for `decode`: convert a single decoded
-/// `LteCaps` into compiler source DTOs. No `selection`. Preserves optional-field
-/// presence (`bcs`/`unknown1`/`unknown2`) so the writer can match lte.kdl's
-/// presence-sensitive semantics.
-pub(super) fn lte_source_from_one_file(caps: &LteCaps) -> Vec<LteSourceCombo> {
-    caps.combos
-        .iter()
-        .map(|combo| LteSourceCombo {
-            selection: None,
-            bcs: combo.bcs,
-            unknown1: combo.unknown1,
-            unknown2: combo.unknown2,
-            components: combo
-                .components
-                .iter()
-                .map(|c| LteSourceComponent {
-                    band: c.band,
-                    dl_bw_class_mimo: c.dl_bw_class_mimo,
-                    ul_bw_class_mimo: c.ul_bw_class_mimo,
-                })
-                .collect(),
-        })
-        .collect()
-}
-
 pub(crate) struct DecodedLteFile {
     pub(crate) id: u64,
     pub(crate) original: Vec<u8>,
@@ -636,34 +611,5 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("duplicate LTE file ID 91"), "{error}");
-    }
-
-    #[test]
-    fn lte_source_from_one_file_preserves_optional_presence() {
-        use crate::proto::{LteCaps, LteCombo, LteComponent};
-        let caps = LteCaps {
-            fingerprint: 862_505_271,
-            combos: vec![LteCombo {
-                components: vec![LteComponent {
-                    band: 1,
-                    dl_bw_class_mimo: 32769,
-                    ul_bw_class_mimo: Some(32768),
-                }],
-                bcs: None,
-                unknown1: Some(0),
-                unknown2: None,
-            }],
-            bitmask: 0,
-        };
-        let combos = super::lte_source_from_one_file(&caps);
-        assert_eq!(combos.len(), 1);
-        let combo = &combos[0];
-        assert!(combo.bcs.is_none());
-        assert_eq!(combo.unknown1, Some(0));
-        assert!(combo.unknown2.is_none());
-        assert_eq!(combo.components.len(), 1);
-        assert_eq!(combo.components[0].band, 1);
-        assert_eq!(combo.components[0].dl_bw_class_mimo, 32769);
-        assert_eq!(combo.components[0].ul_bw_class_mimo, Some(32768));
     }
 }

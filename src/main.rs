@@ -1,6 +1,6 @@
 //! pixel-uecaps-toolbox — decode and validate Google Pixel UE-capabilities files.
 
-use pixel_uecaps_toolbox::{compiler, decode, magisk, mapping, report};
+use pixel_uecaps_toolbox::{compiler, magisk, report};
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -26,14 +26,6 @@ enum Cmd {
         /// Write nr.kdl and lte.kdl into this directory
         #[arg(short = 'o', long)]
         out: PathBuf,
-    },
-    /// Decode one .binarypb file to KDL
-    Decode {
-        /// File to decode
-        file: PathBuf,
-        /// Override the kind implied by the filename
-        #[arg(long, value_name = "KIND")]
-        kind: Option<decode::Kind>,
     },
     /// Build a complete model-specific replacement Magisk module from compiler sources
     Build {
@@ -70,11 +62,6 @@ enum Cmd {
     },
     /// Run built-in, data-independent sanity checks
     SelfTest,
-    /// Encode or edit ap_plmn_mapping.binarypb (stdin -> stdout)
-    Mapping {
-        #[command(subcommand)]
-        cmd: MappingCmd,
-    },
     /// Compare the band combinations of two capability files
     Compare {
         file_a: PathBuf,
@@ -99,21 +86,6 @@ enum Cmd {
         /// Module name shown in the Magisk app
         #[arg(long, default_value = "Pixel UE-caps override")]
         name: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum MappingCmd {
-    /// Encode editable legend KDL back to .binarypb (stdin -> stdout);
-    /// inverse of `decode ap_plmn_mapping.binarypb`
-    Encode,
-    /// Append one or more PLMNs (MCC-MNC) to a named carrier; binarypb stdin -> stdout
-    InjectPlmn {
-        /// Target carrier name (the mapping's identifier)
-        carrier: String,
-        /// One or more PLMNs as MCC-MNC, e.g. 250-01 310-004
-        #[arg(required = true)]
-        plmns: Vec<String>,
     },
 }
 
@@ -148,12 +120,10 @@ impl Cmd {
                 out,
                 name,
             } => compiler::build(&model, &source, &out, name.as_deref()),
-            Self::Decode { file, kind } => decode::run(&file, kind),
             Self::Inspect { file, full } => report::inspect(&file, full),
             Self::Check { dir } => report::check_folder(&dir),
             Self::Matrix { dir, out } => report::matrix(&dir, out.as_deref()),
             Self::SelfTest => report::self_test(),
-            Self::Mapping { cmd } => cmd.run(),
             Self::Compare {
                 file_a,
                 file_b,
@@ -166,15 +136,6 @@ impl Cmd {
                 out,
                 name,
             } => magisk::package(&files, &dest, out.as_deref(), &name),
-        }
-    }
-}
-
-impl MappingCmd {
-    fn run(self) -> anyhow::Result<i32> {
-        match self {
-            Self::Encode => mapping::encode(),
-            Self::InjectPlmn { carrier, plmns } => mapping::inject(&carrier, &plmns),
         }
     }
 }
@@ -301,24 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_inject_plmn_with_multiple_plmns() {
-        let cli = Cli::parse_from(["x", "mapping", "inject-plmn", "VZW", "250-01", "310-004"]);
-        let Cmd::Mapping {
-            cmd: MappingCmd::InjectPlmn { carrier, plmns },
-        } = cli.cmd
-        else {
-            panic!("expected mapping inject-plmn")
-        };
-        assert_eq!(carrier, "VZW");
-        assert_eq!(plmns, vec!["250-01".to_string(), "310-004".to_string()]);
-    }
-
-    #[test]
-    fn inject_plmn_requires_at_least_one_plmn() {
-        assert!(Cli::try_parse_from(["x", "mapping", "inject-plmn", "VZW"]).is_err());
-    }
-
-    #[test]
     fn parses_compare() {
         let cli = Cli::parse_from(["x", "compare", "a.binarypb", "b.binarypb", "--full"]);
         let Cmd::Compare {
@@ -435,31 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_decode_with_a_file() {
-        let cli = Cli::parse_from(["x", "decode", "VZW_167.binarypb"]);
-        let Cmd::Decode { file, kind } = cli.cmd else {
-            panic!("expected decode");
-        };
-        assert_eq!(file, PathBuf::from("VZW_167.binarypb"));
-        assert_eq!(kind, None);
-    }
-
-    #[test]
-    fn parses_decode_kind_override() {
-        let cli = Cli::parse_from(["x", "decode", "legend.bak", "--kind", "mapping"]);
-        let Cmd::Decode { file, kind } = cli.cmd else {
-            panic!("expected decode");
-        };
-        assert_eq!(file, PathBuf::from("legend.bak"));
-        assert_eq!(kind, Some(decode::Kind::Mapping));
-    }
-
-    #[test]
-    fn decode_requires_a_file() {
-        assert!(Cli::try_parse_from(["x", "decode"]).is_err());
-    }
-
-    #[test]
     fn parses_decompose() {
         let cli = Cli::parse_from([
             "x",
@@ -482,15 +400,5 @@ mod tests {
         assert_eq!(bitmask, PathBuf::from("b"));
         assert_eq!(profiled, PathBuf::from("p"));
         assert_eq!(out, PathBuf::from("src"));
-    }
-
-    #[test]
-    fn inspect_no_longer_accepts_kdl() {
-        assert!(Cli::try_parse_from(["x", "inspect", "f.binarypb", "--kdl"]).is_err());
-    }
-
-    #[test]
-    fn mapping_no_longer_has_decode() {
-        assert!(Cli::try_parse_from(["x", "mapping", "decode"]).is_err());
     }
 }

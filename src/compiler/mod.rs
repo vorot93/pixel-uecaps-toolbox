@@ -6,7 +6,6 @@ pub(crate) mod lte;
 pub(crate) mod nr;
 pub(crate) mod schema;
 pub(crate) mod selection;
-mod slice;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -15,7 +14,6 @@ pub use build::{build, build_from_sources, load_sources};
 pub use decompose::decompose;
 pub(crate) use kdl_source::{lte_from_kdl, lte_to_kdl, nr_from_kdl, nr_to_kdl};
 pub use schema::ValidatedSources;
-pub(crate) use slice::{lte_slice, nr_slice};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedFile {
