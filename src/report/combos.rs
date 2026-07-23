@@ -464,7 +464,7 @@ pub(crate) fn fmt_cc_features(cc: &SubBlock) -> String {
 }
 
 /// Print the band-combinations section: one compact `g<grp> <bands>` line per
-/// combo, plus indented per-component detail when `full`.
+/// combo, plus indented per-component detail under [`Detail::Full`].
 pub(crate) fn print_combos(combos: &[Combo], detail: Detail) {
     if combos.is_empty() {
         println!("Band combinations: none (reference stub)");

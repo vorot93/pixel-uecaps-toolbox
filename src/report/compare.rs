@@ -184,7 +184,7 @@ fn render_common_section(diff: &ComboDiff) -> String {
     out
 }
 
-/// Render the summary + set diff (+ caps detail when `full`). Header is separate.
+/// Render the summary + set diff (+ caps detail under [`Detail::Full`]). Header is separate.
 fn render_diff_body(diff: &ComboDiff, detail: Detail, common: Common) -> String {
     let mut out = String::new();
     if !diff.has_differences() {

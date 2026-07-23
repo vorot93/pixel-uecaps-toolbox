@@ -23,6 +23,8 @@ impl Detail {
     }
 }
 
+/// One of the two places a `bool` parameter is allowed to survive, named: `clap` parses
+/// `--full` as a flag, and this is the single boundary where that flag becomes a [`Detail`].
 impl From<bool> for Detail {
     fn from(full: bool) -> Self {
         if full { Self::Full } else { Self::Summary }
@@ -46,6 +48,8 @@ impl Common {
     }
 }
 
+/// The other one: `clap` parses `--common` as a flag, and this is the single boundary where
+/// that flag becomes a [`Common`].
 impl From<bool> for Common {
     fn from(show: bool) -> Self {
         if show { Self::Show } else { Self::Hide }
