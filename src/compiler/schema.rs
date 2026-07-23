@@ -280,6 +280,66 @@ pub(crate) fn to_kdl(nr: &NrDocument, lte: &LteDocument) -> anyhow::Result<(Stri
     validate_documents(nr.clone(), lte.clone())?.to_kdl()
 }
 
+/// Re-derives a carrier's canonical PLMN strings from their packed encoded form — the inverse
+/// of `validate_carriers`' PLMN encode, applied post-validation so `nr.kdl` always stores the
+/// human-readable `mcc-mnc` spelling, never the packed integer.
+fn canonical_plmn_strings(encoded: &[u64]) -> Vec<String> {
+    encoded
+        .iter()
+        .map(|value| {
+            Plmn::from_encoded(*value)
+                .expect("validated PLMN remains within 24 bits")
+                .to_string()
+        })
+        .collect()
+}
+
+/// Rebuilds `nr.kdl`'s `combo` list from validated data: each combo's selection re-derived to
+/// its canonical rectangle form, and its per-component catalog references re-derived via
+/// `source_sub_block` — the write-side inverse of `validate_nr_combos`/`resolve`.
+fn nr_source_combos(
+    combo: &[ValidatedNrCombo],
+    domain: &NrDomain,
+    features: &FeatureCatalogs,
+) -> anyhow::Result<Vec<NrSourceCombo>> {
+    combo
+        .iter()
+        .map(|combo| {
+            Ok(NrSourceCombo {
+                selection: combo.relation.canonical_selection(domain)?,
+                power_class: combo.payload.power_class,
+                bcs_nr: combo.payload.bcs_nr,
+                bcs_intra_endc: combo.payload.bcs_intra_endc,
+                bcs_eutra: combo.payload.bcs_eutra,
+                intra_band_en_dc_support: combo.payload.intra_band_en_dc_support,
+                sub_blocks: combo
+                    .payload
+                    .sub_blocks
+                    .iter()
+                    .map(|component| features.source_sub_block(component))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+/// Rebuilds `lte.kdl`'s `combo` list from validated data: only `selection` is re-derived (to
+/// its canonical rectangle form); every other field is a straight clone of the validated
+/// source combo, since LTE combos carry no catalog references to re-derive.
+fn lte_source_combos(
+    combo: &[ValidatedLteCombo],
+    domain: &LteDomain,
+) -> anyhow::Result<Vec<LteSourceCombo>> {
+    combo
+        .iter()
+        .map(|combo| {
+            let mut source = combo.source.clone();
+            source.selection = combo.relation.canonical_selection(domain)?;
+            Ok(source)
+        })
+        .collect()
+}
+
 fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> {
     validated.nr.source.bitmask_carriers.sort_unstable();
     for group in &mut validated.nr.source.bitmask_fingerprints {
@@ -296,53 +356,19 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
     for (carrier, source) in &mut validated.nr.source.carriers {
         let parsed = &validated.nr.carriers[carrier];
         if let Some(plmns) = &parsed.plmns {
-            source.plmns = Some(
-                plmns
-                    .iter()
-                    .map(|value| {
-                        Plmn::from_encoded(*value)
-                            .expect("validated PLMN remains within 24 bits")
-                            .to_string()
-                    })
-                    .collect(),
-            );
+            source.plmns = Some(canonical_plmn_strings(plmns));
         }
     }
 
     validated.nr.source.dl_features = validated.nr.features.dl.clone();
     validated.nr.source.ul_features = validated.nr.features.ul.clone();
-    validated.nr.source.combo = validated
-        .nr
-        .combo
-        .iter()
-        .map(|combo| {
-            Ok(NrSourceCombo {
-                selection: combo.relation.canonical_selection(&validated.nr.domain)?,
-                power_class: combo.payload.power_class,
-                bcs_nr: combo.payload.bcs_nr,
-                bcs_intra_endc: combo.payload.bcs_intra_endc,
-                bcs_eutra: combo.payload.bcs_eutra,
-                intra_band_en_dc_support: combo.payload.intra_band_en_dc_support,
-                sub_blocks: combo
-                    .payload
-                    .sub_blocks
-                    .iter()
-                    .map(|component| validated.nr.features.source_sub_block(component))
-                    .collect(),
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    validated.nr.source.combo = nr_source_combos(
+        &validated.nr.combo,
+        &validated.nr.domain,
+        &validated.nr.features,
+    )?;
 
-    validated.lte.source.combo = validated
-        .lte
-        .combo
-        .iter()
-        .map(|combo| {
-            let mut source = combo.source.clone();
-            source.selection = combo.relation.canonical_selection(&validated.lte.domain)?;
-            Ok(source)
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    validated.lte.source.combo = lte_source_combos(&validated.lte.combo, &validated.lte.domain)?;
     Ok(())
 }
 
@@ -499,6 +525,123 @@ fn validate_lte_combos(
     Ok(validated)
 }
 
+/// Range-checks an optional raw id down to `i32`, naming `field` and `carrier` in the error so
+/// a too-large `bitmask_id`/`profiled_id` is traceable to its source. Both fields share this
+/// exact check; only the field name in the message differs.
+fn checked_i32_id(id: Option<i64>, field: &str, carrier: &str) -> anyhow::Result<Option<i32>> {
+    id.map(|id| {
+        i32::try_from(id).with_context(|| format!("{field} for carrier `{carrier}` must fit int32"))
+    })
+    .transpose()
+}
+
+/// Enforces the structural rules a carrier's profile/signature/tier/mapping/bitmask fields
+/// must jointly satisfy: a profiled carrier needs signature+tier and vice versa, `profiled_id`
+/// implies profiles, `mapping_id` and `plmns` imply each other, and every carrier must have at
+/// least one role (bitmask membership, profiles, or a PLMN mapping).
+fn validate_carrier_role(
+    carrier: &str,
+    source: &CarrierSource,
+    bitmask_carriers: &BTreeSet<&str>,
+) -> anyhow::Result<()> {
+    let has_profiles = !source.profiles.is_empty();
+    if has_profiles {
+        ensure!(
+            source.signature.is_some(),
+            "profiled carrier `{carrier}` requires signature"
+        );
+        ensure!(
+            source.tier.is_some(),
+            "profiled carrier `{carrier}` requires tier"
+        );
+    } else {
+        ensure!(
+            source.signature.is_none() && source.tier.is_none(),
+            "carrier `{carrier}` has signature or tier without profiles"
+        );
+    }
+    ensure!(
+        has_profiles || source.profiled_id.is_none(),
+        "carrier `{carrier}` has profiled_id but no profiled NR files"
+    );
+    ensure!(
+        source.mapping_id.is_some() == source.plmns.is_some(),
+        "carrier `{carrier}` must provide mapping_id and plmns together"
+    );
+    ensure!(
+        bitmask_carriers.contains(carrier) || has_profiles || source.plmns.is_some(),
+        "carrier `{carrier}` has no bitmask, profile, or mapping-only role"
+    );
+    Ok(())
+}
+
+/// Encodes a carrier's PLMN list to its packed form, or `None` when the carrier has no PLMN
+/// list at all. Each entry's parse error names the offending PLMN and carrier.
+fn parse_carrier_plmns(
+    plmns: Option<&[String]>,
+    carrier: &str,
+) -> anyhow::Result<Option<Vec<u64>>> {
+    plmns
+        .map(|plmns| {
+            plmns
+                .iter()
+                .map(|plmn| {
+                    plmn.parse::<Plmn>()
+                        .with_context(|| format!("invalid PLMN `{plmn}` for carrier `{carrier}`"))
+                        .map(Plmn::to_encoded)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .transpose()
+}
+
+/// Builds one carrier's `anchor -> ValidatedProfile` table: each profile key's filename
+/// product (`signature * multiplier`) must round-trip through `matching_anchors` to the SAME
+/// anchor it was declared under, or the profile is rejected as ambiguous/mismatched.
+/// `signature`/`tier` are pre-validated `Some` by `validate_carrier_role` for any carrier that
+/// reaches here with a non-empty `source_profiles`.
+fn validated_profiles(
+    source_profiles: &BTreeMap<String, ProfileSource>,
+    carrier: &str,
+    signature: Option<u64>,
+    tier: Option<CarrierTier>,
+) -> anyhow::Result<BTreeMap<u64, ValidatedProfile>> {
+    let mut profiles = BTreeMap::new();
+    for (key, profile_source) in source_profiles {
+        let anchor =
+            parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
+        let Some(profile) = PROFILES.iter().find(|profile| profile.anchor == anchor) else {
+            bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
+        };
+        let number = signature
+            .expect("profiled carrier signature checked above")
+            .checked_mul(profile_source.multiplier.0)
+            .with_context(|| {
+                format!("filename product overflow for carrier `{carrier}` profile {anchor}")
+            })?;
+        let matches = matching_anchors(number);
+        if matches.len() > 1 {
+            bail!(
+                "filename product {number} for carrier `{carrier}` profile {anchor} is ambiguous"
+            );
+        }
+        ensure!(
+            matches.len() == 1 && matches[0].anchor == anchor,
+            "filename product {number} for carrier `{carrier}` has wrong profile anchor; expected {anchor}"
+        );
+        profiles.insert(
+            anchor,
+            ValidatedProfile {
+                multiplier: profile_source.multiplier.0,
+                number,
+                unknown: profile_source.unknown.0,
+                fingerprint: modern_fingerprint(profile.family, tier.unwrap()),
+            },
+        );
+    }
+    Ok(profiles)
+}
+
 fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, ValidatedCarrier>> {
     let bitmask_carriers: BTreeSet<_> = nr.bitmask_carriers.iter().map(String::as_str).collect();
     let mut normalized_names = BTreeSet::new();
@@ -512,13 +655,7 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
             "duplicate carrier name `{carrier}` after normalization"
         );
 
-        let bitmask_id = source
-            .bitmask_id
-            .map(|id| {
-                i32::try_from(id)
-                    .with_context(|| format!("bitmask_id for carrier `{carrier}` must fit int32"))
-            })
-            .transpose()?;
+        let bitmask_id = checked_i32_id(source.bitmask_id, "bitmask_id", carrier)?;
         if bitmask_id.is_some() {
             ensure!(
                 bitmask_carriers.contains(carrier.as_str()),
@@ -526,42 +663,9 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
             );
         }
 
-        let has_profiles = !source.profiles.is_empty();
-        if has_profiles {
-            ensure!(
-                source.signature.is_some(),
-                "profiled carrier `{carrier}` requires signature"
-            );
-            ensure!(
-                source.tier.is_some(),
-                "profiled carrier `{carrier}` requires tier"
-            );
-        } else {
-            ensure!(
-                source.signature.is_none() && source.tier.is_none(),
-                "carrier `{carrier}` has signature or tier without profiles"
-            );
-        }
-        ensure!(
-            has_profiles || source.profiled_id.is_none(),
-            "carrier `{carrier}` has profiled_id but no profiled NR files"
-        );
-        ensure!(
-            source.mapping_id.is_some() == source.plmns.is_some(),
-            "carrier `{carrier}` must provide mapping_id and plmns together"
-        );
-        ensure!(
-            bitmask_carriers.contains(carrier.as_str()) || has_profiles || source.plmns.is_some(),
-            "carrier `{carrier}` has no bitmask, profile, or mapping-only role"
-        );
+        validate_carrier_role(carrier, source, &bitmask_carriers)?;
 
-        let profiled_id = source
-            .profiled_id
-            .map(|id| {
-                i32::try_from(id)
-                    .with_context(|| format!("profiled_id for carrier `{carrier}` must fit int32"))
-            })
-            .transpose()?;
+        let profiled_id = checked_i32_id(source.profiled_id, "profiled_id", carrier)?;
 
         if let Some(id) = source.mapping_id
             && let Some(previous) = mapping_ids.insert(id, carrier)
@@ -569,57 +673,9 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
             bail!("mapping_id {id} is used by both carrier `{previous}` and `{carrier}`");
         }
 
-        let plmns = source
-            .plmns
-            .as_ref()
-            .map(|plmns| {
-                plmns
-                    .iter()
-                    .map(|plmn| {
-                        plmn.parse::<Plmn>()
-                            .with_context(|| {
-                                format!("invalid PLMN `{plmn}` for carrier `{carrier}`")
-                            })
-                            .map(Plmn::to_encoded)
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()
-            })
-            .transpose()?;
-
+        let plmns = parse_carrier_plmns(source.plmns.as_deref(), carrier)?;
         let signature = source.signature.map(|value| value.0);
-        let mut profiles = BTreeMap::new();
-        for (key, profile_source) in &source.profiles {
-            let anchor =
-                parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
-            let Some(profile) = PROFILES.iter().find(|profile| profile.anchor == anchor) else {
-                bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
-            };
-            let number = signature
-                .expect("profiled carrier signature checked above")
-                .checked_mul(profile_source.multiplier.0)
-                .with_context(|| {
-                    format!("filename product overflow for carrier `{carrier}` profile {anchor}")
-                })?;
-            let matches = matching_anchors(number);
-            if matches.len() > 1 {
-                bail!(
-                    "filename product {number} for carrier `{carrier}` profile {anchor} is ambiguous"
-                );
-            }
-            ensure!(
-                matches.len() == 1 && matches[0].anchor == anchor,
-                "filename product {number} for carrier `{carrier}` has wrong profile anchor; expected {anchor}"
-            );
-            profiles.insert(
-                anchor,
-                ValidatedProfile {
-                    multiplier: profile_source.multiplier.0,
-                    number,
-                    unknown: profile_source.unknown.0,
-                    fingerprint: modern_fingerprint(profile.family, source.tier.unwrap()),
-                },
-            );
-        }
+        let profiles = validated_profiles(&source.profiles, carrier, signature, source.tier)?;
 
         validated.insert(
             carrier.clone(),
