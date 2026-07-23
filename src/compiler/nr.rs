@@ -25,9 +25,19 @@ use crate::{
     report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
 };
 
-pub(crate) struct DecodedNrFile {
+/// An unnumbered `<CARRIER>.binarypb` from the bitmask folder. Legacy files have no filename
+/// number *by construction*, so there is nothing to validate downstream.
+pub(crate) struct LegacyNrFile {
     pub(crate) carrier: String,
-    pub(crate) number: Option<u64>,
+    pub(crate) caps: UeCaps,
+}
+
+/// A numbered `<CARRIER>_<NUMBER>.binarypb` from the profiled folder. The number is not
+/// optional: `decompose`'s classifier already parsed it out of the filename to decide this
+/// file belongs here at all, so the type records what the classifier proved.
+pub(crate) struct ProfiledNrFile {
+    pub(crate) carrier: String,
+    pub(crate) number: u64,
     pub(crate) caps: UeCaps,
 }
 
@@ -348,8 +358,8 @@ fn verify_generated_file(
 }
 
 pub(crate) fn ingest_nr(
-    legacy: Vec<DecodedNrFile>,
-    profiled: Vec<DecodedNrFile>,
+    legacy: Vec<LegacyNrFile>,
+    profiled: Vec<ProfiledNrFile>,
     mapping: &MappingRoot,
 ) -> anyhow::Result<NrDocument> {
     let mapping = map_to_root(&root_to_map(mapping).context("validating profiled PLMN mapping")?)
@@ -366,16 +376,8 @@ pub(crate) fn ingest_nr(
         BTreeMap::<RawNrPayloadKey, (RawNrPayload, BTreeSet<(CompactString, Sku)>)>::new();
 
     for file in legacy {
-        let DecodedNrFile {
-            carrier,
-            number,
-            caps,
-        } = file;
+        let LegacyNrFile { carrier, caps } = file;
         validate_carrier_name(&carrier)?;
-        ensure!(
-            number.is_none(),
-            "legacy carrier `{carrier}` must use an unnumbered filename"
-        );
         ensure!(
             !carriers.contains_key(&carrier),
             "duplicate legacy carrier `{carrier}`"
@@ -409,14 +411,9 @@ pub(crate) fn ingest_nr(
         );
     }
 
-    let mut profiled_by_carrier = BTreeMap::<String, Vec<DecodedNrFile>>::new();
+    let mut profiled_by_carrier = BTreeMap::<String, Vec<ProfiledNrFile>>::new();
     for file in profiled {
         validate_carrier_name(&file.carrier)?;
-        ensure!(
-            file.number.is_some(),
-            "profiled carrier `{}` must use a numbered filename",
-            file.carrier
-        );
         profiled_by_carrier
             .entry(file.carrier.clone())
             .or_default()
@@ -428,7 +425,7 @@ pub(crate) fn ingest_nr(
         let mut classified = Vec::with_capacity(files.len());
         let mut seen_anchors = BTreeSet::new();
         for file in files {
-            let number = file.number.expect("profiled number checked above");
+            let number = file.number;
             let matches = matching_anchors(number);
             ensure!(
                 matches.len() == 1,
@@ -758,9 +755,16 @@ mod tests {
         }
     }
 
-    fn decoded(carrier: &str, number: Option<u64>, caps: UeCaps) -> DecodedNrFile {
-        DecodedNrFile {
-            carrier: carrier.into(),
+    fn legacy_file(carrier: &str, caps: UeCaps) -> LegacyNrFile {
+        LegacyNrFile {
+            carrier: carrier.to_string(),
+            caps,
+        }
+    }
+
+    fn profiled_file(carrier: &str, number: u64, caps: UeCaps) -> ProfiledNrFile {
+        ProfiledNrFile {
+            carrier: carrier.to_string(),
             number,
             caps,
         }
@@ -804,14 +808,12 @@ mod tests {
         const REAL_ANCHOR: u64 = 66_813_533;
         const SYNTHETIC_ANCHOR: u64 = 8_969;
         let legacy = vec![
-            decoded(
+            legacy_file(
                 "A",
-                None,
                 one_combo_caps(715_188_856, Some(1), 0, 10_078, Some(123)),
             ),
-            decoded(
+            legacy_file(
                 "EMPTY",
-                None,
                 UeCaps {
                     version: 773_233_060,
                     ..Default::default()
@@ -842,15 +844,15 @@ mod tests {
             ..Default::default()
         }];
         let profiled = vec![
-            decoded("A", Some(SIGNATURE * REAL_ANCHOR), real),
-            decoded(
+            profiled_file("A", SIGNATURE * REAL_ANCHOR, real),
+            profiled_file(
                 "A",
-                Some(SIGNATURE * SYNTHETIC_ANCHOR),
+                SIGNATURE * SYNTHETIC_ANCHOR,
                 one_combo_caps(874_888_686, Some(7), 22, 10_003, Some(0)),
             ),
-            decoded(
+            profiled_file(
                 "PROFILE_EMPTY",
-                Some(11 * REAL_ANCHOR),
+                11 * REAL_ANCHOR,
                 UeCaps {
                     version: 862_505_271,
                     id: Some(8),
@@ -1082,12 +1084,7 @@ mod tests {
             },
         ];
 
-        let nr = ingest_nr(
-            vec![decoded("LEGACY", None, caps)],
-            vec![],
-            &empty_mapping(),
-        )
-        .unwrap();
+        let nr = ingest_nr(vec![legacy_file("LEGACY", caps)], vec![], &empty_mapping()).unwrap();
         assert_eq!(nr.dl_features.len(), 1);
         assert_eq!(nr.ul_features.len(), 1);
         assert_eq!(nr.dl_features[0].max_scs, Some(3));
@@ -1099,24 +1096,17 @@ mod tests {
     #[test]
     fn ingest_legacy_preserves_all_fingerprint_partitions_and_discards_any_input_mask() {
         let legacy = vec![
-            decoded(
+            legacy_file(
                 "VZW",
-                None,
                 one_combo_caps(715_188_856, Some(7), 0, 10_078, Some(1)),
             ),
-            decoded(
-                "KDDI",
-                None,
-                one_combo_caps(702_152_537, None, 0, 10_041, None),
-            ),
-            decoded(
+            legacy_file("KDDI", one_combo_caps(702_152_537, None, 0, 10_041, None)),
+            legacy_file(
                 "ATT",
-                None,
                 one_combo_caps(548_015_020, Some(0), 0, 10_077, Some(u32::MAX)),
             ),
-            decoded(
+            legacy_file(
                 "EMPTY",
-                None,
                 UeCaps {
                     version: 773_233_060,
                     id: Some(-1),
@@ -1148,9 +1138,8 @@ mod tests {
     #[test]
     fn ingest_legacy_rejects_nonzero_field_nine() {
         let error = ingest_nr(
-            vec![decoded(
+            vec![legacy_file(
                 "VZW",
-                None,
                 one_combo_caps(715_188_856, None, 9, 10_078, Some(65_535)),
             )],
             vec![],
@@ -1168,17 +1157,11 @@ mod tests {
         let mut duplicate = legacy.combo_groups[0].clone();
         duplicate.combo[0].bitmask = Some(6_144);
         legacy.combo_groups.push(duplicate);
-        let nr = ingest_nr(
-            vec![decoded("DISH", None, legacy)],
-            vec![],
-            &empty_mapping(),
-        )
-        .unwrap();
+        let nr = ingest_nr(vec![legacy_file("DISH", legacy)], vec![], &empty_mapping()).unwrap();
         assert_eq!(nr.combo.len(), 1);
 
-        let legacy_stub = decoded(
+        let legacy_stub = legacy_file(
             "LEGACY",
-            None,
             UeCaps {
                 version: 715_188_856,
                 ..Default::default()
@@ -1188,7 +1171,7 @@ mod tests {
         profiled.combo_groups.push(profiled.combo_groups[0].clone());
         let error = ingest_nr(
             vec![legacy_stub],
-            vec![decoded("PROFILED", Some(66_813_533), profiled)],
+            vec![profiled_file("PROFILED", 66_813_533, profiled)],
             &empty_mapping(),
         )
         .unwrap_err()
@@ -1201,20 +1184,19 @@ mod tests {
         const SIGNATURE: u64 = 5;
         const REAL_ANCHOR: u64 = 66_813_533;
         const SYNTHETIC_ANCHOR: u64 = 8_969;
-        let legacy = vec![decoded(
+        let legacy = vec![legacy_file(
             "CARRIER",
-            None,
             one_combo_caps(715_188_856, Some(1), 0, 10_078, Some(17)),
         )];
         let profiled = vec![
-            decoded(
+            profiled_file(
                 "CARRIER",
-                Some(SIGNATURE * REAL_ANCHOR),
+                SIGNATURE * REAL_ANCHOR,
                 one_combo_caps(862_505_271, Some(7), 11, 10_077, None),
             ),
-            decoded(
+            profiled_file(
                 "CARRIER",
-                Some(SIGNATURE * SYNTHETIC_ANCHOR),
+                SIGNATURE * SYNTHETIC_ANCHOR,
                 one_combo_caps(874_888_686, Some(7), 22, 10_041, Some(0)),
             ),
         ];
@@ -1273,36 +1255,35 @@ mod tests {
     #[test]
     fn profiled_and_mapping_ids_are_independent() {
         const ANCHOR: u64 = 66_813_533;
-        let legacy = vec![decoded(
+        let legacy = vec![legacy_file(
             "LEGACY",
-            None,
             UeCaps {
                 version: 715_188_856,
                 ..Default::default()
             },
         )];
         let profiled = vec![
-            decoded(
+            profiled_file(
                 "ABSENT",
-                Some(ANCHOR),
+                ANCHOR,
                 UeCaps {
                     version: 862_505_271,
                     id: None,
                     ..Default::default()
                 },
             ),
-            decoded(
+            profiled_file(
                 "ZERO_A",
-                Some(2 * ANCHOR),
+                2 * ANCHOR,
                 UeCaps {
                     version: 862_505_271,
                     id: Some(0),
                     ..Default::default()
                 },
             ),
-            decoded(
+            profiled_file(
                 "ZERO_B",
-                Some(3 * ANCHOR),
+                3 * ANCHOR,
                 UeCaps {
                     version: 862_505_271,
                     id: Some(0),
@@ -1351,14 +1332,13 @@ mod tests {
     #[test]
     fn ingest_profiled_rejects_nonzero_modern_bitmask() {
         let error = ingest_nr(
-            vec![decoded(
+            vec![legacy_file(
                 "LEGACY",
-                None,
                 one_combo_caps(715_188_856, None, 0, 10_078, None),
             )],
-            vec![decoded(
+            vec![profiled_file(
                 "CARRIER",
-                Some(66_813_533),
+                66_813_533,
                 one_combo_caps(862_505_271, Some(7), 0, 10_077, Some(1)),
             )],
             &empty_mapping(),
@@ -1691,27 +1671,26 @@ mod tests {
 
     #[test]
     fn generation_derives_both_alt_fingerprints_from_family_and_tier() {
-        let legacy = vec![decoded(
+        let legacy = vec![legacy_file(
             "LEGACY",
-            None,
             UeCaps {
                 version: 715_188_856,
                 ..Default::default()
             },
         )];
         let profiled = vec![
-            decoded(
+            profiled_file(
                 "A_ALT",
-                Some(167),
+                167,
                 UeCaps {
                     version: 707_802_847,
                     id: Some(1),
                     ..Default::default()
                 },
             ),
-            decoded(
+            profiled_file(
                 "B_ALT",
-                Some(1_847),
+                1_847,
                 UeCaps {
                     version: 627_223_094,
                     id: Some(2),
@@ -1753,9 +1732,8 @@ mod tests {
     #[test]
     fn profiled_metadata_rejects_unknown_ambiguous_and_wrong_family_numbers() {
         let legacy = || {
-            vec![decoded(
+            vec![legacy_file(
                 "LEGACY",
-                None,
                 UeCaps {
                     version: 715_188_856,
                     ..Default::default()
@@ -1765,9 +1743,9 @@ mod tests {
 
         let unknown = ingest_nr(
             legacy(),
-            vec![decoded(
+            vec![profiled_file(
                 "CARRIER",
-                Some(13),
+                13,
                 UeCaps {
                     version: 874_888_686,
                     ..Default::default()
@@ -1782,9 +1760,9 @@ mod tests {
         let ambiguous_number = 167 * 1_847;
         let ambiguous = ingest_nr(
             legacy(),
-            vec![decoded(
+            vec![profiled_file(
                 "CARRIER",
-                Some(ambiguous_number),
+                ambiguous_number,
                 UeCaps {
                     version: 874_888_686,
                     ..Default::default()
@@ -1798,9 +1776,9 @@ mod tests {
 
         let wrong_family = ingest_nr(
             legacy(),
-            vec![decoded(
+            vec![profiled_file(
                 "CARRIER",
-                Some(66_813_533),
+                66_813_533,
                 UeCaps {
                     version: 874_888_686,
                     ..Default::default()
@@ -1816,9 +1794,8 @@ mod tests {
     #[test]
     fn profiled_metadata_rejects_inconsistent_ids_and_tiers() {
         let legacy = || {
-            vec![decoded(
+            vec![legacy_file(
                 "LEGACY",
-                None,
                 UeCaps {
                     version: 715_188_856,
                     ..Default::default()
@@ -1827,18 +1804,18 @@ mod tests {
         };
         let profiles = |second_id, second_fingerprint| {
             vec![
-                decoded(
+                profiled_file(
                     "CARRIER",
-                    Some(66_813_533),
+                    66_813_533,
                     UeCaps {
                         version: 862_505_271,
                         id: Some(7),
                         ..Default::default()
                     },
                 ),
-                decoded(
+                profiled_file(
                     "CARRIER",
-                    Some(8_969),
+                    8_969,
                     UeCaps {
                         version: second_fingerprint,
                         id: second_id,
@@ -1863,9 +1840,8 @@ mod tests {
     fn ingestion_rejects_invalid_raw_bands_without_panicking() {
         for band in [i32::MIN, -1, 0, 10_000, 20_000, i32::MAX] {
             let error = ingest_nr(
-                vec![decoded(
+                vec![legacy_file(
                     "LEGACY",
-                    None,
                     one_combo_caps(715_188_856, None, 0, band, None),
                 )],
                 vec![],
@@ -1883,9 +1859,8 @@ mod tests {
     #[test]
     fn ingestion_rejects_noncanonical_mapping_names() {
         let legacy = || {
-            vec![decoded(
+            vec![legacy_file(
                 "LEGACY",
-                None,
                 UeCaps {
                     version: 715_188_856,
                     ..Default::default()
@@ -1893,9 +1868,9 @@ mod tests {
             )]
         };
         let profiled = || {
-            vec![decoded(
+            vec![profiled_file(
                 "CARRIER",
-                Some(66_813_533),
+                66_813_533,
                 UeCaps {
                     version: 862_505_271,
                     id: Some(7),

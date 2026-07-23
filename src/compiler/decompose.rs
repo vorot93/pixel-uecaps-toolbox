@@ -10,7 +10,7 @@ use prost::Message;
 
 use super::{
     lte::{DecodedLteFile, generate_lte_file, ingest_lte},
-    nr::{DecodedNrFile, NrTarget, generate_nr_files, ingest_nr},
+    nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
     schema::{LteDocument, NrDocument, ValidatedSources, parse_sources, validate_documents},
     selection::Sku,
 };
@@ -58,11 +58,7 @@ pub(crate) fn decode_documents(
         let BitmaskInputName::Carrier(carrier) = file.kind;
         let bytes = read_file(&file.path, &file.basename)?;
         let caps = decode_uecaps(&bytes, &file.basename)?;
-        legacy.push(DecodedNrFile {
-            carrier,
-            number: None,
-            caps,
-        });
+        legacy.push(LegacyNrFile { carrier, caps });
     }
 
     let mut profiled = Vec::new();
@@ -75,9 +71,9 @@ pub(crate) fn decode_documents(
         match file.kind {
             ProfiledInputName::Carrier { carrier, number } => {
                 let caps = decode_uecaps(&bytes, &file.basename)?;
-                profiled.push(DecodedNrFile {
+                profiled.push(ProfiledNrFile {
                     carrier,
-                    number: Some(number),
+                    number,
                     caps,
                 });
             }
