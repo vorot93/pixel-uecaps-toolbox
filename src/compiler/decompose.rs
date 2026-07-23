@@ -178,7 +178,7 @@ pub(crate) fn decode_documents(
 
     verify_internal_targets(&validated, &original_mapping, &original_lte)?;
     // `nr_text`/`lte_text` are the canonical documents already validated above (reparse +
-    // reserialize byte-idempotent). Return them so `decompose` need not recompute to_kdl (E4).
+    // reserialize byte-idempotent). Return them so `decompose` need not recompute to_kdl.
     Ok((validated.nr.source, validated.lte.source, nr_text, lte_text))
 }
 

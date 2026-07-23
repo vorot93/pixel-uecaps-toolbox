@@ -637,7 +637,7 @@ impl RawSubBlock {
     /// skips constructing the report `SubBlock` DTO, so it allocates no band-label string, does not
     /// re-parse the band back out (the `raw_band` R3 panic surface), and computes none of the
     /// discarded display projections. Byte-equivalent to resolving the DTO and calling
-    /// `from_sub_block(..).with_resolved_feature_sets(dl, ul)` (E6).
+    /// `from_sub_block(..).with_resolved_feature_sets(dl, ul)`.
     ///
     /// This is the strict ingest boundary for `ul_bw_class`: corpus-verified always `Some`
     /// on a real decoded sub-block (never `None`), so its absence here — which the compiler
@@ -806,7 +806,7 @@ impl From<&Combo> for RawNrPayload {
 
 impl RawNrPayload {
     /// The combo header (`ComboHeader`) for this payload, materialized for compiler NR
-    /// generation (C-hdr).
+    /// generation.
     ///
     /// Four of the five header fields (all but `bcs_intra_endc`) are corpus-verified
     /// always `Some` once a payload has passed through the strict decode boundary
@@ -827,7 +827,7 @@ impl RawNrPayload {
 
     /// Build a raw payload directly from a protobuf combo `Combo` and its group header,
     /// using the file's feature-set lists — the folder-ingest path that avoids the report
-    /// `Combo`/`SubBlock` DTO round-trip (E6). Byte-equivalent to `from_compiler_combo` applied to
+    /// `Combo`/`SubBlock` DTO round-trip. Byte-equivalent to `from_compiler_combo` applied to
     /// the same combo's DTO.
     ///
     /// This is the strict ingest boundary for the four always-present header fields
@@ -1067,7 +1067,7 @@ mod tests {
 
     #[test]
     fn from_proto_combo_matches_the_report_dto_ingest_path() {
-        // Direct protobuf ingest (E6) must be byte-equivalent to the old path that first
+        // Direct protobuf ingest must be byte-equivalent to the old path that first
         // built the report `Combo`/`SubBlock` DTO and then reparsed it via `from_compiler_combo`.
         // Exercise all three component shapes: a resolved DL+UL feature set (selector cleared),
         // an NR component whose selector is a raw byte 0 (no feature set, id kept), and a plain

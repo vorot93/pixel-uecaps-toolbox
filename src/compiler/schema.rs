@@ -723,7 +723,7 @@ fn validate_mapping_projection(
 
 /// The modern (profiled) fingerprint for a `(family, tier)` pair. Thin wrapper over the one
 /// source `model::fingerprint_for` (from `model::FINGERPRINTS`), shared by the NR generation
-/// and schema-validation paths so the table lives in exactly one place (C-fp).
+/// and schema-validation paths so the table lives in exactly one place.
 pub(crate) fn modern_fingerprint(family: Family, tier: CarrierTier) -> u64 {
     crate::model::fingerprint_for(family, tier.to_model())
         .expect("every (family, tier) pair is present in model::FINGERPRINTS")
@@ -778,7 +778,7 @@ fn validate_fingerprint_partition(nr: &NrDocument) -> anyhow::Result<BTreeMap<St
 }
 
 /// A carrier name must be a nonempty, already-trimmed canonical identifier. Shared by the
-/// compiler's NR ingestion (`nr.rs`) and schema validation (C-name).
+/// compiler's NR ingestion (`nr.rs`) and schema validation.
 pub(crate) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
     ensure!(!carrier.is_empty(), "carrier names must be nonempty");
     ensure!(

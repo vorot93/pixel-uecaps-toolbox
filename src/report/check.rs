@@ -19,7 +19,7 @@ const fn is_stub(caps: &UeCaps) -> bool {
 }
 
 /// The `## genuine anomalies` section header, with the per-tier profile counts and the
-/// fingerprint count derived from the model rather than hardcoded `16/14/4` literals (M7).
+/// fingerprint count derived from the model rather than hardcoded `16/14/4` literals.
 fn anomalies_header() -> String {
     format!(
         "## genuine anomalies (do not fit the {}/{}-profile, {}-fingerprint model)",
@@ -30,7 +30,7 @@ fn anomalies_header() -> String {
 }
 
 /// The `## alt-tier carriers` section header, with the alt profile count and the Alt-tier
-/// fingerprints derived from the model rather than hardcoded literals (M7).
+/// fingerprints derived from the model rather than hardcoded literals.
 fn alt_tier_header() -> String {
     let fps = tier_fingerprints(Tier::Alt)
         .iter()
@@ -231,7 +231,7 @@ fn analyse_carrier(dir: &Path, carrier: &str, files: &[(u64, String)]) -> Carrie
     finding
 }
 
-/// Legend corruption the lenient collapse would otherwise hide (M1): the write path
+/// Legend corruption the lenient collapse would otherwise hide: the write path
 /// (`root_to_map`) hard-errors on duplicate/empty names, so a read-only audit must not
 /// report them as clean.
 fn legend_anomalies(legend: &LegendReport) -> Vec<(String, String)> {

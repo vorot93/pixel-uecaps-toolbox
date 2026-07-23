@@ -96,7 +96,7 @@ fn is_control_or_line_separator(character: char) -> bool {
 
 /// Reject a module name that could inject extra lines into `module.prop` — it is
 /// interpolated as `name=<name>`, so a control or line-separator character would add a
-/// second `id=`/`name=` line and change module identity (R11).
+/// second `id=`/`name=` line and change module identity.
 fn validate_module_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() {
         bail!("module --name must not be empty");

@@ -65,7 +65,7 @@ pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
     for name in &names {
         if let Parsed::Carrier { carrier, number } = parse_name(name) {
             // Record the file under EVERY anchor it matches, not an arbitrary first one:
-            // a number divisible by more than one anchor is genuinely ambiguous (R9).
+            // a number divisible by more than one anchor is genuinely ambiguous.
             for profile in matching_anchors(number) {
                 cells
                     .entry(carrier.clone())
@@ -78,7 +78,7 @@ pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
     }
 
     // A (carrier, anchor) cell with more than one file is a collision — one file would
-    // have silently overwritten the other. Warn and exit non-zero (R9).
+    // have silently overwritten the other. Warn and exit non-zero.
     let mut collisions = 0usize;
     for (carrier, row) in &cells {
         for (anchor, nums) in row {

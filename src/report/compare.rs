@@ -57,7 +57,7 @@ fn combo_signature(combo: &Combo) -> Signature {
     // Prepend the combo-header identity so two combos with identical CC lists but a
     // different power_class / bcs_* / intra_band / bit_mask are still a change. The `(hdr)`
     // label cannot collide with a real component label (`n78A` / `B1`) and renders the
-    // header diff as its own line (R4).
+    // header diff as its own line.
     sig.insert(0, ("(hdr)".to_string(), header_signature(combo)));
     sig
 }

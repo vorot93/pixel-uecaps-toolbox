@@ -246,7 +246,7 @@ pub(crate) struct NrRelation(BTreeSet<(CarrierId, SkuId)>);
 impl NrRelation {
     /// This relation's `(carrier_id, sku_id)` members in ascending order. Consumed once by
     /// `NrSelectionIndex::build`, which inverts these into an O(1) `selected_payloads` lookup —
-    /// superseding the per-combo `contains` probe interned via `NrDomain::probe` (E1).
+    /// superseding the per-combo `contains` probe interned via `NrDomain::probe`.
     pub(crate) fn members(&self) -> impl Iterator<Item = (CarrierId, SkuId)> + '_ {
         self.0.iter().copied()
     }

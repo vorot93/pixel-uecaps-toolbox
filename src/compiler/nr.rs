@@ -189,7 +189,7 @@ fn build_generated_file(
     for (payload_index, payload) in payloads.iter().enumerate() {
         // `payload.sub_blocks` is already sorted by `RawSubBlockKey` when the combo is
         // validated (`schema::validate_nr_combos`), so re-sorting a clone here was
-        // redundant (E7).
+        // redundant.
         let sub_blocks = payload
             .sub_blocks
             .iter()
@@ -230,7 +230,7 @@ fn build_generated_file(
 /// `ul_bw_class`/UL depending on `direction`. A selector counts as a resolved catalog
 /// reference (checked against `cc_count`, and its bytes fold into the coverage set) only
 /// when its FIRST byte resolves against `records` — the same leading-byte gate the report path
-/// uses (C-sel). By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
+/// uses. By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
 /// resolved reference's bytes are ALL catalog indices, never a mix with raw selector-only
 /// data, so it is enough to gate on the first byte and then trust every byte.
 fn verify_compact_feature_list<T>(
@@ -752,9 +752,9 @@ enum InputLayout {
 /// band, `NR_BAND_OFFSET+1 ..= 2*NR_BAND_OFFSET-1`, i.e. plain `1..offset` shifted up). This
 /// gate runs BEFORE the payload ingest in `canonical_payloads` so an invalid band (raw
 /// `NR_BAND_OFFSET` / n0, 0, or out of range) is rejected here with a clear message — derived
-/// from `NR_BAND_OFFSET` rather than bare 10_000/20_000 literals (C-bandlit). E6's direct
+/// from `NR_BAND_OFFSET` rather than bare 10_000/20_000 literals. E6's direct
 /// conversion no longer re-parses a band label, so the old `from_sub_block`/`raw_band` panic
-/// surface (R3) is gone regardless.
+/// surface is gone regardless.
 fn validate_raw_bands(caps: &UeCaps, carrier: &str) -> anyhow::Result<()> {
     for (group_index, group) in caps.combo_groups.iter().enumerate() {
         ensure!(
@@ -792,7 +792,7 @@ fn canonical_payloads(
 
     let mut seen = BTreeSet::new();
     let mut payloads = Vec::new();
-    // Ingest each protobuf combo directly (E6): walk the groups and convert each combo to a
+    // Ingest each protobuf combo directly: walk the groups and convert each combo to a
     // raw payload without the report `Combo`/`SubBlock` DTO round-trip. `index` counts combos across
     // all groups, matching the flattened numbering the messages used before.
     let mut index = 0;

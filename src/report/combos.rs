@@ -38,7 +38,7 @@ pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 /// The band label for a component of a **known** radio kind: `n<num>` (NR) or `B<num>`
 /// (E-UTRA). The single source of the band-prefix convention for every caller that can see
 /// *both* kinds — `band_label` (which *infers* the kind from `NR_BAND_OFFSET`),
-/// `RawSubBlock::band_label`, and all of `raw_nr`'s validation/guard messages (C-band).
+/// `RawSubBlock::band_label`, and all of `raw_nr`'s validation/guard messages.
 /// Display code that is statically single-kind — `report::lte` — formats `B` inline
 /// instead; that is correct there because no NR component can reach it.
 pub(crate) fn band_label_for(kind: SubBlockKind, band: i32) -> String {
@@ -218,7 +218,7 @@ impl SubBlock {
     /// Build a display `SubBlock` from a component's raw protobuf fields plus its resolved DL/UL
     /// feature sets. The one place the 11 derived display fields (SCS / MIMO / max-BW /
     /// mod-order / 90 MHz, per direction) are projected from the feature sets — used by the
-    /// folder compiler's `build_combos_with_bitmasks` (C-proj).
+    /// folder compiler's `build_combos_with_bitmasks`.
     ///
     /// `kind` is the explicit kind assertion: the caller already knows whether this is an
     /// NR or E-UTRA component, so it routes through `band_label_for` directly instead of the
@@ -396,7 +396,7 @@ fn bw_text(mhz: Option<i32>) -> String {
 }
 
 /// Per-direction SCS suffix: decoded kHz, else the raw code, else empty. Rendered inside
-/// the DL/UL part so the two directions never fold together (R5).
+/// the DL/UL part so the two directions never fold together.
 fn dir_scs(khz: Option<u32>, raw_code: Option<i32>) -> String {
     if let Some(k) = khz {
         format!(" SCS {k}kHz")
@@ -428,7 +428,7 @@ pub(crate) fn fmt_cc_features(cc: &SubBlock) -> String {
         let mut parts: Vec<String> = Vec::new();
         // SCS and 90 MHz are rendered per-direction (not folded via `.or()`), so a
         // UL-only SCS/90 MHz difference is visible to both `inspect --full` and the
-        // `compare` signature (R5).
+        // `compare` signature.
         if has_dl {
             let scs = dir_scs(
                 cc.dl_scs_khz,

@@ -23,7 +23,7 @@ pub(crate) struct GeneratedFile {
 
 /// Parse a **shortest-decimal** `u64`: `Some(n)` iff `s` is exactly `n`'s canonical decimal
 /// text (no leading zeros, no sign, in range). The one source for the compiler's
-/// shortest-decimal contract; callers map `None` to their own serde/anyhow error (C-dec).
+/// shortest-decimal contract; callers map `None` to their own serde/anyhow error.
 /// (`decompose::parse_filename_number` deliberately keeps its own two-step form — it reports a
 /// distinct "does not fit u64" vs "must be shortest decimal" message, one of which is tested.)
 pub(crate) fn parse_shortest_u64(s: &str) -> Option<u64> {
