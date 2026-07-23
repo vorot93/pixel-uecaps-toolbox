@@ -6,6 +6,7 @@ use crate::{
     mapping::load_mapping,
     model::*,
     outcome::Outcome,
+    proto::UeCaps,
     report::{
         combos::{build_combos, print_combos},
         detail::Detail,
@@ -148,9 +149,8 @@ fn is_regional_default(carrier: &str) -> bool {
     REGIONAL_DEFAULT_CARRIERS.contains(&carrier)
 }
 
-fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: Detail) -> Outcome {
-    println!("Carrier UE-capability profile\n");
-
+/// The carrier line plus its legend entry (PLMNs, countries) or the reason it has none.
+fn print_carrier_identity(dir: &Path, carrier: &str, detail: Detail) {
     let mapping = load_mapping(dir);
     println!("Carrier      : {carrier}");
     if let Some(entry) = mapping.get(carrier) {
@@ -179,24 +179,53 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: 
         println!("  (not present in ap_plmn_mapping.binarypb)");
     }
     println!();
+}
 
-    if detail.is_full() {
-        println!("Trailing number");
-        println!("  value      : {number}");
-        println!("  factored   : {}", factor_display(number));
-        println!("  meaning    : carrier-identity  x  SKU-profile tag");
-        println!();
-        let (sig, nsib) = carrier_signature(dir, carrier, number);
-        println!("Carrier signature (common factor of all of this carrier's files)");
-        println!("  value      : {sig}   = {}", factor_display(sig));
-        println!("  derived from: {nsib} sibling file(s) in this directory");
-        if sig != 0 && number.is_multiple_of(sig) {
-            println!("  SKU portion : {number} / {sig} = {}", number / sig);
-        }
-        println!();
+/// `--full` only: the trailing number, its factorization, and the carrier signature derived
+/// from sibling files.
+fn print_number_analysis(dir: &Path, carrier: &str, number: u64) {
+    println!("Trailing number");
+    println!("  value      : {number}");
+    println!("  factored   : {}", factor_display(number));
+    println!("  meaning    : carrier-identity  x  SKU-profile tag");
+    println!();
+    let (sig, nsib) = carrier_signature(dir, carrier, number);
+    println!("Carrier signature (common factor of all of this carrier's files)");
+    println!("  value      : {sig}   = {}", factor_display(sig));
+    println!("  derived from: {nsib} sibling file(s) in this directory");
+    if sig != 0 && number.is_multiple_of(sig) {
+        println!("  SKU portion : {number} / {sig} = {}", number / sig);
     }
+    println!();
+}
 
-    let caps = read_ue_caps(path);
+/// The in-file-fingerprint status line for the SKU-profile block, plus its short tier when the
+/// fingerprint is recognised: `(tier, "  in-file fp : …  […]")`.
+fn fingerprint_status(caps: Option<&UeCaps>, profile: &Profile) -> (Option<&'static str>, String) {
+    let Some(v) = caps.map(|c| c.version) else {
+        return (
+            None,
+            "  in-file fp : (file not present; filename-only analysis)".to_string(),
+        );
+    };
+    let Some((ffam, t)) = fp_info(v) else {
+        return (None, format!("  in-file fp : {v}  [UNKNOWN fingerprint]"));
+    };
+    let status = if ffam == profile.family {
+        "OK".to_string()
+    } else {
+        format!("MISMATCH: content is {}", family_desc(ffam))
+    };
+    (
+        Some(tier_short(t)),
+        format!("  in-file fp : {v}  [{status}]"),
+    )
+}
+
+/// The SKU-profile block: which profile the number selects, whether the in-file fingerprint
+/// agrees, and (`--full`) the selection rule. Returns `Outcome::Findings` for an unrecognised
+/// profile.
+fn print_sku_profile(caps: Option<&UeCaps>, carrier: &str, number: u64, detail: Detail) -> Outcome {
     let anchors = matching_anchors(number);
     let mut outcome = Outcome::Clean;
     if anchors.len() != 1 {
@@ -214,27 +243,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: 
         outcome = Outcome::Findings;
     } else {
         let profile = anchors[0];
-        let fp = caps.as_ref().map(|c| c.version);
-        let (tier_opt, fp_line) = match fp {
-            Some(v) => match fp_info(v) {
-                Some((ffam, t)) => {
-                    let status = if ffam == profile.family {
-                        "OK".to_string()
-                    } else {
-                        format!("MISMATCH: content is {}", family_desc(ffam))
-                    };
-                    (
-                        Some(tier_short(t)),
-                        format!("  in-file fp : {v}  [{status}]"),
-                    )
-                }
-                None => (None, format!("  in-file fp : {v}  [UNKNOWN fingerprint]")),
-            },
-            None => (
-                None,
-                "  in-file fp : (file not present; filename-only analysis)".to_string(),
-            ),
-        };
+        let (tier_opt, fp_line) = fingerprint_status(caps, profile);
         println!("SKU profile  : {}", sku_profile_summary(profile, tier_opt));
         if detail.is_full() {
             println!(
@@ -258,8 +267,18 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: 
             );
         }
     }
-    println!();
+    outcome
+}
 
+fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: Detail) -> Outcome {
+    println!("Carrier UE-capability profile\n");
+    print_carrier_identity(dir, carrier, detail);
+    if detail.is_full() {
+        print_number_analysis(dir, carrier, number);
+    }
+    let caps = read_ue_caps(path);
+    let outcome = print_sku_profile(caps.as_ref(), carrier, number, detail);
+    println!();
     match &caps {
         Some(c) => print_combos(&build_combos(c), detail),
         None => println!("Band combinations: (file not readable)"),
