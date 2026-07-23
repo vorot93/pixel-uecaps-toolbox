@@ -1,7 +1,7 @@
 //! Band-combination model and rendering shared by `inspect`.
 
 use crate::{
-    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group},
     raw_nr::SubBlockKind,
     report::detail::Detail,
 };
@@ -214,10 +214,6 @@ pub(crate) struct Combo {
     pub(crate) sub_blocks: Vec<SubBlock>,
 }
 
-/// Build combo views together with their exact optional wire bitmask presence.
-/// Most report callers intentionally use [`build_combos`], whose
-/// historical scalar view maps absence to zero. Folder ingestion needs the
-/// optional form to distinguish the modern input contract at its boundary.
 impl SubBlock {
     /// Build a display `SubBlock` from a component's raw protobuf fields plus its resolved DL/UL
     /// feature sets. The one place the 11 derived display fields (SCS / MIMO / max-BW /
@@ -272,6 +268,52 @@ impl SubBlock {
     }
 }
 
+/// Build one display `SubBlock` from a raw protobuf component: resolve its DL/UL
+/// per-CC feature ids against `caps`'s catalogs (all-or-nothing per spec — every per-CC id
+/// must be in range for the whole array to resolve; E-UTRA components carry id 0 in the
+/// data, so they resolve to nothing without an explicit `nr` gate), then assert the kind
+/// (NR vs E-UTRA) from the band offset once so [`SubBlock::from_raw_fields`] gets an
+/// explicit kind instead of inferring it.
+fn build_sub_block(raw: &combo_group::combo::SubBlock, caps: &UeCaps) -> SubBlock {
+    let dl_fs = resolve_all(
+        raw.dl_feature_per_cc_ids.as_deref(),
+        &caps.dl_feature_per_cc_list,
+    )
+    .unwrap_or_default();
+    let ul_fs = resolve_all(
+        raw.ul_feature_per_cc_ids.as_deref(),
+        &caps.ul_feature_per_cc_list,
+    )
+    .unwrap_or_default();
+    let kind = if raw.band >= NR_BAND_OFFSET {
+        SubBlockKind::Nr
+    } else {
+        SubBlockKind::Lte
+    };
+    let plain_band = match kind {
+        SubBlockKind::Nr => raw.band - NR_BAND_OFFSET,
+        SubBlockKind::Lte => raw.band,
+    };
+    SubBlock::from_raw_fields(
+        kind,
+        plain_band,
+        raw.dl_bw_class,
+        raw.ul_bw_class,
+        raw.dl_feature_index,
+        raw.ul_feature_index,
+        raw.dl_feature_per_cc_ids.clone(),
+        raw.ul_feature_per_cc_ids.clone(),
+        raw.srstxswitch,
+        dl_fs,
+        ul_fs,
+    )
+}
+
+/// Build combo views together with their exact optional wire bitmask presence. Most
+/// report callers intentionally use [`build_combos`], whose historical scalar view maps
+/// absence to zero — folder ingestion needs the optional form to distinguish the modern
+/// input contract at its boundary. Per-component resolution is delegated to
+/// [`build_sub_block`].
 pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u32>)> {
     let mut combo = Vec::new();
     for (gi, cg) in caps.combo_groups.iter().enumerate() {
@@ -280,45 +322,7 @@ pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u3
             let sub_blocks: Vec<SubBlock> = c
                 .sub_blocks
                 .iter()
-                .map(|x| {
-                    // All-or-nothing resolution per spec: every per-CC id must be in range
-                    // for the whole array to resolve. E-UTRA components carry id 0 in the
-                    // data, so they resolve to nothing without an explicit `nr` gate.
-                    let dl_fs = resolve_all(
-                        x.dl_feature_per_cc_ids.as_deref(),
-                        &caps.dl_feature_per_cc_list,
-                    )
-                    .unwrap_or_default();
-                    let ul_fs = resolve_all(
-                        x.ul_feature_per_cc_ids.as_deref(),
-                        &caps.ul_feature_per_cc_list,
-                    )
-                    .unwrap_or_default();
-                    // Protobuf bands encode the kind via the offset; split it once at the
-                    // call site so `from_raw_fields` gets an explicit kind assertion.
-                    let kind = if x.band >= NR_BAND_OFFSET {
-                        SubBlockKind::Nr
-                    } else {
-                        SubBlockKind::Lte
-                    };
-                    let plain_band = match kind {
-                        SubBlockKind::Nr => x.band - NR_BAND_OFFSET,
-                        SubBlockKind::Lte => x.band,
-                    };
-                    SubBlock::from_raw_fields(
-                        kind,
-                        plain_band,
-                        x.dl_bw_class,
-                        x.ul_bw_class,
-                        x.dl_feature_index,
-                        x.ul_feature_index,
-                        x.dl_feature_per_cc_ids.clone(),
-                        x.ul_feature_per_cc_ids.clone(),
-                        x.srstxswitch,
-                        dl_fs,
-                        ul_fs,
-                    )
-                })
+                .map(|x| build_sub_block(x, caps))
                 .collect();
             let bands = c
                 .sub_blocks
