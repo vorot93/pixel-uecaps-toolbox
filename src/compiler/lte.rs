@@ -59,9 +59,9 @@ pub(crate) struct DecodedLteFile {
     pub(crate) caps: LteCaps,
 }
 
-pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocument> {
-    ensure!(!files.is_empty(), "at least one LTE file is required");
-
+/// Groups `files` by id, erroring on a duplicate — the input is a flat `Vec` (arrival order
+/// from the profiled folder scan) but everything downstream needs random access by id.
+fn group_files_by_id(files: Vec<DecodedLteFile>) -> anyhow::Result<BTreeMap<u64, DecodedLteFile>> {
     let mut files_by_id = BTreeMap::new();
     for file in files {
         let id = file.id;
@@ -69,13 +69,28 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
             bail!("duplicate LTE file ID {id}");
         }
     }
+    Ok(files_by_id)
+}
 
-    let mut file_sources = BTreeMap::new();
-    let mut domain_members = BTreeSet::new();
-    let mut payload_skus = BTreeMap::<RawLteCombo, BTreeSet<Sku>>::new();
-    let mut edges = BTreeMap::<RawLteCombo, BTreeSet<RawLteCombo>>::new();
+/// The cross-file accumulations one scan over every LTE file builds: each file's persisted
+/// source metadata (string-keyed, matching `nr.kdl`'s file-key spelling), the applicability
+/// domain, which SKUs use each distinct payload, and the same-file adjacency edges that fix
+/// payloads' relative order across files (topologically sorted next, by the caller).
+#[derive(Default)]
+struct LteScan {
+    file_sources: BTreeMap<String, LteFileSource>,
+    domain_members: BTreeSet<Sku>,
+    payload_skus: BTreeMap<RawLteCombo, BTreeSet<Sku>>,
+    edges: BTreeMap<RawLteCombo, BTreeSet<RawLteCombo>>,
+}
 
-    for (id, file) in &files_by_id {
+/// Scans every file in id order, converting each combo to its canonical `RawLteCombo`,
+/// erroring on a within-file duplicate payload, and recording every same-file consecutive pair
+/// as a precedence edge (`sequence.windows(2)`) — the constraint `topological_order` resolves
+/// into one global combo order.
+fn scan_lte_files(files_by_id: &BTreeMap<u64, DecodedLteFile>) -> anyhow::Result<LteScan> {
+    let mut scan = LteScan::default();
+    for (id, file) in files_by_id {
         let basename = format!("lte_{id}.binarypb");
         let decoded = decode_lte_caps(&file.original, &basename)?;
         ensure!(
@@ -83,7 +98,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
             "decoded values for {basename} do not match its supplied LTE message"
         );
 
-        file_sources.insert(
+        scan.file_sources.insert(
             id.to_string(),
             LteFileSource {
                 fingerprint: file.caps.fingerprint,
@@ -92,7 +107,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
         );
 
         let skus = skus_for_file(*id);
-        domain_members.extend(skus.iter().cloned());
+        scan.domain_members.extend(skus.iter().cloned());
         let mut seen = BTreeSet::new();
         let mut sequence = Vec::with_capacity(file.caps.combos.len());
         for (index, combo) in file.caps.combos.iter().enumerate() {
@@ -116,23 +131,31 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
                 "duplicate LTE payload in {basename} at combo {}",
                 index + 1
             );
-            payload_skus
+            scan.payload_skus
                 .entry(payload.clone())
                 .or_default()
                 .extend(skus.iter().cloned());
-            edges.entry(payload.clone()).or_default();
+            scan.edges.entry(payload.clone()).or_default();
             sequence.push(payload);
         }
         for adjacent in sequence.windows(2) {
-            edges
+            scan.edges
                 .entry(adjacent[0].clone())
                 .or_default()
                 .insert(adjacent[1].clone());
         }
     }
+    Ok(scan)
+}
 
-    let order = topological_order(&edges)?;
-    let domain = LteDomain::new(domain_members);
+/// Realizes the topologically-ordered raw payloads as parallel `LteSourceCombo`/
+/// `ValidatedLteCombo` lists (same index in both) — the order the ordering pass fixed becomes
+/// each combo's position.
+fn canonical_lte_combos(
+    order: Vec<RawLteCombo>,
+    mut payload_skus: BTreeMap<RawLteCombo, BTreeSet<Sku>>,
+    domain: &LteDomain,
+) -> anyhow::Result<(Vec<LteSourceCombo>, Vec<ValidatedLteCombo>)> {
     let mut validated_combos = Vec::with_capacity(order.len());
     let mut source_combos = Vec::with_capacity(order.len());
     for payload in order {
@@ -140,14 +163,49 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
             .remove(&payload)
             .expect("every ordered LTE payload has applicability");
         let relation = LteRelation::new(members);
-        let source = source_from_raw(&payload, relation.canonical_selection(&domain)?);
+        let source = source_from_raw(&payload, relation.canonical_selection(domain)?);
         source_combos.push(source.clone());
         validated_combos.push(ValidatedLteCombo { source, relation });
     }
+    Ok((source_combos, validated_combos))
+}
+
+/// Regenerates every file for every one of its applicable SKUs and requires byte-identity
+/// against the original — the ingest-side half of the round-trip guarantee (`decompose`'s
+/// `verify_internal_targets` covers the other, generation-triggered half).
+fn verify_lte_ingest(
+    files_by_id: &BTreeMap<u64, DecodedLteFile>,
+    validated: &ValidatedLte,
+) -> anyhow::Result<()> {
+    for (id, file) in files_by_id {
+        for sku in skus_for_file(*id) {
+            let generated = generate_lte_file(validated, *id, &sku).with_context(|| {
+                format!("self-verifying lte_{id}.binarypb for `{}`", sku.token())
+            })?;
+            ensure!(
+                generated.bytes == file.original,
+                "LTE decode self-verification for lte_{id}.binarypb and `{}` was not byte-identical",
+                sku.token()
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocument> {
+    ensure!(!files.is_empty(), "at least one LTE file is required");
+
+    let files_by_id = group_files_by_id(files)?;
+    let scan = scan_lte_files(&files_by_id)?;
+
+    let order = topological_order(&scan.edges)?;
+    let domain = LteDomain::new(scan.domain_members);
+    let (source_combos, validated_combos) =
+        canonical_lte_combos(order, scan.payload_skus, &domain)?;
 
     let source = LteDocument {
         version: 1,
-        files: file_sources,
+        files: scan.file_sources,
         combo: source_combos,
     };
     let parsed_files = files_by_id
@@ -169,18 +227,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
         combo: validated_combos,
     };
 
-    for (id, file) in &files_by_id {
-        for sku in skus_for_file(*id) {
-            let generated = generate_lte_file(&validated, *id, &sku).with_context(|| {
-                format!("self-verifying lte_{id}.binarypb for `{}`", sku.token())
-            })?;
-            ensure!(
-                generated.bytes == file.original,
-                "LTE decode self-verification for lte_{id}.binarypb and `{}` was not byte-identical",
-                sku.token()
-            );
-        }
-    }
+    verify_lte_ingest(&files_by_id, &validated)?;
 
     Ok(source)
 }
