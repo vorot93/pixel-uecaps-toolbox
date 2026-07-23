@@ -122,6 +122,65 @@ pub(crate) struct LocalFeaturePlan {
     pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
+/// Every distinct DL/UL feature record actually referenced by a carrier's payloads, scanning
+/// EVERY per-CC entry in `dl_features`/`ul_features` (not just CC0) so a non-uniform multi-CC
+/// sub-block's second-and-later CCs are represented too. Paired with `reconstruct_sub_block`,
+/// which emits one selector byte per entry — both must stay in lockstep or
+/// `verify_compact_feature_list` (compiler/nr.rs) fails "unused/missing feature record" (a
+/// per-CC1+ record referenced by reconstruct but absent from the plan) or leaves a plan record
+/// unreferenced (present here but never emitted).
+struct UsedFeatures {
+    dl: BTreeSet<DlFeatureSource>,
+    ul: BTreeSet<UlFeatureSource>,
+}
+
+impl UsedFeatures {
+    fn scan(payloads: &[&RawNrPayload]) -> Self {
+        let mut dl = BTreeSet::new();
+        let mut ul = BTreeSet::new();
+        for payload in payloads {
+            for component in &payload.sub_blocks {
+                for feature in component.dl_features() {
+                    dl.insert(DlFeatureSource::from(feature));
+                }
+                for feature in component.ul_features() {
+                    ul.insert(UlFeatureSource::from(feature));
+                }
+            }
+        }
+        Self { dl, ul }
+    }
+}
+
+/// The global catalog's records that are `used`, in the catalog's own canonical order (not
+/// `used`'s `BTreeSet` order) — this is what makes a local plan's indices stable across a
+/// corpus that shares one global catalog. Errors if `used` names a record absent from the
+/// catalog (a payload referencing a feature the catalog never saw), or if the filtered set
+/// would overflow the local plan's 1-based `u8` index space (255 records).
+fn local_catalog<T: Ord + Clone>(
+    catalog: &[T],
+    used: &BTreeSet<T>,
+    direction: &str,
+    basename: &str,
+    sku: &str,
+) -> anyhow::Result<Vec<T>> {
+    let filtered: Vec<T> = catalog
+        .iter()
+        .filter(|feature| used.contains(*feature))
+        .cloned()
+        .collect();
+    ensure!(
+        filtered.len() == used.len(),
+        "{basename} ({sku}) uses a {direction} feature absent from the global catalog"
+    );
+    ensure!(
+        filtered.len() <= usize::from(u8::MAX),
+        "{basename} ({sku}) uses {} distinct {direction} feature records; local limit is 255",
+        filtered.len()
+    );
+    Ok(filtered)
+}
+
 impl LocalFeaturePlan {
     pub(crate) fn new(
         catalogs: &FeatureCatalogs,
@@ -129,56 +188,9 @@ impl LocalFeaturePlan {
         basename: &str,
         sku: &str,
     ) -> anyhow::Result<Self> {
-        let mut used_dl = BTreeSet::new();
-        let mut used_ul = BTreeSet::new();
-        // Scan EVERY per-CC entry in `dl_features`/`ul_features`, not just CC0, so a
-        // non-uniform multi-CC sub-block's second-and-later CCs are represented in the
-        // local plan too. Paired with `reconstruct_sub_block` below, which emits one
-        // selector byte per entry — both must stay in lockstep or
-        // `verify_compact_feature_list` (compiler/nr.rs) fails "unused/missing feature
-        // record" (a per-CC1+ record referenced by reconstruct but absent from the plan)
-        // or leaves a plan record unreferenced (present here but never emitted).
-        for payload in payloads {
-            for component in &payload.sub_blocks {
-                for feature in component.dl_features() {
-                    used_dl.insert(DlFeatureSource::from(feature));
-                }
-                for feature in component.ul_features() {
-                    used_ul.insert(UlFeatureSource::from(feature));
-                }
-            }
-        }
-
-        let dl_source = catalogs
-            .dl
-            .iter()
-            .filter(|feature| used_dl.contains(*feature))
-            .cloned()
-            .collect::<Vec<_>>();
-        let ul_source = catalogs
-            .ul
-            .iter()
-            .filter(|feature| used_ul.contains(*feature))
-            .cloned()
-            .collect::<Vec<_>>();
-        ensure!(
-            dl_source.len() == used_dl.len(),
-            "{basename} ({sku}) uses a DL feature absent from the global catalog"
-        );
-        ensure!(
-            ul_source.len() == used_ul.len(),
-            "{basename} ({sku}) uses a UL feature absent from the global catalog"
-        );
-        ensure!(
-            dl_source.len() <= usize::from(u8::MAX),
-            "{basename} ({sku}) uses {} distinct DL feature records; local limit is 255",
-            dl_source.len()
-        );
-        ensure!(
-            ul_source.len() <= usize::from(u8::MAX),
-            "{basename} ({sku}) uses {} distinct UL feature records; local limit is 255",
-            ul_source.len()
-        );
+        let used = UsedFeatures::scan(payloads);
+        let dl_source = local_catalog(&catalogs.dl, &used.dl, "DL", basename, sku)?;
+        let ul_source = local_catalog(&catalogs.ul, &used.ul, "UL", basename, sku)?;
 
         let dl = dl_source
             .iter()
@@ -347,6 +359,71 @@ fn placeholder_ids(kind: SubBlockKind, bw_class: Option<i32>) -> anyhow::Result<
     }
 }
 
+/// Builds the `lte`-kind resolved component. The source model is flat across both kinds, so
+/// this is where an `lte` node carrying NR-only data (a resolved feature, or an SRS-TX-switch
+/// value) is rejected instead of silently truncated — `RawLteSubBlock` has nowhere to put it.
+/// Replaces the old `RawSubBlock::validate` "carries NR-only fields" check, which could only
+/// run after the fields had already been stored.
+fn resolve_lte(
+    cc: &NrSourceSubBlock,
+    dl: &[ShannonFeatureSetDlPerCcNr],
+    ul: &[ShannonFeatureSetUlPerCcNr],
+    ul_bw_class: Option<i32>,
+) -> anyhow::Result<RawSubBlock> {
+    ensure!(
+        dl.is_empty() && ul.is_empty() && cc.srs_tx_switch.is_none(),
+        "LTE component {} carries NR-only fields",
+        band_label_for(SubBlockKind::Lte, cc.band)
+    );
+    Ok(RawLteSubBlock {
+        band: cc.band,
+        dl: LteDirection {
+            bw_class: cc.dl_bw_class,
+            feature_index: cc.dl_feature_index,
+            selector: placeholder_ids(cc.kind, cc.dl_bw_class)?,
+        },
+        ul: LteDirection {
+            bw_class: cc.ul_bw_class,
+            feature_index: cc.ul_feature_index,
+            // The stored `bw_class` field above keeps the raw value; only the placeholder
+            // derivation needs the disabled-aware `ul_bw_class` (`Some(0)` -> `None`).
+            selector: placeholder_ids(cc.kind, ul_bw_class)?,
+        },
+    }
+    .into())
+}
+
+/// Builds the `nr`-kind resolved component: NR never stores a source feature index (it is
+/// re-derived from the feature set on provision, downstream of this call), so a `dl`/`ul`
+/// index present here means the source carries data only `lte` nodes should.
+fn resolve_nr(
+    cc: &NrSourceSubBlock,
+    dl: Vec<ShannonFeatureSetDlPerCcNr>,
+    ul: Vec<ShannonFeatureSetUlPerCcNr>,
+    ul_bw_class: Option<i32>,
+) -> anyhow::Result<RawSubBlock> {
+    ensure!(
+        cc.dl_feature_index.is_none() && cc.ul_feature_index.is_none(),
+        "NR component {} stores a feature index; NR derives it from its feature set",
+        band_label_for(SubBlockKind::Nr, cc.band)
+    );
+    Ok(RawNrSubBlock {
+        band: cc.band,
+        dl: NrDirection {
+            bw_class: cc.dl_bw_class,
+            features: nr_per_cc(dl, cc.dl_bw_class)?,
+        },
+        ul: NrDirection {
+            // The stored `bw_class` field keeps the raw value; only the placeholder
+            // derivation below needs the disabled-aware `ul_bw_class`.
+            bw_class: cc.ul_bw_class,
+            features: nr_per_cc(ul, ul_bw_class)?,
+        },
+        srs_tx_switch: cc.srs_tx_switch,
+    }
+    .into())
+}
+
 impl NrSourceSubBlock {
     pub(crate) fn resolve(&self, catalogs: &FeatureCatalogs) -> anyhow::Result<RawSubBlock> {
         let dl = self
@@ -369,52 +446,8 @@ impl NrSourceSubBlock {
         // (DL has no such "disabled" class).
         let ul_bw_class = self.ul_bw_class.filter(|&bw| bw >= 1);
         let component: RawSubBlock = match self.kind {
-            // The source model is flat across both kinds, so this is where an `lte` node
-            // carrying NR-only data is rejected instead of silently truncated —
-            // `RawLteSubBlock` has nowhere to put it. Replaces the old
-            // `RawSubBlock::validate` "carries NR-only fields" check, which could only run
-            // after the fields had already been stored.
-            SubBlockKind::Lte => {
-                ensure!(
-                    dl.is_empty() && ul.is_empty() && self.srs_tx_switch.is_none(),
-                    "LTE component {} carries NR-only fields",
-                    band_label_for(SubBlockKind::Lte, self.band)
-                );
-                RawLteSubBlock {
-                    band: self.band,
-                    dl: LteDirection {
-                        bw_class: self.dl_bw_class,
-                        feature_index: self.dl_feature_index,
-                        selector: placeholder_ids(self.kind, self.dl_bw_class)?,
-                    },
-                    ul: LteDirection {
-                        bw_class: self.ul_bw_class,
-                        feature_index: self.ul_feature_index,
-                        selector: placeholder_ids(self.kind, ul_bw_class)?,
-                    },
-                }
-                .into()
-            }
-            SubBlockKind::Nr => {
-                ensure!(
-                    self.dl_feature_index.is_none() && self.ul_feature_index.is_none(),
-                    "NR component {} stores a feature index; NR derives it from its feature set",
-                    band_label_for(SubBlockKind::Nr, self.band)
-                );
-                RawNrSubBlock {
-                    band: self.band,
-                    dl: NrDirection {
-                        bw_class: self.dl_bw_class,
-                        features: nr_per_cc(dl, self.dl_bw_class)?,
-                    },
-                    ul: NrDirection {
-                        bw_class: self.ul_bw_class,
-                        features: nr_per_cc(ul, ul_bw_class)?,
-                    },
-                    srs_tx_switch: self.srs_tx_switch,
-                }
-                .into()
-            }
+            SubBlockKind::Lte => resolve_lte(self, &dl, &ul, ul_bw_class)?,
+            SubBlockKind::Nr => resolve_nr(self, dl, ul, ul_bw_class)?,
         };
         component.validate()?;
         Ok(component)
