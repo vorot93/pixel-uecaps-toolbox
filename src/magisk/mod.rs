@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn name_with_newline_is_rejected() {
-        // R11: --name is interpolated as `name=<name>`; a newline injects a second
+        // --name is interpolated as `name=<name>`; a newline injects a second
         // `id=`/`name=` line and changes module identity.
         let inputs = vec![("x.binarypb".to_string(), vec![0u8])];
         let err = replacement_module(&inputs, "X\nid=evil")

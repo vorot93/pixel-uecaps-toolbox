@@ -24,7 +24,7 @@ pub struct CarrierEntry {
 /// name; empty-named carriers dropped). The write path ([`root_to_map`]) hard-errors on
 /// duplicate and empty names, but the read path must stay lenient so a junk legend still
 /// yields a best-effort view — so these fields let the *report* surfaces (`check`) flag the
-/// corruption instead of auditing it as clean (the read/write asymmetry is the bug — M1).
+/// corruption instead of auditing it as clean (the read/write asymmetry is the bug).
 #[derive(Default)]
 pub struct LegendReport {
     pub entries: BTreeMap<String, CarrierEntry>,

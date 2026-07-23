@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn cc_detail_dl_disabled_renders_dash() {
-        // M3: a DL-disabled component (dl_bw_class_mimo == 0) must render "DL —",
+        // A DL-disabled component (dl_bw_class_mimo == 0) must render "DL —",
         // mirroring the UL twin — not "DL  0x0" from an unguarded `0x0` MIMO format.
         assert_eq!(cc_detail(&comp(1, 0, 32768)), "DL —  UL A"); // DL off, UL A
         assert_eq!(cc_detail(&comp(1, 32768, 0)), "DL A 2x2  UL —"); // UL off, DL A 2x2

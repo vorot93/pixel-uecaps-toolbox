@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn header_field_change_is_detected() {
-        // R4: identical CC lists but a different combo-header field (power_class) must be
+        // Identical CC lists but a different combo-header field (power_class) must be
         // a difference.
         let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
         a.power_class = Some(3);
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn bitmask_change_is_detected() {
-        // R4: per-combo bit_mask is part of a combo's identity; compare must agree.
+        // Per-combo bit_mask is part of a combo's identity; compare must agree.
         let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
         a.bit_mask = 1;
         let b = combo(vec![nr_cc(78, 1, "4x4")]); // bit_mask 0

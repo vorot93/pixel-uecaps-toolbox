@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn headers_derive_counts_and_fingerprints_from_the_model() {
-        // M7: the report headers reflect the model (PROFILES / MAIN_ONLY_ANCHORS /
+        // The report headers reflect the model (PROFILES / MAIN_ONLY_ANCHORS /
         // FINGERPRINTS), not hardcoded `16/14/4` and `707802847/627223094` literals that
         // would drift silently.
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn duplicate_or_empty_legend_names_are_flagged() {
-        // M1: a legend with a duplicate carrier name or an empty name must not audit as
+        // A legend with a duplicate carrier name or an empty name must not audit as
         // clean. load_mapping collapses/drops them (last-wins / skip-empty) while the write
         // path rejects both, so check now surfaces them as anomalies (exit 1), not exit 0.
         use crate::proto::{Carrier, PlmnMap};

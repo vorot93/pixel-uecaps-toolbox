@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn tier_profile_counts_are_derived() {
-        // M7: 16 for main, 14 for alt (main minus the two Main-only anchors) — derived from
+        // Main tier: 16, alt tier: 14 (main minus the two Main-only anchors) — derived from
         // PROFILES so they can't drift from a `14`/`16` literal in `check`.
         assert_eq!(tier_profile_count(Tier::Main), 16);
         assert_eq!(tier_profile_count(Tier::Alt), 14);
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn fingerprints_table_drives_fp_info_and_tier_sets() {
-        // M7: FINGERPRINTS is the single source; fp_info must agree with it, and the
+        // FINGERPRINTS is the single source; fp_info must agree with it, and the
         // per-tier sets must match the values `check`'s headers render.
         assert_eq!(FINGERPRINTS.len(), 4);
         for &(id, fam, tier) in FINGERPRINTS {

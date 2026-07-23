@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn matrix_flags_same_anchor_collision() {
-        // R9: two files for the same carrier both divisible by anchor 3347 (3347 and
+        // Two files for the same carrier both divisible by anchor 3347 (3347 and
         // 6694 = 2*3347) must not silently overwrite — both must appear and the run
         // must exit 1.
         let dir = std::env::temp_dir().join(format!("uecaps-matrix-r9-{}", std::process::id()));

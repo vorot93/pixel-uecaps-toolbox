@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn regional_default_uses_exact_documented_identifier() {
-        // M6: the note keys off the exact documented default, not `ends_with("COMMON")`,
+        // The note keys off the exact documented default, not `ends_with("COMMON")`,
         // which both missed EU_COMMON1 (ends in "1") and over-matched crafted `*COMMON`.
         assert!(super::is_regional_default("EU_COMMON1"));
         assert!(!super::is_regional_default("EU_COMMON"));

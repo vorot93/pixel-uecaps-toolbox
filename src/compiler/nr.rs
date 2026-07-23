@@ -141,7 +141,8 @@ fn generate_profiled_files(
 fn selected_payloads<'a>(nr: &'a ValidatedNr, carrier: &str, sku: &Sku) -> Vec<&'a RawNrPayload> {
     // Intern the (carrier, sku) probe once against the domain, then fetch the combos it selects
     // from the prebuilt inverted index — an O(1) lookup that replaces the former per-combo scan
-    // (E1 made each probe O(log n); this indexes the scan away entirely). Generation calls this
+    // (each combo used to cost its own O(log n) membership probe against the domain; the
+    // prebuilt index removes that per-combo cost entirely). Generation calls this
     // once per carrier per target, so the scan was the dominant `decompose`/`provision` cost. A carrier or
     // sku outside the domain selects nothing. Stored indices are ascending, so payload order
     // matches the old `combo.iter().filter(..)` order and generated output stays byte-identical.
@@ -752,9 +753,9 @@ enum InputLayout {
 /// band, `NR_BAND_OFFSET+1 ..= 2*NR_BAND_OFFSET-1`, i.e. plain `1..offset` shifted up). This
 /// gate runs BEFORE the payload ingest in `canonical_payloads` so an invalid band (raw
 /// `NR_BAND_OFFSET` / n0, 0, or out of range) is rejected here with a clear message — derived
-/// from `NR_BAND_OFFSET` rather than bare 10_000/20_000 literals. E6's direct
-/// conversion no longer re-parses a band label, so the old `from_sub_block`/`raw_band` panic
-/// surface is gone regardless.
+/// from `NR_BAND_OFFSET` rather than bare 10_000/20_000 literals. The direct protobuf-to-raw
+/// ingest path (`RawSubBlock::from_proto_sub_block`) no longer re-parses a band label, so the
+/// old `from_sub_block`/`raw_band` panic surface is gone regardless.
 fn validate_raw_bands(caps: &UeCaps, carrier: &str) -> anyhow::Result<()> {
     for (group_index, group) in caps.combo_groups.iter().enumerate() {
         ensure!(

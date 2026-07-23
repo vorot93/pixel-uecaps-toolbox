@@ -635,7 +635,7 @@ impl RawSubBlock {
     /// Build a raw component directly from its protobuf `SubBlock` and the file's
     /// feature-set lists — the folder-ingest counterpart of [`from_sub_block`](Self::from_sub_block). It
     /// skips constructing the report `SubBlock` DTO, so it allocates no band-label string, does not
-    /// re-parse the band back out (the `raw_band` R3 panic surface), and computes none of the
+    /// re-parse the band back out (the `raw_band` panic surface), and computes none of the
     /// discarded display projections. Byte-equivalent to resolving the DTO and calling
     /// `from_sub_block(..).with_resolved_feature_sets(dl, ul)`.
     ///

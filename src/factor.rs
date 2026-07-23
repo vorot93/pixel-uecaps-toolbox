@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn factor_display_handles_zero_and_one() {
-        // M5: factorize(0) and factorize(1) both yield the empty map; format_factors alone
+        // factorize(0) and factorize(1) both yield the empty map; format_factors alone
         // renders 0 as the wrong "1". factor_display distinguishes them.
         assert_eq!(factor_display(0), "0");
         assert_eq!(factor_display(1), "1");

@@ -47,7 +47,7 @@ pub(crate) struct NrDomain {
     // order); `binary_search` is the reverse value->id lookup.
     carrier_names: Vec<CompactString>,
     sku_values: Vec<Sku>,
-    // Hot membership sets, id-keyed. Projections precomputed once at construction (E2/E3):
+    // Hot membership sets, id-keyed. Projections precomputed once at construction:
     // `from_selection` / `canonical_selection` run per-combo across the validate passes and would
     // otherwise rebuild these. `carriers`/`skus` are the full id ranges; `rows` groups skus per
     // carrier.

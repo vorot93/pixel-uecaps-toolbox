@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn ul_only_scs_change_is_visible() {
-        // R5: DL and UL SCS must render independently; a UL-only SCS change (DL equal)
+        // DL and UL SCS must render independently; a UL-only SCS change (DL equal)
         // must change the caps line so `compare` sees it.
         let mut a = cc_base(SubBlockKind::Nr);
         a.dl_scs_khz = Some(30);
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn ul_90mhz_is_not_masked_by_dl() {
-        // R5: dl_bw90=false must not fold away ul_bw90=true (inspect --full dropped it).
+        // dl_bw90=false must not fold away ul_bw90=true (inspect --full dropped it).
         let mut cc = cc_base(SubBlockKind::Nr);
         cc.dl_bw90mhz = Some(false);
         cc.ul_bw90mhz = Some(true);
