@@ -315,6 +315,18 @@ pub(crate) fn plmn_to_node(plmn: &str) -> Result<KdlNode> {
     Ok(node)
 }
 
+/// The zero-padding width for one present MNC value: an explicit `mnc-digits=3` in the
+/// source pins 3 (the only legal override — it exists solely to preserve a leading-zero
+/// 3-digit MNC that would otherwise print as 2 digits); otherwise infer from magnitude
+/// (`>= 100` needs 3 digits, else 2).
+fn mnc_width(v: u32, mnc_digits: Option<u32>) -> Result<usize> {
+    match mnc_digits {
+        None => Ok(if v >= 100 { 3 } else { 2 }),
+        Some(3) => Ok(3),
+        Some(other) => bail!("`plmn` `mnc-digits` must be 3, got {other}"),
+    }
+}
+
 /// Read a `plmn` node back to its canonical `Plmn` string, validating via `Plmn::from_str`.
 pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
     let mut r = NodeReader::new(node);
@@ -331,17 +343,7 @@ pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
             "ff".to_string()
         }
         Some(v) => {
-            let width = match mnc_digits {
-                None => {
-                    if v >= 100 {
-                        3
-                    } else {
-                        2
-                    }
-                }
-                Some(3) => 3,
-                Some(other) => bail!("`plmn` `mnc-digits` must be 3, got {other}"),
-            };
+            let width = mnc_width(v, mnc_digits)?;
             format!("{v:0width$}")
         }
     };
