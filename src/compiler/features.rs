@@ -154,31 +154,48 @@ impl UsedFeatures {
 
 /// The global catalog's records that are `used`, in the catalog's own canonical order (not
 /// `used`'s `BTreeSet` order) — this is what makes a local plan's indices stable across a
-/// corpus that shares one global catalog. Errors if `used` names a record absent from the
-/// catalog (a payload referencing a feature the catalog never saw), or if the filtered set
-/// would overflow the local plan's 1-based `u8` index space (255 records).
-fn local_catalog<T: Ord + Clone>(
-    catalog: &[T],
-    used: &BTreeSet<T>,
-    direction: &str,
-    basename: &str,
-    sku: &str,
-) -> anyhow::Result<Vec<T>> {
-    let filtered: Vec<T> = catalog
+/// corpus that shares one global catalog. Purely a filter: validating the result (an absent
+/// record, or an over-255 local plan) is [`LocalFeaturePlan::new`]'s job, so that both
+/// directions' filters resolve before either direction's checks run — see the ordering note
+/// there.
+fn local_catalog<T: Ord + Clone>(catalog: &[T], used: &BTreeSet<T>) -> Vec<T> {
+    catalog
         .iter()
         .filter(|feature| used.contains(*feature))
         .cloned()
-        .collect();
+        .collect()
+}
+
+/// Errors if `filtered_len` (the local catalog's size after [`local_catalog`]'s filter) is
+/// short of `used_len`: a payload referenced a `direction` feature record the global catalog
+/// never saw.
+fn ensure_no_absent_feature(
+    filtered_len: usize,
+    used_len: usize,
+    direction: &str,
+    basename: &str,
+    sku: &str,
+) -> anyhow::Result<()> {
     ensure!(
-        filtered.len() == used.len(),
+        filtered_len == used_len,
         "{basename} ({sku}) uses a {direction} feature absent from the global catalog"
     );
+    Ok(())
+}
+
+/// Errors if `filtered_len` would overflow the local plan's 1-based `u8` index space (255
+/// records).
+fn ensure_within_local_limit(
+    filtered_len: usize,
+    direction: &str,
+    basename: &str,
+    sku: &str,
+) -> anyhow::Result<()> {
     ensure!(
-        filtered.len() <= usize::from(u8::MAX),
-        "{basename} ({sku}) uses {} distinct {direction} feature records; local limit is 255",
-        filtered.len()
+        filtered_len <= usize::from(u8::MAX),
+        "{basename} ({sku}) uses {filtered_len} distinct {direction} feature records; local limit is 255"
     );
-    Ok(filtered)
+    Ok(())
 }
 
 impl LocalFeaturePlan {
@@ -189,8 +206,17 @@ impl LocalFeaturePlan {
         sku: &str,
     ) -> anyhow::Result<Self> {
         let used = UsedFeatures::scan(payloads);
-        let dl_source = local_catalog(&catalogs.dl, &used.dl, "DL", basename, sku)?;
-        let ul_source = local_catalog(&catalogs.ul, &used.ul, "UL", basename, sku)?;
+        let dl_source = local_catalog(&catalogs.dl, &used.dl);
+        let ul_source = local_catalog(&catalogs.ul, &used.ul);
+
+        // Original pre-split textual order: DL-absent, UL-absent, DL-limit, UL-limit. Both
+        // directions' filtered vectors resolve above before any check runs, so a DL-only
+        // over-limit input can no longer shadow a simultaneous UL-absent one the way running
+        // DL's whole pair of checks before UL's first check would.
+        ensure_no_absent_feature(dl_source.len(), used.dl.len(), "DL", basename, sku)?;
+        ensure_no_absent_feature(ul_source.len(), used.ul.len(), "UL", basename, sku)?;
+        ensure_within_local_limit(dl_source.len(), "DL", basename, sku)?;
+        ensure_within_local_limit(ul_source.len(), "UL", basename, sku)?;
 
         let dl = dl_source
             .iter()
@@ -639,6 +665,64 @@ mod tests {
                 .unwrap()
                 .ul_feature_per_cc_ids,
             Some(vec![1])
+        );
+    }
+
+    #[test]
+    fn local_plan_new_reports_ul_absent_before_dl_over_local_limit() {
+        // Pins the original four-check order (DL-absent, UL-absent, DL-limit, UL-limit).
+        // Task 17 split this validation into a `local_catalog` helper that bundled *one
+        // direction's* absent-check and limit-check together, silently reordering to
+        // DL-absent, DL-limit, UL-absent, UL-limit. This input distinguishes the two: DL
+        // passes its absent-check but overflows the 255-record local limit, while UL
+        // simultaneously references a feature absent from the global catalog. The original
+        // order reports UL-absent; the bundled-per-direction order reports DL-limit first
+        // and never reaches the UL check at all.
+        let dl_sources: Vec<DlFeatureSource> = (1..=256)
+            .map(|max_scs| DlFeatureSource {
+                max_scs: Some(max_scs),
+                ..Default::default()
+            })
+            .collect();
+        let dl_features: Vec<ShannonFeatureSetDlPerCcNr> = dl_sources
+            .iter()
+            .map(ShannonFeatureSetDlPerCcNr::from)
+            .collect();
+        let missing_ul = UlFeatureSource {
+            max_scs: Some(1),
+            ..Default::default()
+        };
+
+        // The global catalog carries every DL record referenced below (so DL's absent-check
+        // passes) but no UL records at all (so the one UL record referenced below fails UL's
+        // absent-check).
+        let catalogs = FeatureCatalogs::new(dl_sources, vec![]);
+        let component: RawSubBlock = RawNrSubBlock {
+            band: 78,
+            dl: NrDirection::with_features(1, dl_features),
+            ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::from(&missing_ul)]),
+            ..Default::default()
+        }
+        .into();
+        let payload = RawNrPayload {
+            power_class: None,
+            bcs_nr: None,
+            bcs_intra_endc: None,
+            bcs_eutra: None,
+            intra_band_en_dc_support: None,
+            sub_blocks: vec![component],
+        };
+
+        let error = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("uses a UL feature absent from the global catalog"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("256 distinct"),
+            "DL's over-limit check must not win the race ahead of UL's absent-check: {error}"
         );
     }
 
