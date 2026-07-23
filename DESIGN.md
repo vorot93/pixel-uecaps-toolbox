@@ -97,8 +97,9 @@ silently drops field numbers it doesn't model, losing data on the rewrite — so
 surface that decodes → edits → re-encodes goes through the `wire.rs` strict decoders
 (`decode_uecaps` / `decode_lte_caps` / `decode_plmn_map`), which reject an unknown field
 number or wrong wire type (including packed `plmns`) *before* re-encoding. Every such caller is
-now in the compiler: `decompose`'s ingest of both folders, and `provision`'s verification of each
-generated file. The **read-only** reports
+now in the compiler, and there are three: `decompose`'s ingest of both folders, `decompose`'s own
+regeneration self-check (`verify_internal_targets`), and `provision`'s verification of each
+generated file (`verify_generated_files`). The **read-only** reports
 (`inspect`/`compare`/`check`/`matrix`) deliberately stay lenient (`read_ue_caps` /
 `load_carrier_combos` / `load_mapping` swallow decode errors) so a junk file yields a
 best-effort view, not a hard error — do not tighten those shared readers. `load_mapping`
@@ -117,7 +118,7 @@ profiled), all present in `pixel_bands::PIXEL_BANDS`. Every profiled target's
 `nr_anchor ∈ PROFILES` and `lte_id ∈ LTE_CONFIGS`; bitmask targets deliberately have
 neither.
 
-**An `lte` component (`SubBlockKind::Lte`, spelled as the `lte` node — see the naming rule) carries no NR-only fields** (the `srs_tx_switch` + `*_max_*` set); feature *indexes* are shared and allowed (an LTE component carries its own `parseLteFeatureIndex` value; an NR component's is derived from its per-CC feature set — see the `dl/ul_feature_index` bullet under [On-disk formats](#on-disk-formats)). This is **structural, not validated**: `RawLteSubBlock` has no feature-set or `srs_tx_switch` field at all (see [The sub-block model is a sum type](#the-sub-block-model-is-a-sum-type)), so the rule is enforced at the one place flat outside data still carries those fields — `NrSourceSubBlock::resolve`, which rejects an `lte` node carrying an NR-only field rather than dropping it silently (`RawLteSubBlock` has nowhere to put it). LTE component **bands** are likewise validated to `1..NR_BAND_OFFSET` on parse (mirroring NR's `RawSubBlock::validate`), so a value that would wrap in the `as u16` band-compatibility filter (e.g. 65602 → 66) is rejected before it can ship.
+**An `lte` component (`SubBlockKind::Lte`, spelled as the `lte` node — see the naming rule) carries no NR-only fields** (the `srs_tx_switch` + `*_max_*` set); feature *indexes* are shared and allowed (an LTE component carries its own `parseLteFeatureIndex` value; an NR component's is derived from its per-CC feature set — see the `dl/ul_feature_index` bullet under [On-disk formats](#on-disk-formats)). This is **structural, not validated**: `RawLteSubBlock` has no feature-set or `srs_tx_switch` field at all (see [The sub-block model is a sum type](#the-sub-block-model-is-a-sum-type)), so the rule is enforced at the one place flat outside data still carries those fields — `NrSourceSubBlock::resolve`, which rejects an `lte` node carrying an NR-only field rather than dropping it silently (`RawLteSubBlock` has nowhere to put it). LTE component **bands** are likewise validated to `1..NR_BAND_OFFSET` on parse (`RawSubBlock::validate`), because the kind↔band split is recoverable *only* while plain band numbers stay below the offset: `RawSubBlock::from_proto_sub_block` classifies a component purely by `band >= NR_BAND_OFFSET`, so a raw protobuf encoding stored where a plain number belongs would silently re-read as NR on the next decode — hence `validate`'s "must be the plain band number, not raw protobuf encoding".
 
 ## Full-folder compiler
 
