@@ -22,7 +22,7 @@ const NR_SOURCE: &str = "nr.kdl";
 const LTE_SOURCE: &str = "lte.kdl";
 const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
-/// Build and atomically persist one complete model-specific uecapconfig replacement module.
+/// Provision one complete model-specific uecapconfig replacement module, persisted atomically.
 pub fn provision(
     model_code: &str,
     source_dir: &Path,
