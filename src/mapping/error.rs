@@ -4,8 +4,6 @@ use thiserror::Error;
 /// editable-model conversion (`mapping::schema`), used by the compiler and `check`.
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("protobuf decode error: {0}")]
-    Decode(#[from] prost::DecodeError),
     #[error("PLMN value {0} is out of the 24-bit range")]
     PlmnOutOfRange(u64),
     #[error("invalid PLMN string `{0}` (expected MCC-MNC, e.g. 250-01)")]

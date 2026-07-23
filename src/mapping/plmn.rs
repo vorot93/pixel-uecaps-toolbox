@@ -27,20 +27,6 @@ impl Plmn {
     }
 }
 
-impl TryFrom<u64> for Plmn {
-    type Error = Error;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Self::from_encoded(value)
-    }
-}
-
-impl From<Plmn> for u64 {
-    fn from(plmn: Plmn) -> Self {
-        plmn.to_encoded()
-    }
-}
-
 impl fmt::Display for Plmn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (mcc, mnc, mnc3) = self.nibbles();
