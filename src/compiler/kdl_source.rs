@@ -53,6 +53,33 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
     node
 }
 
+/// The `dl-feature` values to push for `cc`, in emit order: `lte`'s single scalar proto-4/5
+/// index (0 or 1 values — the former `dl-feature-index` source override was dropped, so this
+/// is provision-derived and never written back), or the other kinds' per-CC compact-catalog
+/// references (0..N values, one per CC). Same property name either way; only the value count
+/// differs by kind — see `cc_to_node`'s header comment for the full per-kind spelling rule.
+fn dl_feature_values(cc: &NrSourceSubBlock) -> Vec<i128> {
+    match cc.kind {
+        SubBlockKind::Lte => cc.dl_feature_index.map(|v| v as i128).into_iter().collect(),
+        _ => cc.dl_feature.iter().map(|&v| v as i128).collect(),
+    }
+}
+
+/// The `ul-feature` values to push for `cc`: `lte`'s always-`Some` scalar index with a real
+/// `Some(0)` omitted (Task 8 omit-when-0 — `read_sub_block` re-defaults it), or the other
+/// kinds' per-CC compact-catalog references.
+fn ul_feature_values(cc: &NrSourceSubBlock) -> Vec<i128> {
+    match cc.kind {
+        SubBlockKind::Lte => cc
+            .ul_feature_index
+            .filter(|&v| v != 0)
+            .map(|v| v as i128)
+            .into_iter()
+            .collect(),
+        _ => cc.ul_feature.iter().map(|&v| v as i128).collect(),
+    }
+}
+
 pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     let mut node = KdlNode::new(cckind_to_str(cc.kind));
     // `band` is the node's sole leading positional argument (`nr 78 …`), pushed before
@@ -70,23 +97,13 @@ pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     //     LTE never carries a per-CC list (its selectors are the all-zero placeholder — corpus:
     //     0 of 1.74M non-zero), so the un-suffixed name is free. `ul-feature` is always-`Some`
     //     on LTE with `Some(0)` ⟺ no UL, so its zero is omitted (Task 8 omit-when-0) and the
-    //     reader re-defaults it. Gating the list emit by kind (rather than relying on the LTE
-    //     list being empty) keeps `dl-feature` written exactly once on an `lte` node.
+    //     reader re-defaults it. `dl_feature_values`/`ul_feature_values` above resolve the
+    //     kind-dependent value count; `push_repeated_int_prop` writes 0, 1, or N entries
+    //     uniformly, so `dl-feature` is written exactly once on an `lte` node.
     // Properties are emitted direction-grouped — `dl-bw-class`, `dl-feature`, `ul-bw-class`,
     // `ul-feature` — so DL and UL each read as a contiguous group instead of interleaved
     // bw-class/feature pairs.
-    match cc.kind {
-        SubBlockKind::Lte => opt_int_prop(
-            &mut node,
-            "dl-feature",
-            cc.dl_feature_index.map(|v| v as i128),
-        ),
-        _ => push_repeated_int_prop(
-            &mut node,
-            "dl-feature",
-            &cc.dl_feature.iter().map(|&v| v as i128).collect::<Vec<_>>(),
-        ),
-    }
+    push_repeated_int_prop(&mut node, "dl-feature", &dl_feature_values(cc));
     // `ul-bw-class` is corpus-verified always `Some` on a real sub-block (never `None`),
     // so `Some(0)` is omitted here and re-defaulted to `Some(0)` by `read_sub_block` below
     // (Task 8 omit-when-0) — a value-faithful round trip, not a lossy one.
@@ -95,18 +112,7 @@ pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
         "ul-bw-class",
         cc.ul_bw_class.filter(|&v| v != 0).map(|v| v as i128),
     );
-    match cc.kind {
-        SubBlockKind::Lte => opt_int_prop(
-            &mut node,
-            "ul-feature",
-            cc.ul_feature_index.filter(|&v| v != 0).map(|v| v as i128),
-        ),
-        _ => push_repeated_int_prop(
-            &mut node,
-            "ul-feature",
-            &cc.ul_feature.iter().map(|&v| v as i128).collect::<Vec<_>>(),
-        ),
-    }
+    push_repeated_int_prop(&mut node, "ul-feature", &ul_feature_values(cc));
     opt_int_prop(
         &mut node,
         "srs-tx-switch",
@@ -255,6 +261,60 @@ fn emit_lte_combo(combo: &LteSourceCombo) -> KdlNode {
     node
 }
 
+/// One `bitmask-fingerprint N { carriers … }` node: which bitmask-folder carriers share a
+/// given legacy fingerprint.
+fn fingerprint_node(fp: &BitmaskFingerprint) -> KdlNode {
+    let mut node = KdlNode::new("bitmask-fingerprint");
+    node.push(KdlEntry::new(fp.fingerprint as i128));
+    node.ensure_children()
+        .nodes_mut()
+        .push(str_list_node("carriers", &fp.carriers));
+    node
+}
+
+/// One carrier's `plmns` children: either a bare, childless `plmns` marker for a
+/// present-but-empty list (distinguishing it from no list at all — see `read_carrier`'s
+/// inverse), or one `plmn mcc=… mnc=…` node per entry.
+fn plmn_child_nodes(plmns: &[String]) -> Result<Vec<KdlNode>> {
+    if plmns.is_empty() {
+        Ok(vec![str_list_node("plmns", plmns)])
+    } else {
+        plmns.iter().map(|p| plmn_to_node(p)).collect()
+    }
+}
+
+/// One `profile "KEY" multiplier=… unknown=…` node.
+fn profile_node(key: &str, p: &ProfileSource) -> KdlNode {
+    let mut node = KdlNode::new("profile");
+    node.push(KdlEntry::new(key));
+    node.push(KdlEntry::new_prop("multiplier", p.multiplier.0 as i128));
+    node.push(KdlEntry::new_prop("unknown", p.unknown.0 as i128));
+    node
+}
+
+/// One `carrier "NAME" …` node, with its `plmns`/`profile` children when it has either.
+fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
+    let mut node = KdlNode::new("carrier");
+    node.push(KdlEntry::new(name));
+    opt_int_prop(&mut node, "bitmask-id", c.bitmask_id.map(|v| v as i128));
+    opt_int_prop(&mut node, "profiled-id", c.profiled_id.map(|v| v as i128));
+    opt_int_prop(&mut node, "mapping-id", c.mapping_id.map(|v| v as i128));
+    opt_int_prop(&mut node, "signature", c.signature.map(|v| v.0 as i128));
+    opt_str_prop(&mut node, "tier", c.tier.map(tier_to_str));
+    if c.plmns.is_some() || !c.profiles.is_empty() {
+        let kids = node.ensure_children();
+        if let Some(plmns) = &c.plmns {
+            for n in plmn_child_nodes(plmns)? {
+                kids.nodes_mut().push(n);
+            }
+        }
+        for (key, p) in &c.profiles {
+            kids.nodes_mut().push(profile_node(key, p));
+        }
+    }
+    Ok(node)
+}
+
 pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
     let mut doc = KdlDocument::new();
 
@@ -266,45 +326,11 @@ pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
         .push(str_list_node("bitmask-carriers", &nr.bitmask_carriers));
 
     for fp in &nr.bitmask_fingerprints {
-        let mut node = KdlNode::new("bitmask-fingerprint");
-        node.push(KdlEntry::new(fp.fingerprint as i128));
-        node.ensure_children()
-            .nodes_mut()
-            .push(str_list_node("carriers", &fp.carriers));
-        doc.nodes_mut().push(node);
+        doc.nodes_mut().push(fingerprint_node(fp));
     }
 
     for (name, c) in &nr.carriers {
-        let mut node = KdlNode::new("carrier");
-        node.push(KdlEntry::new(name.as_str()));
-        opt_int_prop(&mut node, "bitmask-id", c.bitmask_id.map(|v| v as i128));
-        opt_int_prop(&mut node, "profiled-id", c.profiled_id.map(|v| v as i128));
-        opt_int_prop(&mut node, "mapping-id", c.mapping_id.map(|v| v as i128));
-        opt_int_prop(&mut node, "signature", c.signature.map(|v| v.0 as i128));
-        opt_str_prop(&mut node, "tier", c.tier.map(tier_to_str));
-        if c.plmns.is_some() || !c.profiles.is_empty() {
-            let kids = node.ensure_children();
-            if let Some(plmns) = &c.plmns {
-                if plmns.is_empty() {
-                    // A bare, childless `plmns` marker distinguishes a present-but-empty
-                    // PLMN list (`Some(vec![])`, a validated mapping-only carrier state)
-                    // from no PLMN list at all (`None`); see `read_carrier` below.
-                    kids.nodes_mut().push(str_list_node("plmns", plmns));
-                } else {
-                    for p in plmns {
-                        kids.nodes_mut().push(plmn_to_node(p)?);
-                    }
-                }
-            }
-            for (key, p) in &c.profiles {
-                let mut pn = KdlNode::new("profile");
-                pn.push(KdlEntry::new(key.as_str()));
-                pn.push(KdlEntry::new_prop("multiplier", p.multiplier.0 as i128));
-                pn.push(KdlEntry::new_prop("unknown", p.unknown.0 as i128));
-                kids.nodes_mut().push(pn);
-            }
-        }
-        doc.nodes_mut().push(node);
+        doc.nodes_mut().push(carrier_node(name, c)?);
     }
 
     for f in &nr.dl_features {
@@ -537,6 +563,41 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     })
 }
 
+/// Parses a `version N` node's payload, or errors if `version` was already read once — shared
+/// by `nr_from_kdl` and `lte_from_kdl`, whose sole `version` node is identical in shape. Takes
+/// the field's current value (not a pre-computed flag) so the duplicate check runs BEFORE
+/// parsing, matching the single inline check this replaces in both readers: a malformed
+/// second `version` node still reports "duplicate", not a parse error.
+fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
+    if existing.is_some() {
+        bail!("duplicate `version`");
+    }
+    let mut r = NodeReader::new(node);
+    let v = r.key_int::<u32>()?;
+    r.finish()?;
+    Ok(v)
+}
+
+/// Parses `bitmask-carriers`, or errors if it already appeared once — same duplicate-before-
+/// parse order as `read_version`.
+fn read_bitmask_carriers(node: &KdlNode, existing: Option<&Vec<String>>) -> Result<Vec<String>> {
+    if existing.is_some() {
+        bail!("duplicate `bitmask-carriers`");
+    }
+    read_str_list(node)
+}
+
+/// Inserts an already-parsed `(name, value)` pair into a top-level map keyed by name, erroring
+/// if `name` was already present. Shared by `nr_from_kdl`'s `carrier` and `lte_from_kdl`'s
+/// `file` nodes, whose duplicate-name shape is otherwise identical; the caller parses before
+/// calling, so a malformed duplicate still reports its own parse error first.
+fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, T)) -> Result<()> {
+    if map.insert(k.clone(), v).is_some() {
+        bail!("duplicate {what} `{k}`");
+    }
+    Ok(())
+}
+
 pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
     let doc: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
     let mut version: Option<u32> = None;
@@ -548,27 +609,12 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
     let mut combo = Vec::new();
     for node in doc.nodes() {
         match node.name().value() {
-            "version" => {
-                if version.is_some() {
-                    bail!("duplicate `version`");
-                }
-                let mut r = NodeReader::new(node);
-                version = Some(r.key_int::<u32>()?);
-                r.finish()?;
-            }
+            "version" => version = Some(read_version(node, version)?),
             "bitmask-carriers" => {
-                if bitmask_carriers.is_some() {
-                    bail!("duplicate `bitmask-carriers`");
-                }
-                bitmask_carriers = Some(read_str_list(node)?);
+                bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_ref())?);
             }
             "bitmask-fingerprint" => bitmask_fingerprints.push(read_fingerprint(node)?),
-            "carrier" => {
-                let (k, v) = read_carrier(node)?;
-                if carriers.insert(k.clone(), v).is_some() {
-                    bail!("duplicate carrier `{k}`");
-                }
-            }
+            "carrier" => insert_unique(&mut carriers, "carrier", read_carrier(node)?)?,
             "dl-feature" => dl_features.push(read_dl_feature(node)?),
             "ul-feature" => ul_features.push(read_ul_feature(node)?),
             "combo" => combo.push(read_combo(node)?),
@@ -671,20 +717,8 @@ pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
     let mut combo = Vec::new();
     for node in doc.nodes() {
         match node.name().value() {
-            "version" => {
-                if version.is_some() {
-                    bail!("duplicate `version`");
-                }
-                let mut r = NodeReader::new(node);
-                version = Some(r.key_int::<u32>()?);
-                r.finish()?;
-            }
-            "file" => {
-                let (k, v) = read_file(node)?;
-                if files.insert(k.clone(), v).is_some() {
-                    bail!("duplicate file `{k}`");
-                }
-            }
+            "version" => version = Some(read_version(node, version)?),
+            "file" => insert_unique(&mut files, "file", read_file(node)?)?,
             "combo" => combo.push(read_lte_combo(node)?),
             other => bail!("unknown top-level node `{other}` in lte.kdl"),
         }
