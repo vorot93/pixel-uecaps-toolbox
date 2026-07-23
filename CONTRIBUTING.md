@@ -51,8 +51,7 @@ Also run `cargo run -- self-test` (subcommand is `self-test`): data-independent 
 
 **Tests are hermetic by default** — fixtures are built in-code or under a temp dir, and
 `pixel-bands` is compile-time data, so real codes like `GUL82` work with no external
-files. One optional PLMN round-trip activates only when `UECAPS_PLMN_FIXTURE` points at
-a real legend file. Full-corpus compiler verification activates only when **both**
+files. Full-corpus compiler verification activates only when **both**
 `UECAPS_BITMASK_CORPUS` and `UECAPS_PROFILED_CORPUS` point at their respective input
 directories; with either unset, that one test (`tests/compiler_corpus.rs`) prints a single
 skip note and returns. With both set, it compares two independently decomposed canonical
@@ -193,8 +192,9 @@ six Phase-3 acceptance criteria pass: the two long functions are exactly `model:
 `report::selftest::self_test`; 0 functions nested deeper than 4; all 3 surviving `bool` parameters
 are `From<bool>` impls, each with a justifying comment at its definition (`outcome.rs`,
 `report/detail.rs` ×2); 0 `Result<i32>` in any signature; `nr.rs`'s
-`.expect("profiled number checked above")` is gone (removed in Task 14, `511b95b`, by giving
-`DecodedNrFile` a type-level number invariant instead of a runtime check); and the broad
+`.expect("profiled number checked above")` is gone (removed in Task 14, `511b95b`, by splitting
+`DecodedNrFile` into `LegacyNrFile` (no `number` field) and `ProfiledNrFile` (`number: u64`),
+giving the profiled case a type-level number invariant instead of a runtime check); and the broad
 review-citation grep (prose form included, not just the parenthesised `(R9)` form) returns exactly
 one hit — `mapping/plmn.rs`'s `M2 M1 N3 M3 N2 N1`, PLMN wire-nibble notation, not a citation. All
 three golden hashes (`nr.kdl`, `lte.kdl`, GUL82 `base.zip`) reproduced byte-for-byte against the
@@ -204,6 +204,22 @@ component counts. The corpus test's outsized-looking −20.2% is not attributed 
 warmth (the corpus was already re-read several times earlier in the same gate run) plus a quieter
 machine (load average 1.22 vs. the Baseline capture's 2.50) than anything in this pass; recorded so
 Phase 4 doesn't mistake it for a real win to preserve.
+
+**Phase 4 (the re-optimization pass) ran and closed with an empty worklist.** The policy at the
+top of this section promises the speed comes back *after* the readability pass, on the trade
+ledger's evidence — and the ledger above is that evidence: `Phase 3 total` cost nothing measurable
+(`decompose` 17767 ms vs. the 18463 ms baseline, `provision` 5191 ms vs. 5215 ms), and neither did
+Task 17 or Task 18 individually. A re-optimization pass acts on what the ledger says was spent;
+with nothing spent, there was nothing to win back, so Phase 4's re-optimization tasks were skipped
+by explicit decision, not forgotten. Re-optimization ran; it just had no work.
+
+That does **not** mean there is no further lever, only that this branch didn't spend one it could
+win back. The KDL-parser breakdown above already measured the one that remains: a single
+`decompose`/`provision` run is ~93% `load_sources`, ~55% of which is the `kdl` v2 winnow parser, and
+forking or swapping `kdl` is the only further parse-time lever available. Keep the two apart: that
+lever is **new optimization**, not recovery of anything phase 3 traded away — phase 3 never touched
+the parser, so nothing here is this branch's own spending to reclaim. Treat a `kdl` fork or swap as
+a from-scratch project with its own cost/benefit case, not as an item on this ledger.
 
 ## Single-source helpers — call them, don't re-duplicate
 

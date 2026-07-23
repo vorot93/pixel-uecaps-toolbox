@@ -1,6 +1,6 @@
 # pixel-uecaps-toolbox
 
-Decode, inspect, and edit the Google Pixel **UE-capabilities** protobufs that ship
+Inspect, audit, and compile the Google Pixel **UE-capabilities** protobufs that ship
 in Pixel carrier-config packages — see exactly which LTE/5G bands a carrier
 profile unlocks, diff two carriers, audit a folder, or rebuild a complete
 model-specific `uecapconfig` folder.
@@ -427,16 +427,40 @@ as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 | `matrix [DIR] [-o FILE]` | Scan a folder (default `.`) and emit a carrier × profile matrix as CSV to `-o` or stdout. Columns are headed by Pixel model (or the profile's anchor prime when unknown), sorted by header. |
 | `self-test` | Run built-in, data-independent sanity checks. |
 
-**Migration note:** this branch's cutover renamed and removed the following spellings, with
-no aliases:
+**Migration note:** this branch renamed one command and removed the following six, with no
+aliases:
+
+```
+build MODEL SOURCE -o ZIP [--name N]                      →  provision MODEL SOURCE -o ZIP [--name N]  (renamed)
+decode FILE [--kind KIND]                                 →  removed
+patch {create, apply, show, filter {include, exclude}}    →  removed
+provision MODEL [DIR] --carrier/--lte-patch/--nr-patch/…  →  removed (name reused — see note below)
+magisk FILES... [--dest PATH] [-o ZIP] [--name N]         →  removed
+mapping encode                                            →  removed
+mapping inject-plmn CARRIER PLMNS...                      →  removed
+```
+
+Each is a hard rename or removal, not a deprecation — there is no back-compat reader or CLI
+shim for any of them. Two things to know if you had scripted one of the removed spellings:
+
+- **`provision` changed meaning, not just name.** The pre-branch `provision` patched a single
+  carrier/LTE file in place (`--carrier`, `--lte-patch`, `--nr-patch`, `--add-plmn`, `--dest`,
+  `--strict`) and is gone with no replacement. The current `provision MODEL SOURCE -o ZIP` is
+  the renamed former `build` — a full-folder compile — and accepts none of those flags, so an
+  old `provision` invocation now fails to parse instead of silently doing the old thing.
+- **The other five removed commands each edited or packaged a single file, and none has a
+  direct substitute.** Editing goes through the folder compiler and nothing else: there is no
+  single-file edit, patch, or repackage command to move `patch`, the old `provision`, `magisk`,
+  `mapping encode`, or `mapping inject-plmn` onto — the replacement workflow for all of them is
+  `decompose` → hand-edit `nr.kdl`/`lte.kdl` → `provision`.
+
+An older, unrelated rename (already in place before this branch) is still worth knowing if
+you're carrying very old scripts or library calls:
 
 ```
 decode --bitmask … -o SRC   →  decompose --bitmask … -o SRC
 compiler::decode (library)  →  compiler::decompose
 ```
-
-Each is a hard removal, not a deprecation — there is no back-compat reader or CLI shim for
-any of them; use the new spelling instead.
 
 ## How the file naming works
 

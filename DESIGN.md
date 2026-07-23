@@ -51,6 +51,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | --- | --- |
 | `src/lib.rs` | Library crate root; `pub mod` declarations for the modules below. |
 | `src/main.rs` | `clap` CLI (`Cli`/`Cmd`); `main() -> ExitCode` dispatches each subcommand to the library. |
+| `src/outcome.rs` | The `Outcome` enum (`Clean`/`Findings`/`Rejected`) that replaced ad hoc `i32` exit codes crate-wide; `main` converts it to `ExitCode` exactly once. |
 | `src/proto.rs` | Hosts the prost-generated message types (from `proto/ue_caps.proto`); carries `#![allow(clippy::all)]` for generated code. |
 | `src/factor.rs` | Integer helpers over `num-prime` for the trailing filename numbers: `gcd`, `is_prime`, `factorize`, `format_factors`. |
 | `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fp_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
@@ -73,8 +74,9 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/mapping/schema.rs` | The editable mapping schema (`Root`/`MappingEntry`) ↔ proto `PlmnMap` (`map_to_root`/`root_to_map`). |
 | `src/mapping/error.rs` | The mapping `Error` enum (thiserror). |
 | `src/magisk/mod.rs` | Assembles the compiler's generated files into a deterministic `.replace` Magisk `.zip` (overlay tree + `module.prop` + `META-INF/.../update-binary`) at the fixed `/vendor/firmware/uecapconfig` destination. |
-| `src/report/mod.rs` | Reports facade (`inspect`/`check`/`self_test`) and shared helpers (`binarypb_names`). |
+| `src/report/mod.rs` | Reports facade (`inspect`/`compare`/`check`/`matrix`/`self_test`, plus the `Detail`/`Common` presentation types) and shared helpers (`binarypb_names`). |
 | `src/report/combos.rs` | NR band-combination model + rendering (labels, class letters, capability tables). |
+| `src/report/detail.rs` | The `Detail` (`Summary`/`Full`) and `Common` (`Hide`/`Show`) presentation enums that replaced `full`/`show_common` `bool` parameters; `clap`'s flags stay `bool` and convert to these at the CLI boundary. |
 | `src/report/check.rs` | Folder-wide consistency check (`check_folder`). |
 | `src/report/matrix.rs` | Carrier × profile matrix as CSV. |
 | `src/report/lte.rs` | LTE-fallback decode + text rendering for `inspect`. |

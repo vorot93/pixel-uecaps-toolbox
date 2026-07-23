@@ -1,4 +1,5 @@
-//! Reports: single-file `inspect`, folder-wide `check`, and the runtime `self-test`.
+//! Reports facade: `inspect`, `compare`, folder-wide `check`/`matrix`, the runtime
+//! `self-test`, and the shared `Detail`/`Common` presentation types.
 
 mod check;
 pub(crate) mod combos;

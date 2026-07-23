@@ -670,14 +670,13 @@ mod tests {
 
     #[test]
     fn local_plan_new_reports_ul_absent_before_dl_over_local_limit() {
-        // Pins the original four-check order (DL-absent, UL-absent, DL-limit, UL-limit).
-        // Task 17 split this validation into a `local_catalog` helper that bundled *one
-        // direction's* absent-check and limit-check together, silently reordering to
-        // DL-absent, DL-limit, UL-absent, UL-limit. This input distinguishes the two: DL
-        // passes its absent-check but overflows the 255-record local limit, while UL
-        // simultaneously references a feature absent from the global catalog. The original
-        // order reports UL-absent; the bundled-per-direction order reports DL-limit first
-        // and never reaches the UL check at all.
+        // Pins the original four-check order (DL-absent, UL-absent, DL-limit, UL-limit). A
+        // `local_catalog` helper that bundled *one direction's* absent-check and limit-check
+        // together would silently reorder this to DL-absent, DL-limit, UL-absent, UL-limit.
+        // This input distinguishes the two: DL passes its absent-check but overflows the
+        // 255-record local limit, while UL simultaneously references a feature absent from
+        // the global catalog. The original order reports UL-absent; the bundled-per-direction
+        // order reports DL-limit first and never reaches the UL check at all.
         let dl_sources: Vec<DlFeatureSource> = (1..=256)
             .map(|max_scs| DlFeatureSource {
                 max_scs: Some(max_scs),
