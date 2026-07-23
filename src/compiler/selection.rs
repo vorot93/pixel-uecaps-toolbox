@@ -183,6 +183,63 @@ impl LteDomain {
     }
 }
 
+/// One named carrier resolved to its domain id, or an error naming the 1-based rectangle
+/// index — every `from_selection` error is rectangle-relative, never file-relative.
+fn resolve_rectangle_carrier(domain: &NrDomain, carrier: &str, index: usize) -> Result<CarrierId> {
+    domain.carrier_id(carrier).with_context(|| {
+        format!(
+            "selection rectangle {} references unknown carrier `{carrier}`",
+            index + 1
+        )
+    })
+}
+
+/// The carrier-id axis for one selection rectangle: every domain carrier when `carriers` is
+/// absent (a wildcard axis), or the named carriers translated to ids.
+fn rectangle_carrier_axis(
+    domain: &NrDomain,
+    carriers: Option<&[String]>,
+    index: usize,
+) -> Result<BTreeSet<CarrierId>> {
+    match carriers {
+        Some(carriers) => {
+            ensure!(
+                !carriers.is_empty(),
+                "selection rectangle {} has an empty carriers axis",
+                index + 1
+            );
+            carriers
+                .iter()
+                .map(|carrier| resolve_rectangle_carrier(domain, carrier, index))
+                .collect()
+        }
+        None => Ok(domain.carriers.clone()),
+    }
+}
+
+/// The sku-id axis for one selection rectangle: every domain sku when `skus` is absent (a
+/// wildcard axis), or the named tokens parsed and translated to ids.
+fn rectangle_sku_axis(
+    domain: &NrDomain,
+    skus: Option<&[String]>,
+    index: usize,
+) -> Result<BTreeSet<SkuId>> {
+    match skus {
+        Some(tokens) => {
+            ensure!(
+                !tokens.is_empty(),
+                "selection rectangle {} has an empty skus axis",
+                index + 1
+            );
+            tokens
+                .iter()
+                .map(|token| parse_nr_sku(token, domain))
+                .collect()
+        }
+        None => Ok(domain.skus.clone()),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct NrRelation(BTreeSet<(CarrierId, SkuId)>);
 
@@ -215,42 +272,8 @@ impl NrRelation {
                 index + 1
             );
 
-            let carriers: BTreeSet<CarrierId> = match &rectangle.carriers {
-                Some(carriers) => {
-                    ensure!(
-                        !carriers.is_empty(),
-                        "selection rectangle {} has an empty carriers axis",
-                        index + 1
-                    );
-                    carriers
-                        .iter()
-                        .map(|carrier| {
-                            domain.carrier_id(carrier).with_context(|| {
-                                format!(
-                                    "selection rectangle {} references unknown carrier `{carrier}`",
-                                    index + 1
-                                )
-                            })
-                        })
-                        .collect::<Result<_>>()?
-                }
-                None => domain.carriers.clone(),
-            };
-
-            let skus: BTreeSet<SkuId> = match &rectangle.skus {
-                Some(tokens) => {
-                    ensure!(
-                        !tokens.is_empty(),
-                        "selection rectangle {} has an empty skus axis",
-                        index + 1
-                    );
-                    tokens
-                        .iter()
-                        .map(|token| parse_nr_sku(token, domain))
-                        .collect::<Result<_>>()?
-                }
-                None => domain.skus.clone(),
-            };
+            let carriers = rectangle_carrier_axis(domain, rectangle.carriers.as_deref(), index)?;
+            let skus = rectangle_sku_axis(domain, rectangle.skus.as_deref(), index)?;
 
             let expanded: BTreeSet<(CarrierId, SkuId)> = domain
                 .members
