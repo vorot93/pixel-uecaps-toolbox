@@ -122,7 +122,8 @@ because it is opaque.
 The three carrier IDs are independent: `bitmask-id` is legacy NR protobuf field 2;
 `profiled-id` is optional signed `int32` profiled NR protobuf field 2, including
 absence and present-zero, and may repeat across carriers; `mapping-id` is the unique,
-full-width `u64` legend index, stored as a native KDL integer (KDL integers are
+full-width `u64` index into the **legend** (`ap_plmn_mapping.binarypb`, which maps each
+network's PLMN to a carrier-config name), stored as a native KDL integer (KDL integers are
 i128-backed, so the full `u64` range fits without string-encoding). `mapping-id` and
 the carrier's PLMNs must either both be present or both be absent. Omitting them
 excludes that carrier from the rebuilt profiled legend, while a bare, childless
