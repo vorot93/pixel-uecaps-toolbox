@@ -34,8 +34,9 @@ work; `src/main.rs` is a thin `clap` CLI over them.
 `compiler::{decompose, provision}` and `report::{inspect, check_folder, matrix, self_test,
 compare}` — plus exactly what they need to be callable and testable from outside the crate:
 the `outcome::Outcome` / `report::{Common, Detail}` types those entry points take or return,
-the `compiler::{load_sources, provision_from_sources}` parse-once pair (the corpus test's
-perf optimization; see CONTRIBUTING § Performance), `model::PHONE_MODELS` (+
+the `compiler::{load_sources, provision_from_sources}` parse-once pair and the opaque
+`ValidatedSources` handle they leak (the corpus test's perf optimization; see CONTRIBUTING §
+Performance), `model::PHONE_MODELS` (+
 `CapabilityLayout`/`PhoneModel`) for enumerating registered targets, and `proto` for building
 test fixtures. Everything else defaults to `pub(crate)` or private. An earlier plan sketched
 a broader library API (a WASM-facing "Plan 2") on top of this crate; it was never built and
