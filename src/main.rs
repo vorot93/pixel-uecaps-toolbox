@@ -1,6 +1,6 @@
 //! pixel-uecaps-toolbox — decode and validate Google Pixel UE-capabilities files.
 
-use pixel_uecaps_toolbox::{compiler, magisk, report};
+use pixel_uecaps_toolbox::{compiler, report};
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -72,25 +72,7 @@ enum Cmd {
         #[arg(long)]
         common: bool,
     },
-    /// Package UE-capability file(s) into a flashable Magisk module (.zip)
-    Magisk {
-        /// Files to overlay (each kept under its own name)
-        #[arg(required = true)]
-        files: Vec<PathBuf>,
-        /// On-device destination directory (absolute)
-        #[arg(long, default_value = DEFAULT_DEST)]
-        dest: String,
-        /// Write the .zip here instead of stdout
-        #[arg(short = 'o', long)]
-        out: Option<PathBuf>,
-        /// Module name shown in the Magisk app
-        #[arg(long, default_value = "Pixel UE-caps override")]
-        name: String,
-    },
 }
-
-/// Default on-device destination for overlaid capability files.
-const DEFAULT_DEST: &str = "/vendor/firmware/uecapconfig";
 
 fn main() -> ExitCode {
     match run() {
@@ -130,12 +112,6 @@ impl Cmd {
                 full,
                 common,
             } => report::compare(&file_a, &file_b, full, common),
-            Self::Magisk {
-                files,
-                dest,
-                out,
-                name,
-            } => magisk::package(&files, &dest, out.as_deref(), &name),
         }
     }
 }
@@ -303,43 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_magisk() {
-        let cli = Cli::parse_from([
-            "x",
-            "magisk",
-            "a.binarypb",
-            "b.binarypb",
-            "--dest",
-            "/x",
-            "-o",
-            "out.zip",
-            "--name",
-            "Foo",
-        ]);
-        let Cmd::Magisk {
-            files,
-            dest,
-            out,
-            name,
-        } = cli.cmd
-        else {
-            panic!("expected magisk")
-        };
-        assert_eq!(
-            files,
-            vec![PathBuf::from("a.binarypb"), PathBuf::from("b.binarypb")]
-        );
-        assert_eq!(dest, "/x");
-        assert_eq!(out, Some(PathBuf::from("out.zip")));
-        assert_eq!(name, "Foo");
-    }
-
-    #[test]
-    fn magisk_requires_a_file() {
-        assert!(Cli::try_parse_from(["x", "magisk"]).is_err());
-    }
-
-    #[test]
     fn parses_matrix() {
         let cli = Cli::parse_from(["x", "matrix", "some/dir", "-o", "out.csv"]);
         let Cmd::Matrix { dir, out } = cli.cmd else {
@@ -357,24 +296,6 @@ mod tests {
         };
         assert_eq!(dir, PathBuf::from("."));
         assert_eq!(out, None);
-    }
-
-    #[test]
-    fn magisk_dest_defaults() {
-        let cli = Cli::parse_from(["x", "magisk", "a.binarypb"]);
-        let Cmd::Magisk {
-            files,
-            dest,
-            out,
-            name,
-        } = cli.cmd
-        else {
-            panic!("expected magisk")
-        };
-        assert_eq!(files, vec![PathBuf::from("a.binarypb")]);
-        assert_eq!(dest, "/vendor/firmware/uecapconfig");
-        assert_eq!(out, None);
-        assert_eq!(name, "Pixel UE-caps override");
     }
 
     #[test]

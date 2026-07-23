@@ -8,7 +8,6 @@ pub(crate) mod kdl_support;
 pub mod magisk;
 pub mod mapping;
 pub mod model;
-pub(crate) mod output;
 pub mod proto;
 pub(crate) mod raw_nr;
 pub mod report;

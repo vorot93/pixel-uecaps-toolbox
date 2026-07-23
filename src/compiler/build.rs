@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     atomic::write_bytes_atomic,
-    magisk::{ModuleEntry, build_replacement_module, validate_module_basename},
+    magisk::{ModuleEntry, replacement_module, validate_module_basename},
     mapping::{MappingEntry, MappingRoot, Plmn, encode_root_verified},
     model::{CapabilityLayout, PhoneModel, known_model_codes, phone_model},
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
@@ -61,7 +61,7 @@ fn write_module(
         .map(|file| (file.basename, file.bytes))
         .collect::<Vec<ModuleEntry>>();
     let default_name = format!("Pixel UE-caps: {}", model.code);
-    let zip = build_replacement_module(&inputs, name.unwrap_or(&default_name))?;
+    let zip = replacement_module(&inputs, name.unwrap_or(&default_name))?;
     write_bytes_atomic(out, &zip)?;
     Ok(0)
 }
