@@ -1,7 +1,7 @@
 //! Folder-wide consistency check (`check`).
 
 use super::{binarypb_names, read_ue_caps};
-use crate::{mapping::load_mapping_report, model::*, proto::UeCaps};
+use crate::{mapping::load_mapping_report, model::*, outcome::Outcome, proto::UeCaps};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -41,7 +41,7 @@ fn alt_tier_header() -> String {
 // --------------------------------------------------------------------------- //
 //  Folder-wide consistency check                                               //
 // --------------------------------------------------------------------------- //
-pub fn check_folder(dir: &Path) -> anyhow::Result<i32> {
+pub fn check_folder(dir: &Path) -> anyhow::Result<Outcome> {
     let filenames = binarypb_names(dir)?;
 
     let legend = load_mapping_report(dir);
@@ -262,12 +262,13 @@ pub fn check_folder(dir: &Path) -> anyhow::Result<i32> {
         }
     );
 
-    if anomalies.is_empty() { Ok(0) } else { Ok(1) }
+    Ok(Outcome::from(!anomalies.is_empty()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::Outcome;
 
     #[test]
     fn headers_derive_counts_and_fingerprints_from_the_model() {
@@ -309,7 +310,8 @@ mod tests {
         let code = check_folder(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(
-            code, 1,
+            code,
+            Outcome::Findings,
             "a corrupted legend must not audit as clean (exit 0)"
         );
     }
@@ -365,7 +367,8 @@ mod tests {
         let code = check_folder(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
-            code, 1,
+            code,
+            Outcome::Findings,
             "a carrier with mixed-tier fingerprints must not audit as clean (exit 0)"
         );
     }

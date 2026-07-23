@@ -15,6 +15,7 @@ use crate::{
     magisk::{ModuleEntry, replacement_module, validate_module_basename},
     mapping::{MappingEntry, MappingRoot, Plmn, encode_root_verified},
     model::{CapabilityLayout, PhoneModel, known_model_codes, phone_model},
+    outcome::Outcome,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
 
@@ -28,7 +29,7 @@ pub fn provision(
     source_dir: &Path,
     out: &Path,
     name: Option<&str>,
-) -> anyhow::Result<i32> {
+) -> anyhow::Result<Outcome> {
     let (model, files) = load_and_generate(source_dir, model_code)?;
     write_module(model, files, out, name)
 }
@@ -43,7 +44,7 @@ pub fn provision_from_sources(
     model_code: &str,
     out: &Path,
     name: Option<&str>,
-) -> anyhow::Result<i32> {
+) -> anyhow::Result<Outcome> {
     let model = resolve_model(model_code)?;
     let files = generate_files(sources, model)?;
     write_module(model, files, out, name)
@@ -55,7 +56,7 @@ fn write_module(
     files: Vec<GeneratedFile>,
     out: &Path,
     name: Option<&str>,
-) -> anyhow::Result<i32> {
+) -> anyhow::Result<Outcome> {
     let inputs = files
         .into_iter()
         .map(|file| (file.basename, file.bytes))
@@ -63,7 +64,7 @@ fn write_module(
     let default_name = format!("Pixel UE-caps: {}", model.code);
     let zip = replacement_module(&inputs, name.unwrap_or(&default_name))?;
     write_bytes_atomic(out, &zip)?;
-    Ok(0)
+    Ok(Outcome::Clean)
 }
 
 /// Read and strictly validate both normalized source documents.
@@ -260,6 +261,7 @@ mod tests {
             test_support::{MiniCorpus, REGISTERED_ANCHOR},
         },
         model::{known_model_codes, phone_model},
+        outcome::Outcome,
         proto::PlmnMap,
         raw_nr::SubBlockKind,
         report::combos::build_combos_with_bitmasks,
@@ -939,7 +941,10 @@ mod tests {
         write_sources(&source);
         let output = temp.path().join("module.zip");
 
-        assert_eq!(provision(TARGET_MODEL, &source, &output, None).unwrap(), 0);
+        assert_eq!(
+            provision(TARGET_MODEL, &source, &output, None).unwrap(),
+            Outcome::Clean
+        );
 
         let bytes = fs::read(&output).unwrap();
         let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();

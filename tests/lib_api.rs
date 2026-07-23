@@ -6,11 +6,16 @@ use pixel_uecaps_toolbox::model::{
 use std::path::Path;
 
 #[test]
-fn lib_exposes_folder_compiler_entry_points() {
-    let _: fn(&Path, &Path, &Path) -> anyhow::Result<i32> =
+fn lib_exposes_outcome_instead_of_raw_exit_codes() {
+    use pixel_uecaps_toolbox::outcome::Outcome;
+    let _: fn(&Path, &Path, &Path) -> anyhow::Result<Outcome> =
         pixel_uecaps_toolbox::compiler::decompose;
-    let _: fn(&str, &Path, &Path, Option<&str>) -> anyhow::Result<i32> =
+    let _: fn(&str, &Path, &Path, Option<&str>) -> anyhow::Result<Outcome> =
         pixel_uecaps_toolbox::compiler::provision;
+    // The three outcomes map onto the historical exit codes 0 / 1 / 2.
+    assert_eq!(Outcome::Clean as u8, 0);
+    assert_eq!(Outcome::Findings as u8, 1);
+    assert_eq!(Outcome::Rejected as u8, 2);
 }
 
 #[test]

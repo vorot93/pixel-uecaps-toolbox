@@ -1,7 +1,10 @@
 //! Carrier × profile matrix as CSV (`matrix`).
 
 use super::binarypb_names;
-use crate::model::{PROFILES, Parsed, Profile, matching_anchors, parse_name};
+use crate::{
+    model::{PROFILES, Parsed, Profile, matching_anchors, parse_name},
+    outcome::Outcome,
+};
 use anyhow::Context;
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -55,7 +58,7 @@ fn build_csv(
 
 /// `matrix [DIR] [-o FILE]`: scan `dir` and emit the carrier × profile CSV to
 /// `out` (a file) or stdout.
-pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<i32> {
+pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
     let names = binarypb_names(dir)?;
 
     let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
@@ -100,7 +103,7 @@ pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<i32> {
         }
         None => print!("{csv}"),
     }
-    Ok(i32::from(collisions > 0))
+    Ok((collisions > 0).into())
 }
 
 #[cfg(test)]
@@ -173,7 +176,11 @@ mod tests {
         let code = matrix(&dir, Some(&out)).unwrap();
         let csv = std::fs::read_to_string(&out).unwrap();
         std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(code, 1, "a (carrier, anchor) collision must exit 1:\n{csv}");
+        assert_eq!(
+            code,
+            Outcome::Findings,
+            "a (carrier, anchor) collision must exit 1:\n{csv}"
+        );
         assert!(
             csv.contains("3347 | 6694"),
             "both colliding numbers must appear in the cell:\n{csv}"

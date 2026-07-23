@@ -1,7 +1,10 @@
 //! `compare`: diff the band combinations of two capability files.
 
 use super::combos::{Combo, cc_component_label, combo_key, fmt_cc_features};
-use crate::model::{family_short, fp_info, identify_profile, tier_short};
+use crate::{
+    model::{family_short, fp_info, identify_profile, tier_short},
+    outcome::Outcome,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
@@ -252,14 +255,14 @@ fn load(path: &Path, label: char) -> anyhow::Result<(Vec<Combo>, String)> {
 }
 
 /// `compare`: diff the band combinations of two capability files (stdin not used).
-pub fn compare(a: &Path, b: &Path, full: bool, show_common: bool) -> anyhow::Result<i32> {
+pub fn compare(a: &Path, b: &Path, full: bool, show_common: bool) -> anyhow::Result<Outcome> {
     let (combos_a, header_a) = load(a, 'A')?;
     let (combos_b, header_b) = load(b, 'B')?;
     let diff = diff_combos(&combos_a, &combos_b);
     println!("{header_a}");
     println!("{header_b}");
     print!("{}", render_diff_body(&diff, full, show_common));
-    Ok(i32::from(diff.has_differences()))
+    Ok(diff.has_differences().into())
 }
 
 #[cfg(test)]

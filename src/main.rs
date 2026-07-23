@@ -1,7 +1,7 @@
 //! pixel-uecaps-toolbox — inspect and audit Google Pixel UE-capabilities files, and compile a
 //! complete offline `uecapconfig` folder into a flashable replacement module.
 
-use pixel_uecaps_toolbox::{compiler, report};
+use pixel_uecaps_toolbox::{compiler, outcome::Outcome, report};
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
@@ -77,7 +77,7 @@ enum Cmd {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(2)),
+        Ok(outcome) => outcome.into(),
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::from(2)
@@ -85,12 +85,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> anyhow::Result<i32> {
+fn run() -> anyhow::Result<Outcome> {
     Cli::parse().cmd.run()
 }
 
 impl Cmd {
-    fn run(self) -> anyhow::Result<i32> {
+    fn run(self) -> anyhow::Result<Outcome> {
         match self {
             Self::Decompose {
                 bitmask,

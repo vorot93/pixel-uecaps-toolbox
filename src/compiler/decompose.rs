@@ -19,6 +19,7 @@ use crate::{
     magisk::validate_module_basename,
     mapping::{map_to_root, root_to_map},
     model::{lte_model_codes, profile_model_codes},
+    outcome::Outcome,
     proto::{Carrier, PlmnMap},
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
@@ -133,7 +134,11 @@ pub(crate) fn decode_documents(
 
 /// Decompose both required folders and atomically replace the two canonical source documents.
 /// Validation, encoding, and self-verification finish before the output directory is created.
-pub fn decompose(bitmask_dir: &Path, profiled_dir: &Path, out_dir: &Path) -> anyhow::Result<i32> {
+pub fn decompose(
+    bitmask_dir: &Path,
+    profiled_dir: &Path,
+    out_dir: &Path,
+) -> anyhow::Result<Outcome> {
     let (_nr, _lte, nr_text, lte_text) = decode_documents(bitmask_dir, profiled_dir)?;
     let nr_bytes = nr_text.into_bytes();
     let lte_bytes = lte_text.into_bytes();
@@ -162,7 +167,7 @@ pub fn decompose(bitmask_dir: &Path, profiled_dir: &Path, out_dir: &Path) -> any
     })?;
     prepared_nr.persist()?;
     prepared_lte.persist()?;
-    Ok(0)
+    Ok(Outcome::Clean)
 }
 
 fn classify_bitmask_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<BitmaskInputName>>> {
@@ -468,6 +473,7 @@ mod tests {
                 make_lte_encoding_noncanonical, replace_lte, replace_mapping, replace_nr,
             },
         },
+        outcome::Outcome,
         proto::{
             Carrier, ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
             combo_group::ComboHeader,
@@ -622,11 +628,11 @@ mod tests {
         let second_out = second.path().join("out");
         assert_eq!(
             decompose(&first_bitmask, &first_profiled, &first_out).unwrap(),
-            0
+            Outcome::Clean
         );
         assert_eq!(
             decompose(&second_bitmask, &second_profiled, &second_out).unwrap(),
-            0
+            Outcome::Clean
         );
         assert_eq!(
             fs::read(first_out.join("nr.kdl")).unwrap(),
@@ -654,7 +660,10 @@ mod tests {
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
         let out = temp.path().join("source");
 
-        assert_eq!(decompose(&bitmask, &profiled, &out).unwrap(), 0);
+        assert_eq!(
+            decompose(&bitmask, &profiled, &out).unwrap(),
+            Outcome::Clean
+        );
 
         let mut names = fs::read_dir(&out)
             .unwrap()
@@ -731,7 +740,7 @@ mod tests {
 
         assert_eq!(
             decompose(&bitmask, &profiled, &temp.path().join("out")).unwrap(),
-            0
+            Outcome::Clean
         );
     }
 

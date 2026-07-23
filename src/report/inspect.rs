@@ -5,6 +5,7 @@ use crate::{
     factor::{factor_display, gcd},
     mapping::load_mapping,
     model::*,
+    outcome::Outcome,
     report::combos::{build_combos, print_combos},
 };
 use prost::Message;
@@ -63,7 +64,7 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> (u64, usize) {
 // --------------------------------------------------------------------------- //
 //  Single-file analysis                                                        //
 // --------------------------------------------------------------------------- //
-pub fn inspect(path: &Path, full: bool) -> anyhow::Result<i32> {
+pub fn inspect(path: &Path, full: bool) -> anyhow::Result<Outcome> {
     let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     let dir: PathBuf = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -73,18 +74,21 @@ pub fn inspect(path: &Path, full: bool) -> anyhow::Result<i32> {
     Ok(match parse_name(base) {
         Parsed::Mapping => {
             inspect_mapping(&dir);
-            0
+            Outcome::Clean
         }
-        Parsed::Lte(number) => inspect_lte(path, number, full),
+        Parsed::Lte(number) => {
+            inspect_lte(path, number, full);
+            Outcome::Clean
+        }
         Parsed::Carrier { carrier, number } => inspect_carrier(path, &dir, &carrier, number, full),
         Parsed::Other => {
             eprintln!("Not a recognised uecaps filename: {base}");
-            2
+            Outcome::Rejected
         }
     })
 }
 
-fn inspect_lte(path: &Path, number: u64, full: bool) -> i32 {
+fn inspect_lte(path: &Path, number: u64, full: bool) {
     println!("LTE-only fallback config\n");
 
     let caps = std::fs::read(path)
@@ -124,7 +128,6 @@ fn inspect_lte(path: &Path, number: u64, full: bool) -> i32 {
         Some(c) => super::lte::print_lte_combos(c, full),
         None => println!("LTE band combinations: (file not readable)"),
     }
-    0
 }
 
 /// Carrier-config names that are regional-default / fallback configs (legend-absent by
@@ -140,7 +143,7 @@ fn is_regional_default(carrier: &str) -> bool {
     REGIONAL_DEFAULT_CARRIERS.contains(&carrier)
 }
 
-fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bool) -> i32 {
+fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bool) -> Outcome {
     println!("Carrier UE-capability profile\n");
 
     let mapping = load_mapping(dir);
@@ -190,7 +193,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
 
     let caps = read_ue_caps(path);
     let anchors = matching_anchors(number);
-    let mut ret = 0;
+    let mut outcome = Outcome::Clean;
     if anchors.len() != 1 {
         let why = if anchors.is_empty() {
             "no anchor prime divides the number".to_string()
@@ -203,7 +206,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
             )
         };
         println!("SKU profile  : UNRECOGNISED ({why})");
-        ret = 1;
+        outcome = Outcome::Findings;
     } else {
         let profile = anchors[0];
         let fp = caps.as_ref().map(|c| c.version);
@@ -256,10 +259,10 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
         Some(c) => print_combos(&build_combos(c), full),
         None => println!("Band combinations: (file not readable)"),
     }
-    ret
+    outcome
 }
 
-fn inspect_mapping(dir: &Path) -> i32 {
+fn inspect_mapping(dir: &Path) {
     let mapping = load_mapping(dir);
     println!("File type     : PLMN -> carrier legend (not a capability file)");
     println!("Carriers      : {}", mapping.len());
@@ -285,7 +288,6 @@ fn inspect_mapping(dir: &Path) -> i32 {
             );
         }
     }
-    0
 }
 
 /// The text after "SKU profile  : " — anchor id, [family/tier], and the known model (if any).

@@ -1,10 +1,10 @@
 //! Data-independent runtime sanity checks (`self-test`).
 
-use crate::{factor::factorize, model::*, proto::UeCaps};
+use crate::{factor::factorize, model::*, outcome::Outcome, proto::UeCaps};
 use pixel_bands::PIXEL_BANDS;
 use prost::Message;
 
-pub fn self_test() -> anyhow::Result<i32> {
+pub fn self_test() -> anyhow::Result<Outcome> {
     let mut ok = true;
     let mut check = |desc: &str, pass: bool| {
         println!("  [{}] {desc}", if pass { "ok  " } else { "FAIL" });
@@ -96,13 +96,13 @@ pub fn self_test() -> anyhow::Result<i32> {
             "SOME TESTS FAILED"
         }
     );
-    Ok(i32::from(!ok))
+    Ok((!ok).into())
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn runtime_self_test_passes() {
-        assert_eq!(super::self_test().unwrap(), 0);
+        assert_eq!(super::self_test().unwrap(), crate::outcome::Outcome::Clean);
     }
 }
