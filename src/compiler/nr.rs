@@ -19,7 +19,7 @@ use crate::{
     model::{PROFILES, Profile, Tier, fp_info, matching_anchors, profile_model_codes},
     proto::{
         ComboGroup, UeCaps,
-        combo_group::{Combo, ComboHeader},
+        combo_group::{Combo, ComboHeader, combo::SubBlock as ProtoSubBlock},
     },
     raw_nr::{RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
     report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
@@ -282,6 +282,65 @@ fn verify_compact_feature_list<T>(
     Ok(())
 }
 
+/// Confirms every sub-block's resolved per-CC selector fully references the file's compact
+/// DL/UL feature catalogs exactly once each (no unused or missing record) — both directions,
+/// since a per-CC selector references only its own direction's catalog.
+fn verify_compact_feature_lists(
+    decoded: &UeCaps,
+    components: &[&ProtoSubBlock],
+    basename: &str,
+) -> anyhow::Result<()> {
+    verify_compact_feature_list(
+        &decoded.dl_feature_per_cc_list,
+        components.iter().map(|component| {
+            (
+                component.band,
+                component.dl_bw_class,
+                component.dl_feature_per_cc_ids.clone(),
+            )
+        }),
+        "DL",
+        basename,
+    )?;
+    verify_compact_feature_list(
+        &decoded.ul_feature_per_cc_list,
+        components.iter().map(|component| {
+            (
+                component.band,
+                component.ul_bw_class,
+                component.ul_feature_per_cc_ids.clone(),
+            )
+        }),
+        "UL",
+        basename,
+    )?;
+    Ok(())
+}
+
+/// Confirms the generated file's canonical payload set exactly matches what generation
+/// intended, order-independent (both sides are sorted before comparison) — the last line of
+/// defense against a generation bug that emits the wrong SET of payloads even when every
+/// individual payload otherwise self-verifies.
+fn verify_canonical_payloads(
+    decoded: &UeCaps,
+    layout: InputLayout,
+    basename: &str,
+    expected_payloads: &[&RawNrPayload],
+) -> anyhow::Result<()> {
+    let actual = canonical_payloads(decoded, layout, basename)?;
+    let actual: Vec<_> = actual.iter().map(RawNrPayloadKey::from).collect();
+    let mut expected: Vec<_> = expected_payloads
+        .iter()
+        .map(|payload| RawNrPayloadKey::from(*payload))
+        .collect();
+    expected.sort_unstable();
+    ensure!(
+        actual == expected,
+        "generated NR canonical payload self-check failed for {basename}"
+    );
+    Ok(())
+}
+
 fn verify_generated_file(
     basename: &str,
     bytes: &[u8],
@@ -319,41 +378,8 @@ fn verify_generated_file(
         .flat_map(|group| &group.combo)
         .flat_map(|combo| &combo.sub_blocks)
         .collect::<Vec<_>>();
-    verify_compact_feature_list(
-        &decoded.dl_feature_per_cc_list,
-        components.iter().map(|component| {
-            (
-                component.band,
-                component.dl_bw_class,
-                component.dl_feature_per_cc_ids.clone(),
-            )
-        }),
-        "DL",
-        basename,
-    )?;
-    verify_compact_feature_list(
-        &decoded.ul_feature_per_cc_list,
-        components.iter().map(|component| {
-            (
-                component.band,
-                component.ul_bw_class,
-                component.ul_feature_per_cc_ids.clone(),
-            )
-        }),
-        "UL",
-        basename,
-    )?;
-    let actual = canonical_payloads(&decoded, layout, basename)?;
-    let actual: Vec<_> = actual.iter().map(RawNrPayloadKey::from).collect();
-    let mut expected: Vec<_> = expected_payloads
-        .iter()
-        .map(|payload| RawNrPayloadKey::from(*payload))
-        .collect();
-    expected.sort_unstable();
-    ensure!(
-        actual == expected,
-        "generated NR canonical payload self-check failed for {basename}"
-    );
+    verify_compact_feature_lists(&decoded, &components, basename)?;
+    verify_canonical_payloads(&decoded, layout, basename, expected_payloads)?;
     Ok(())
 }
 
@@ -540,7 +566,7 @@ fn exact_multiplier(
 
 /// Resolve one profile's applicable SKUs, record them in the applicability domain, and fold
 /// every one of `caps`'s canonical payloads into the ingest under those SKUs.
-fn fold_profiled_payloads(
+fn ingest_profile(
     ingest: &mut NrIngest,
     carrier: &str,
     profile: &Profile,
@@ -607,7 +633,7 @@ fn ingest_profiled_carrier(
             caps,
         } = file;
         let multiplier = exact_multiplier(carrier, profile, number, signature)?;
-        fold_profiled_payloads(ingest, carrier, profile, &caps)?;
+        ingest_profile(ingest, carrier, profile, &caps)?;
 
         profiles.insert(
             profile.anchor.to_string(),
@@ -719,11 +745,17 @@ enum InputLayout {
     Profiled,
 }
 
-fn canonical_payloads(
-    caps: &UeCaps,
-    layout: InputLayout,
-    carrier: &str,
-) -> anyhow::Result<Vec<RawNrPayload>> {
+/// Rejects two malformed capture shapes before any combo is ingested: an empty combo group
+/// whose header is still value-bearing (nothing left to attach it to once the group has no
+/// combos), and any component whose raw protobuf band falls outside the plain E-UTRA or
+/// shifted-NR range `NR_BAND_OFFSET` encodes (a plain band, `1..NR_BAND_OFFSET`, or a raw NR
+/// band, `NR_BAND_OFFSET+1 ..= 2*NR_BAND_OFFSET-1`, i.e. plain `1..offset` shifted up). This
+/// gate runs BEFORE the payload ingest in `canonical_payloads` so an invalid band (raw
+/// `NR_BAND_OFFSET` / n0, 0, or out of range) is rejected here with a clear message — derived
+/// from `NR_BAND_OFFSET` rather than bare 10_000/20_000 literals (C-bandlit). E6's direct
+/// conversion no longer re-parses a band label, so the old `from_sub_block`/`raw_band` panic
+/// surface (R3) is gone regardless.
+fn validate_raw_bands(caps: &UeCaps, carrier: &str) -> anyhow::Result<()> {
     for (group_index, group) in caps.combo_groups.iter().enumerate() {
         ensure!(
             !group.combo.is_empty()
@@ -737,13 +769,6 @@ fn canonical_payloads(
         for (combo_index, combo) in group.combo.iter().enumerate() {
             for (component_index, component) in combo.sub_blocks.iter().enumerate() {
                 let band = component.band;
-                // A valid raw protobuf band is a plain E-UTRA band (`1..NR_BAND_OFFSET`) or a
-                // raw NR band (`NR_BAND_OFFSET+1 ..= 2*NR_BAND_OFFSET-1`, i.e. plain 1..offset
-                // shifted up). Derived from `NR_BAND_OFFSET` rather than bare 10_000/20_000
-                // literals (C-bandlit). This gate stays BEFORE the payload ingest below so an
-                // invalid band (raw `NR_BAND_OFFSET` / n0, 0, or out of range) is rejected here
-                // with a clear message. E6's direct conversion no longer re-parses a band label,
-                // so the old `from_sub_block`/`raw_band` panic surface (R3) is gone regardless.
                 ensure!(
                     (1..NR_BAND_OFFSET).contains(&band)
                         || ((NR_BAND_OFFSET + 1)..(2 * NR_BAND_OFFSET)).contains(&band),
@@ -755,6 +780,15 @@ fn canonical_payloads(
             }
         }
     }
+    Ok(())
+}
+
+fn canonical_payloads(
+    caps: &UeCaps,
+    layout: InputLayout,
+    carrier: &str,
+) -> anyhow::Result<Vec<RawNrPayload>> {
+    validate_raw_bands(caps, carrier)?;
 
     let mut seen = BTreeSet::new();
     let mut payloads = Vec::new();
