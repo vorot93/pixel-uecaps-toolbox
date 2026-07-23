@@ -2,7 +2,6 @@
 
 use crate::proto::{LteCaps, PlmnMap, UeCaps};
 use anyhow::{Context, ensure};
-use prost::Message;
 
 /// Top-level protobuf message encoded by a capability or mapping file.
 #[derive(Clone, Copy, Debug)]
@@ -217,22 +216,29 @@ pub(crate) fn ensure_modeled(bytes: &[u8], root: RootMessage) -> anyhow::Result<
     scan(bytes, root.modeled())
 }
 
+/// Strictly validate against `root`, then decode. The shared body behind the typed helpers below.
+fn decode_checked<T: prost::Message + Default>(
+    bytes: &[u8],
+    label: &str,
+    root: RootMessage,
+) -> anyhow::Result<T> {
+    ensure_modeled(bytes, root).with_context(|| format!("validating {label}"))?;
+    T::decode(bytes).with_context(|| format!("decoding {label}"))
+}
+
 /// Strictly validate and decode an NR carrier capability message.
 pub(crate) fn decode_uecaps(bytes: &[u8], label: &str) -> anyhow::Result<UeCaps> {
-    ensure_modeled(bytes, RootMessage::UeCaps).with_context(|| format!("validating {label}"))?;
-    UeCaps::decode(bytes).with_context(|| format!("decoding {label}"))
+    decode_checked(bytes, label, RootMessage::UeCaps)
 }
 
 /// Strictly validate and decode an LTE fallback capability message.
 pub(crate) fn decode_lte_caps(bytes: &[u8], label: &str) -> anyhow::Result<LteCaps> {
-    ensure_modeled(bytes, RootMessage::LteCaps).with_context(|| format!("validating {label}"))?;
-    LteCaps::decode(bytes).with_context(|| format!("decoding {label}"))
+    decode_checked(bytes, label, RootMessage::LteCaps)
 }
 
 /// Strictly validate and decode a PLMN mapping message.
 pub(crate) fn decode_plmn_map(bytes: &[u8], label: &str) -> anyhow::Result<PlmnMap> {
-    ensure_modeled(bytes, RootMessage::PlmnMap).with_context(|| format!("validating {label}"))?;
-    PlmnMap::decode(bytes).with_context(|| format!("decoding {label}"))
+    decode_checked(bytes, label, RootMessage::PlmnMap)
 }
 
 #[cfg(test)]
