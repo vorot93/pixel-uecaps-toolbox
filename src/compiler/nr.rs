@@ -687,6 +687,13 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
     })
 }
 
+/// Assemble both folder layouts into one normalized NR document, in four phases: canonicalize
+/// the legend, ingest every legacy file, group the profiled files by carrier, then ingest each
+/// carrier's group. [`NrIngest`] carries the accumulation across all four.
+///
+/// **Phase order is load-bearing.** Legacy files are fully ingested before any profiled group is
+/// touched, and the legend is merged only in [`finish_nr_document`] — both are what make the
+/// emitted document byte-stable across runs.
 pub(crate) fn ingest_nr(
     legacy: Vec<LegacyNrFile>,
     profiled: Vec<ProfiledNrFile>,
