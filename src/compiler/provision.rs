@@ -204,36 +204,48 @@ enum VerificationLayout {
     Profiled { lte_basename: String },
 }
 
+/// Verifies one legacy-layout generated file: its basename must classify as a bitmask carrier
+/// (rejecting a stray mapping/LTE-shaped name), and its bytes must decode as a valid
+/// `.binarypb`.
+fn verify_bitmask_file(file: &GeneratedFile) -> anyhow::Result<()> {
+    validate_bitmask_carrier_basename(&file.basename).with_context(|| {
+        format!(
+            "validating generated legacy NR basename `{}`",
+            file.basename
+        )
+    })?;
+    decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
+    Ok(())
+}
+
+/// Verifies one profiled-layout NR carrier file (the mapping/LTE basenames are matched before
+/// this case and verified inline by the caller): its basename must classify as a profiled
+/// carrier, and its bytes must decode as a valid `.binarypb`.
+fn verify_profiled_nr_file(file: &GeneratedFile) -> anyhow::Result<()> {
+    validate_profiled_carrier_basename(&file.basename).with_context(|| {
+        format!(
+            "validating generated profiled NR basename `{}`",
+            file.basename
+        )
+    })?;
+    decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
+    Ok(())
+}
+
 fn verify_generated_files(
     files: &[GeneratedFile],
     layout: &VerificationLayout,
 ) -> anyhow::Result<()> {
     for file in files {
         match layout {
-            VerificationLayout::Bitmask => {
-                validate_bitmask_carrier_basename(&file.basename).with_context(|| {
-                    format!(
-                        "validating generated legacy NR basename `{}`",
-                        file.basename
-                    )
-                })?;
-                decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
-            }
+            VerificationLayout::Bitmask => verify_bitmask_file(file)?,
             VerificationLayout::Profiled { .. } if file.basename == MAPPING_BASENAME => {
                 decode_plmn_map(&file.bytes, &format!("generated {}", file.basename))?;
             }
             VerificationLayout::Profiled { lte_basename } if file.basename == *lte_basename => {
                 decode_lte_caps(&file.bytes, &format!("generated {}", file.basename))?;
             }
-            VerificationLayout::Profiled { .. } => {
-                validate_profiled_carrier_basename(&file.basename).with_context(|| {
-                    format!(
-                        "validating generated profiled NR basename `{}`",
-                        file.basename
-                    )
-                })?;
-                decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
-            }
+            VerificationLayout::Profiled { .. } => verify_profiled_nr_file(file)?,
         }
     }
     Ok(())
