@@ -2,7 +2,7 @@
 name = "pixel-uecaps-toolbox"
 version = "1.0.0"
 edition = "2024"
-description = "Decode and validate Google Pixel UE-capabilities (.binarypb) files"
+description = "Inspect, audit, and compile Google Pixel UE-capabilities (.binarypb) files"
 authors = ["Artem Vorotnikov <artem@vorotnikov.me>"]
 license = "Apache-2.0"
 categories = ["command-line-utilities"]

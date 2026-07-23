@@ -1,11 +1,12 @@
-//! pixel-uecaps-toolbox — decode and validate Google Pixel UE-capabilities files.
+//! pixel-uecaps-toolbox — inspect and audit Google Pixel UE-capabilities files, and compile a
+//! complete offline `uecapconfig` folder into a flashable replacement module.
 
 use pixel_uecaps_toolbox::{compiler, report};
 
 use clap::{Parser, Subcommand};
 use std::{path::PathBuf, process::ExitCode};
 
-/// Decode/validate Pixel UE-capabilities `.binarypb` files.
+/// Inspect, audit, and compile Pixel UE-capabilities `.binarypb` files.
 #[derive(Parser)]
 #[command(name = "pixel-uecaps-toolbox", version, about)]
 struct Cli {
