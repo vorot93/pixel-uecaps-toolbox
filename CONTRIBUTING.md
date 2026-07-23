@@ -35,9 +35,9 @@ discretion. Don't pin a baseline SHA in the docs; it self-stales on the next com
 
 - **Rust edition 2024**, stable toolchain (uses `let`-chains — see [Gotchas](#gotchas)).
 - **Codegen is pure Rust, at build time.** `build.rs` runs `protox::compile(["proto/ue_caps.proto"], ["proto"])` to a `FileDescriptorSet`, then `prost_build::Config::new().compile_fds(...)` emits Rust into `OUT_DIR`, surfaced through `src/proto.rs`. No system `protoc` is needed. `build.rs` emits `cargo:rerun-if-changed=proto/ue_caps.proto`, so **editing the proto requires a rebuild before the new types exist** — a stale `cargo check` against not-yet-generated fields will mislead you.
-- **`pixel-bands` is pinned by an explicit `rev` in `Cargo.toml`** (`{ git = "https://github.com/vorot93/pixel-bands", rev = "…" }`). The `rev` alone fixes the exact upstream commit, so a fresh clone or CI run builds identical `PIXEL_BANDS` data and a regression is bisectable; bumping the dependency is editing the `rev`. **`Cargo.lock` is gitignored**, so other crates.io deps resolve to the latest semver-compatible versions per build. A first build needs network access unless that revision is cached. It provides `PIXEL_BANDS: phf::Map<&str, Bands>` — compile-time band data keyed by Google 5-char model code — consumed by `PHONE_MODELS` and by provision's band-compatibility filtering.
+- **`pixel-bands` is pinned by an explicit `rev` in `Cargo.toml`** (`{ git = "https://github.com/vorot93/pixel-bands", rev = "…" }`). The `rev` alone fixes the exact upstream commit, so a fresh clone or CI run builds identical `PIXEL_BANDS` data and a regression is bisectable; bumping the dependency is editing the `rev`. **`Cargo.lock` is gitignored**, so other crates.io deps resolve to the latest semver-compatible versions per build. A first build needs network access unless that revision is cached. It provides `PIXEL_BANDS: phf::Map<&str, Bands>` — compile-time band data keyed by Google 5-char model code — consumed by `PHONE_MODELS` and by `report/selftest.rs`.
 - **Direct deps:** `thiserror`, `prost`, `num-prime`, `num-integer`, `clap` (derive), `csv`, `anyhow`, `zip` (`default-features=false`, `deflate`), `pixel-bands`, `tempfile`, `compact_str`, `kdl` (`default-features=false`, `span` feature only — the crate's `serde` feature is deliberately unused; see [Source format: KDL, hand-mapped](DESIGN.md#source-format-kdl-hand-mapped-not-serde)). **Build deps:** `prost-build`, `protox`. No `[lib]`/`[[bin]]`/`[features]` sections — targets are auto-detected. **`serde`/`serde_derive` and `toml` are deliberately absent**: every persisted/emitted format is hand-mapped KDL, so there is no serde consumer left. Don't reintroduce them.
-- **Pure-Rust build is a stated value.** Do not add a C-toolchain dependency (a C-compiled allocator like mimalloc/jemalloc, a native protobuf compiler, etc.) without surfacing the tradeoff first — a measured allocator win was deliberately reverted to keep the no-C-compiler build (see [Performance](#performance-dont-de-optimize)).
+- **Pure-Rust build is a stated value.** Do not add a C-toolchain dependency (a C-compiled allocator like mimalloc/jemalloc, a native protobuf compiler, etc.) without surfacing the tradeoff first — a measured allocator win was deliberately reverted to keep the no-C-compiler build (see [Performance](#performance-readability-first-then-re-optimize)).
 
 ## Tests & CI gates
 
@@ -56,7 +56,7 @@ a real legend file. Full-corpus compiler verification activates only when **both
 `UECAPS_BITMASK_CORPUS` and `UECAPS_PROFILED_CORPUS` point at their respective input
 directories; with either unset, that one test (`tests/compiler_corpus.rs`) prints a single
 skip note and returns. With both set, it compares two independently decomposed canonical
-sources, checks the observed LTE invariants, builds every registered `PHONE_MODELS` target,
+sources, checks the observed LTE invariants, provisions every registered `PHONE_MODELS` target,
 and inspects every generated NR file for fully referenced, strictly canonical compact
 feature catalogs and one-byte resolved selectors. A skipped pass validates only the guard:
 claim real-corpus coverage only from a run in which those assertions actually execute.
@@ -67,26 +67,57 @@ env UECAPS_BITMASK_CORPUS=/path/to/uecapconfig-bitmask \
     cargo test --release --test compiler_corpus
 ```
 
-## Performance: don't de-optimize
+## Performance: readability first, then re-optimize
 
-The corpus test is also the **perf-regression guard** for the compiler hot paths — every
-optimization below is byte-identical and guarded by it. The corpora are 89 bitmask-based
-carriers and ~1,390 profiled + 8 LTE carriers. **Do not de-optimize these:**
+**Policy (2026-07-23): readability outranks speed.** If a clearer expression costs performance,
+take it — the bar is a *large* readability gain, not any gain. This reverses the previous
+"don't de-optimize" rule. It is a **sequencing** decision, not an abandonment of performance: the
+speed is meant to come back, on top of the clearer code, without re-proceduralizing it.
 
-- **The selection algebra keys on interned integer ids, not strings.** `NrDomain::new` interns the domain's carriers and skus to dense `CarrierId`/`SkuId` (`u16`) **in sorted order** (an id's numeric order equals its value's `Ord`), so `NrRelation` (`BTreeSet<(CarrierId, SkuId)>`) and the domain sets do 4-byte integer set ops instead of 24-byte string compares, while `canonical_selection` de-interns back to string tokens in the exact canonical order. **The sorted-id assignment is load-bearing for byte-identity** — do not intern in insertion order, and do not revert these sets to `(String, Sku)`/`(CompactString, Sku)`. `Sku::Model` holds a `CompactString` (SSO/inline) for the same reason.
-- **`selected_payloads` reads a prebuilt inverted index, not a scan.** `ValidatedNr.selection_index` (`NrSelectionIndex`, a `HashMap<(CarrierId, SkuId), Vec<u32>>`) is built once in `validate_documents` and maps each interned target to the `combo` indices whose relation contains it, ascending. It replaced a per-target linear scan over every combo (the #1 leaf of a full-corpus `decompose`, since generation calls `selected_payloads` once per carrier per target). Ascending indices reproduce the old `combo.iter().filter(..)` order, so output is bit-identical. **The index points at `combo` positions** and is valid only while `combo` is unchanged: production sets both once (`canonicalize_sources` reads but never reorders `combo`); test combo surgery must go through `ValidatedNr::set_combos`, which rebuilds `features` and `selection_index` together. Do not revert to a per-combo scan.
-- **`decompose` validates twice, not three times.** `decode_documents` calls `validate_documents` on the ingest (canonicalize → `nr_text`), then `parse_sources` (the reparse validation boundary), then serializes the reparsed source **directly** via `ValidatedSources::to_kdl`. An earlier third `to_kdl(&validated.source)` re-validated an already-validated source purely to serialize it. The byte-idempotence assertion (`canonical == nr_text`) still runs and fails closed if canonicalization isn't a fixed point. Do not route decompose's final serialize back through the free `to_kdl` (now `#[cfg(test)]`) — that re-adds the third validate.
-- Also load-bearing and byte-identical: the `NrDomain` carrier/sku/row projection cache read by `NrRelation::{from_selection, canonical_selection}`; interning inputs once at the boundary (`NrDomain::{carrier_id, sku_id, probe, relation}`); the direct `RawNrPayload::from_proto_combo` ingest (not a report `Combo`/`SubBlock` DTO round-trip); and `sort_by_cached_key` at the deep-clone NR sort sites.
+**Record every trade.** A change that gives up speed must say what it gave up and roughly what it
+cost, in the commit body *and* in the ledger below. An unrecorded de-optimization is
+indistinguishable from an accident, and the re-optimization pass cannot act on it.
 
-**The KDL parser is the floor; measure a single `decompose`/`build`, not the corpus.** A leaf
-profile of one `build` is ~93% `load_sources` (parse + validate the ~19 MB `nr.kdl`), and
+**Three items below are NOT covered by that permission.** They govern **byte-identity**, not
+throughput; reverting them changes generated bytes, and the corpus test is what catches it:
+
+- **`NrDomain::new` interns carriers/skus in sorted order.** An id's numeric order equals its
+  value's `Ord`, so `canonical_selection` de-interns in the exact canonical order. Interning in
+  insertion order — or reverting the sets to `(String, Sku)`/`(CompactString, Sku)` — changes
+  canonical output order. (`Sku::Model` holds a `CompactString` for the *speed* reason; that part
+  is tradeable.)
+- **`NrSelectionIndex`'s combo indices are ascending.** The index itself may go; the ordering may
+  not — ascending indices reproduce the previous `combo.iter().filter(..)` order. The index also
+  points at `combo` positions and is valid only while `combo` is unchanged: test combo surgery
+  must go through `ValidatedNr::set_combos`, which rebuilds `features` and `selection_index`
+  together.
+- **`decompose` validates twice, not three times.** The two-validate structure carries the
+  byte-idempotence assertion (`canonical == nr_text`), which fails closed if canonicalization
+  isn't a fixed point. Do not route decompose's final serialize back through the free `to_kdl`
+  (now `#[cfg(test)]`) — that re-adds a third validate.
+
+**And one is a test-infrastructure cliff, not a micro-optimization.** Keep the `load_sources` +
+`provision_from_sources` split. Collapsing it into a per-model `provision()` loop reinstates an ×N
+re-parse of the ~19 MB source and takes the corpus test from **~35 s to ~426 s**. The corpus test
+is also fanned out with `rayon` (a `[dev-dependencies]` entry only, never in the shipped binary):
+the two byte-idempotence `decompose` calls run via `rayon::join` and the per-model provisions via
+`PHONE_MODELS.par_iter().for_each` over the shared immutable `&ValidatedSources`. Don't revert the
+loop to a serial `for` to "simplify" — the parallel form is the point.
+
+**Fair to trade for clarity:** the `BTreeSet`-vs-`HashSet` key choice, the `NrDomain`
+carrier/sku/row projection cache, boundary interning (`NrDomain::{carrier_id, sku_id, probe,
+relation}`), `sort_by_cached_key` at the deep-clone NR sort sites, and the direct
+`RawNrPayload::from_proto_combo` ingest (rather than a report `Combo`/`SubBlock` DTO round-trip).
+
+**The KDL parser is the floor; measure a single `decompose`/`provision`, not the corpus.** A leaf
+profile of one `provision` is ~93% `load_sources` (parse + validate the ~19 MB `nr.kdl`), and
 ~55% of that is the `kdl` v2 winnow parser: ~20% error/span machinery (`Recoverable` +
 `LocatingSlice` + `span` overhead, paid per token even on the happy path), ~13%
 whitespace/newline (proportional to document size), ~11% `Alt::choice`.
 `validate_documents` (the selection algebra) is ~8%. Two consequences:
 
-- **The corpus win was parsing once, not micro-optimizing the parser.** The test builds all `PHONE_MODELS` by calling `build()` per model, each re-reading + re-parsing the ~19 MB source; it now parses once via `load_sources` and generates each model with `build_from_sources(&ValidatedSources, …)` (both `pub`; `ValidatedSources` is an opaque handle), so per-model cost is the ~0.4 s generate+zip+write. `build()` stays the single-model wrapper over `load_sources` + `build_from_sources`. **Do not re-collapse this into a per-model `build()` loop** — that reinstates the ×N parse. The corpus test itself is fanned out with `rayon` (a `[dev-dependencies]` entry only, never in the shipped binary): the two byte-idempotence `decompose` calls run via `rayon::join` and the per-model builds via `PHONE_MODELS.par_iter().for_each` over the shared immutable `&ValidatedSources`. Don't revert the loop to a serial `for` to "simplify" — the parallel form is the point.
-- **The ~20% error/recovery machinery is not reachable via the `span` feature** (investigated + measured): `kdl` 6.7.1 has one parse path whose input is hardwired to `Recoverable<LocatingSlice<&str>>`, and `span` only gates whether nodes *store* a span — unused here (we read no `.span()`), and dropping it measured **zero** decompose delta. So there is no further product-parse lever inside `kdl` short of forking it or swapping the crate; treat a single `decompose`/`build`'s parse cost as effectively the crate's floor. That parse **is** the "serialization is a validation boundary" guarantee, so it can't be skipped.
+- **The corpus win was parsing once, not micro-optimizing the parser.** The test provisions all `PHONE_MODELS` by calling `provision()` per model, each re-reading + re-parsing the ~19 MB source; it now parses once via `load_sources` and generates each model with `provision_from_sources(&ValidatedSources, …)` (both `pub`; `ValidatedSources` is an opaque handle), so per-model cost is the ~0.4 s generate+zip+write. `provision()` stays the single-model wrapper over `load_sources` + `provision_from_sources`.
+- **The ~20% error/recovery machinery is not reachable via the `span` feature** (investigated + measured): `kdl` 6.7.1 has one parse path whose input is hardwired to `Recoverable<LocatingSlice<&str>>`, and `span` only gates whether nodes *store* a span — unused here (we read no `.span()`), and dropping it measured **zero** decompose delta. So there is no further product-parse lever inside `kdl` short of forking it or swapping the crate; treat a single `decompose`/`provision`'s parse cost as effectively the crate's floor. That parse **is** the "serialization is a validation boundary" guarantee, so it can't be skipped.
 
 **Rejected experiments — don't re-attempt without new evidence:**
 
@@ -98,8 +129,8 @@ whitespace/newline (proportional to document size), ~11% `Alt::choice`.
 **Method for a perf change.** To prove byte-identity *and* measure: capture golden `sha256`
 of `decompose`'s `nr.kdl`/`lte.kdl` (and one model's built zip) from the current tip; after the
 change, re-`decompose` the full corpus and diff the source hashes (isolates ingest/decode), and
-re-`build` one model from a *fixed* golden source and diff the zip hash (isolates
-generation). `build` is deterministic. A single `decompose` run's wall-clock drifts ±~1 s run-to-run
+re-`provision` one model from a *fixed* golden source and diff the zip hash (isolates
+generation). `provision` is deterministic. A single `decompose` run's wall-clock drifts ±~1 s run-to-run
 (CPU freq, page cache), so a lone before/after pair is unreliable below ~5%: build both
 binaries, run them **interleaved** (`for i in 1..5: time HEAD; time NEW`) and compare
 **minimums** (noise only adds time). Build the comparison HEAD binary via `git stash push` →
@@ -116,28 +147,56 @@ inclusive/`--children` call tree is unreliable: attribute by **leaf** function
 (`perf report --stdio --no-children`) or fold `perf script` stacks and bucket by a marker
 symbol.
 
+### Baseline (captured at the end of the strip-to-compiler removal phase)
+
+Measured on the real corpora (89 bitmask carriers; ~1,390 profiled + 8 LTE carriers): release
+build, on an otherwise-idle 24-core machine, min-of-*N* interleaved runs (`date +%s%N` and
+integer-millisecond arithmetic — neither `/usr/bin/time` nor `bc` is installed; see Method above):
+
+| Measurement | Value |
+| --- | --- |
+| `decompose` (single run, min-of-5) | 18463 ms |
+| `provision GUL82` (single run, min-of-5) | 5215 ms |
+| corpus test wall-clock (min-of-3) | 36242 ms |
+| `sha256 nr.kdl` | `e66178b987fdff7817afa16f891de599811ad5c776afe5171e39d55735e483a2` |
+| `sha256 lte.kdl` | `b0e14205bf834b0ebb49d5bc53dd9e0eceb6e64dcba4c535bb52557566e5b07f` |
+| `sha256` GUL82 module ZIP | `8370491be05da0148eb20865835762bb0ca8d2c2253550c3c6af23cd6f5ac8ff` |
+
+Structural baseline at this commit — functions over 60 lines / nested deeper than 4 / `bool`
+parameters: **`long=20 deep=16 bool_params=11`** (two of the 20 long functions,
+`model::mcc_country` and `report::selftest::self_test`, are pure data/check tables, not
+procedural sprawl, and stay exempt from a "shorten this" reading of the number).
+
+### Trade ledger
+
+Every readability change that measurably cost speed, newest first. Re-optimization works this list
+by measured cost. A trade that cost nothing measurable stays traded — the clearer code wins by
+default, and that outcome is recorded here too.
+
+| Change | Commit | What it gave up | Measured cost |
+| --- | --- | --- | --- |
+| _(none yet)_ | | | |
+
 ## Single-source helpers — call them, don't re-duplicate
 
-Every fact that used to be duplicated across the compiler↔patch↔report surfaces has one
-home. When you need one of these, **call the helper**; re-inlining it is exactly the drift
-that consolidation removed.
+Every fact that used to be duplicated across the compiler↔report surfaces (and the since-removed
+`patch`) has one home. When you need one of these, **call the helper**; re-inlining it is exactly
+the drift that consolidation removed.
 
-- **Band prefix (`n`/`B`).** `report::combos::band_label_for(is_nr, band)` is the source. `band_label(raw_band)` *infers* the kind from `NR_BAND_OFFSET`; every caller that already **knows** the kind (`RawSubBlock::band_label`, provision band-drop labels, `patch filter` LTE matching) calls `band_label_for` with its kind. **Do not** route a known-kind band through the inferring `band_label` — it would mislabel an out-of-range value (a stray LTE band ≥ offset would render as NR). This infer-vs-assert split is the subtle trap here. **Exception:** `report::lte` and `patch::show::render_lte` format `B` inline instead of calling `band_label_for` — both are statically single-kind (LTE-only), so no NR component can reach them. Don't "finish the dedup" by folding them in.
+- **Band prefix (`n`/`B`).** `report::combos::band_label_for(is_nr, band)` is the source. `band_label(raw_band)` *infers* the kind from `NR_BAND_OFFSET`; every caller that already **knows** the kind (`RawSubBlock::band_label` and `raw_nr`'s validation/guard messages, `compiler::features`'s LTE/NR labels) passes its kind. **Do not** route a known-kind band through the inferring `band_label` — it would mislabel an out-of-range value (a stray LTE band ≥ offset would render as NR). This infer-vs-assert split is the subtle trap here. **Exception:** `report::lte` formats `B` inline instead of calling `band_label_for` — it is statically single-kind (LTE-only), so no NR component can reach it. Don't "finish the dedup" by folding it in.
 - **Fingerprint ↔ (family, tier).** `model::FINGERPRINTS` is the table; `fp_info` (inverse), `fingerprint_for` (forward), `tier_fingerprints`, and the compiler's `modern_fingerprint` wrapper all derive from it.
 - **Per-tier profile counts (16/14).** `model::tier_profile_count` + `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its 16/14 from these.
-- **Selector-only-stays-unresolved check (1-based leading byte).** `report::combos::feature_index(ids, len)` — used by the compiler's generated-file self-verification (`verify_compact_feature_list`, `src/compiler/nr.rs`), its only caller, to confirm a raw selector-only array still does *not* resolve against a (possibly shrunk) list; **not** the real per-CC resolution path — that's `resolve_all(ids, list)` (also in `report::combos`), which resolves a whole direction's array all-or-nothing across every byte and is what the patch axis uses (`src/patch/build.rs`). `feature_index`'s first-byte check is sufficient here only because, by construction, a resolved reference's bytes are all-or-none catalog indices.
+- **Selector-only-stays-unresolved check (1-based leading byte).** `report::combos::feature_index(ids, len)` — used by the compiler's generated-file self-verification (`verify_compact_feature_list`, `src/compiler/nr.rs`), its only caller, to confirm a raw selector-only array still does *not* resolve against a (possibly shrunk) list; **not** the real per-CC resolution path — that's `resolve_all(ids, list)` (also in `report::combos`), which resolves a whole direction's array all-or-nothing across every byte. `feature_index`'s first-byte check is sufficient here only because, by construction, a resolved reference's bytes are all-or-none catalog indices.
 - **11-field DL/UL display projection.** `report::combos::SubBlock::from_raw_fields(...)`.
 - **`ComboHeader` combo header.** `raw_nr::RawNrPayload::header()`.
 - **Shortest-decimal `u64`.** `compiler::parse_shortest_u64`. **Exception:** `compiler::decompose::parse_filename_number` keeps its own two-step form on purpose — it needs a distinct, *tested* "does not fit u64" vs "must be shortest decimal" message the `Option` primitive can't express. Don't "finish the dedup" by folding it in.
-- **Carrier NR-file selection.** `provision::select_nr_file` (both `select_files` and the CLI `run` path); it owns the nonzero-`NUMBER` guard and the sort.
-- **Band-drop retain.** `provision::retain_compatible` (NR/LTE twins).
-- **File-or-stdout output.** `output::write_out(bytes, out, what)` (`patch`/`filter`/`magisk`/`provision`); `what` (`"module"`/`"patch"`/`""`) selects the error-message noun.
+- **File-or-stdout output.** `report::matrix` is now the only file-or-stdout site and keeps its own inline `match` on `Option<&Path>`. There is no shared helper any more (`output::write_out` had one caller left and went with `magisk`); don't reintroduce one for a single site.
 - **Carrier-name validation.** `compiler::schema::validate_carrier_name`.
 
-Historically, correctness findings clustered on the older single-file surfaces
-(`patch`/`mapping`/`provision`/`report`) while the compiler (`src/compiler/**`, `src/wire.rs`)
-stayed clean. When fixing one, prefer lifting the compiler's strict discipline into the
-shared layer over patching each call site.
+Historically, correctness findings clustered on the single-file editing surfaces while the
+compiler (`src/compiler/**`, `src/wire.rs`) stayed clean. Those surfaces have been removed; the
+compiler's strict discipline is now the crate's baseline, and a new shared helper should meet it
+rather than the old report-side leniency.
 
 ## Settled — do not re-investigate without new evidence
 
@@ -150,10 +209,9 @@ class-letter bit decoding, and the clap argument relationships.
 
 ## Gotchas
 
-- **`let`-chains require edition 2024** (`&& let` chains in `provision.rs` and `report/matrix.rs`). Down-editioning won't compile.
+- **`let`-chains require edition 2024** (`&& let` chains in `compiler/schema.rs` and `report/inspect.rs`). Down-editioning won't compile.
 - **A shared NR anchor does not identify a model.** Pixel 10 Pro XL codes `GUL82`, `G45RY`, `GYPW4` all use `nr_anchor = 3616442437` but differ in `lte_id` (`GUL82` mmWave-US = `1254026417`; the sub-6 pair = `4017061044`).
-- **`patch filter` rejects a bare band number** — it is ambiguous in an EN-DC patch. Use an `n`/`B` prefix (case-insensitive; `N77` → `n77`, `b66` → `B66`); `77`, `n`, `x5` all error. An empty filter result is valid (writes an empty patch + a stderr note).
-- **Magisk path layout.** The standalone `magisk`/`provision` destination lands at `system/<dest-without-leading-slash>/<basename>`; `dest` must be absolute and not bare `/`. A `dest` of `/system/etc` yields a doubled `system/system/etc/…`. `--dest` (like input basenames) is rejected for `..`/`.`/empty path components or control/line-separator characters, and `--name` is rejected for control/newlines — otherwise a crafted value would escape the module tree on extraction or inject a `module.prop` line. The checks live in the shared `build_archive`, so `magisk`, `provision`, and the compiler `build` all get them. Folder-compiler `build` is different: its destination is fixed at `/vendor/firmware/uecapconfig` and it always adds `.replace`.
+- **Magisk path layout.** There is one destination and it is not configurable: generated files land at `system/vendor/firmware/uecapconfig/<basename>`, and the module always carries the `.replace` marker. `--dest` and its validation are gone (they defended a user-supplied value that no longer exists). What remains user-supplied is `--name`, which is interpolated as `name=<name>` in `module.prop` and is rejected for control/line-separator characters, and the generated basenames, which `validate_module_basename` rejects for path separators, `.`/`..`, and control characters.
 - **`self-test`** is the CLI name (kebab-case of the `SelfTest` variant); the string to grep for is `ALL TESTS PASSED`.
-- **KDL test literals live in more than one file.** For any change to the `nr.kdl`/`lte.kdl` writers or readers, the goldens/inputs are spread across `compiler/kdl_source.rs` (unit goldens), `compiler/schema.rs` (reader-input strings), `compiler/test_support.rs` (`EXPECTED_NR_KDL`/`EXPECTED_LTE_KDL`, byte-compared in `compiler::decompose`), `compiler/slice.rs`, and `src/decode.rs` — `report/inspect.rs` no longer carries any. The `decode` command's slices *are* compiler code (`compiler/slice.rs`) and call `emit_nr_combo` directly, so a writer change flows into `decode` automatically. `grep -rn` (without piping to `head`) to find every site.
+- **KDL test literals live in more than one file.** For any change to the `nr.kdl`/`lte.kdl` writers or readers, the goldens/inputs are spread across `compiler/kdl_source.rs` (unit goldens), `compiler/schema.rs` (reader-input strings), and `compiler/test_support.rs` (`EXPECTED_NR_KDL`/`EXPECTED_LTE_KDL`, byte-compared in `compiler::decompose`) — `report/inspect.rs` carries none. `grep -rn` (without piping to `head`) to find every site.
 - The crate is a lib + bin, so `pub` items are the library's API and reachable — `dead_code` won't fire on the exported surface, so `pub` items rarely need `#[allow(dead_code)]` (the source has none).
