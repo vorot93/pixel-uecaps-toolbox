@@ -16,7 +16,7 @@ use crate::{
     },
     factor::gcd,
     mapping::{MappingRoot, map_to_root, root_to_map},
-    model::{PROFILES, Tier, fp_info, matching_anchors, profile_model_codes},
+    model::{PROFILES, Profile, Tier, fp_info, matching_anchors, profile_model_codes},
     proto::{
         ComboGroup, UeCaps,
         combo_group::{Combo, ComboHeader},
@@ -357,181 +357,285 @@ fn verify_generated_file(
     Ok(())
 }
 
-pub(crate) fn ingest_nr(
-    legacy: Vec<LegacyNrFile>,
-    profiled: Vec<ProfiledNrFile>,
-    mapping: &MappingRoot,
-) -> anyhow::Result<NrDocument> {
+/// The five cross-file accumulations `ingest_nr` builds up: which carriers came from the
+/// bitmask folder, which fingerprints they carried, the per-carrier metadata, the applicability
+/// domain, and the deduplicated payload table with each payload's relation.
+#[derive(Default)]
+struct NrIngest {
+    bitmask_carriers: Vec<String>,
+    fingerprints: BTreeMap<u64, Vec<String>>,
+    carriers: BTreeMap<String, CarrierSource>,
+    domain_members: BTreeSet<(CompactString, Sku)>,
+    payloads: BTreeMap<RawNrPayloadKey, (RawNrPayload, BTreeSet<(CompactString, Sku)>)>,
+}
+
+impl NrIngest {
+    /// Record one payload under `owners`, storing it the first time its identity key is seen
+    /// and accumulating the relation every time.
+    fn add_payload(
+        &mut self,
+        payload: RawNrPayload,
+        owners: impl IntoIterator<Item = (CompactString, Sku)>,
+    ) {
+        let key = RawNrPayloadKey::from(&payload);
+        let (_, relation) = self
+            .payloads
+            .entry(key)
+            .or_insert_with(|| (payload, BTreeSet::new()));
+        relation.extend(owners);
+    }
+}
+
+/// Canonicalize the profiled legend and validate every carrier name in it, so downstream
+/// ingest can assume canonical names. Round-tripping through `root_to_map`/`map_to_root` is
+/// the canonicalization.
+fn canonical_mapping(mapping: &MappingRoot) -> anyhow::Result<MappingRoot> {
     let mapping = map_to_root(&root_to_map(mapping).context("validating profiled PLMN mapping")?)
         .context("canonicalizing profiled PLMN mapping")?;
     for entry in &mapping.mappings {
         validate_carrier_name(&entry.name)
             .with_context(|| format!("validating mapping carrier `{}`", entry.name))?;
     }
-    let mut bitmask_carriers = Vec::with_capacity(legacy.len());
-    let mut fingerprints = BTreeMap::<u64, Vec<String>>::new();
-    let mut carriers = BTreeMap::<String, CarrierSource>::new();
-    let mut domain_members = BTreeSet::new();
-    let mut payloads =
-        BTreeMap::<RawNrPayloadKey, (RawNrPayload, BTreeSet<(CompactString, Sku)>)>::new();
+    Ok(mapping)
+}
 
-    for file in legacy {
-        let LegacyNrFile { carrier, caps } = file;
-        validate_carrier_name(&carrier)?;
-        ensure!(
-            !carriers.contains_key(&carrier),
-            "duplicate legacy carrier `{carrier}`"
-        );
-        ensure!(
-            caps.unknown == 0,
-            "legacy carrier `{carrier}` has unsupported field 9 value {}",
-            caps.unknown
-        );
+/// Ingest one unnumbered bitmask-folder file: validate it, fold its payloads into the shared
+/// tables, and record its carrier metadata.
+fn ingest_legacy_file(ingest: &mut NrIngest, file: LegacyNrFile) -> anyhow::Result<()> {
+    let LegacyNrFile { carrier, caps } = file;
+    validate_carrier_name(&carrier)?;
+    ensure!(
+        !ingest.carriers.contains_key(&carrier),
+        "duplicate legacy carrier `{carrier}`"
+    );
+    ensure!(
+        caps.unknown == 0,
+        "legacy carrier `{carrier}` has unsupported field 9 value {}",
+        caps.unknown
+    );
 
-        for payload in canonical_payloads(&caps, InputLayout::Legacy, &carrier)? {
-            let key = RawNrPayloadKey::from(&payload);
-            let (_, relation) = payloads
-                .entry(key)
-                .or_insert_with(|| (payload, BTreeSet::new()));
-            relation.insert((carrier.as_str().into(), Sku::Legacy));
-        }
-
-        fingerprints
-            .entry(caps.version)
-            .or_default()
-            .push(carrier.clone());
-        bitmask_carriers.push(carrier.clone());
-        domain_members.insert((carrier.as_str().into(), Sku::Legacy));
-        carriers.insert(
-            carrier,
-            CarrierSource {
-                bitmask_id: caps.id.map(i64::from),
-                ..Default::default()
-            },
-        );
+    for payload in canonical_payloads(&caps, InputLayout::Legacy, &carrier)? {
+        ingest.add_payload(payload, [(carrier.as_str().into(), Sku::Legacy)]);
     }
 
-    let mut profiled_by_carrier = BTreeMap::<String, Vec<ProfiledNrFile>>::new();
+    ingest
+        .fingerprints
+        .entry(caps.version)
+        .or_default()
+        .push(carrier.clone());
+    ingest.bitmask_carriers.push(carrier.clone());
+    ingest
+        .domain_members
+        .insert((carrier.as_str().into(), Sku::Legacy));
+    ingest.carriers.insert(
+        carrier,
+        CarrierSource {
+            bitmask_id: caps.id.map(i64::from),
+            ..Default::default()
+        },
+    );
+    Ok(())
+}
+
+/// Group the profiled files by carrier, validating each name once.
+fn group_profiled_by_carrier(
+    profiled: Vec<ProfiledNrFile>,
+) -> anyhow::Result<BTreeMap<String, Vec<ProfiledNrFile>>> {
+    let mut by_carrier = BTreeMap::<String, Vec<ProfiledNrFile>>::new();
     for file in profiled {
         validate_carrier_name(&file.carrier)?;
-        profiled_by_carrier
+        by_carrier
             .entry(file.carrier.clone())
             .or_default()
             .push(file);
     }
+    Ok(by_carrier)
+}
 
-    for (carrier, mut files) in profiled_by_carrier {
-        files.sort_by_key(|file| file.number);
-        let mut classified = Vec::with_capacity(files.len());
-        let mut seen_anchors = BTreeSet::new();
-        for file in files {
-            let number = file.number;
-            let matches = matching_anchors(number);
-            ensure!(
-                matches.len() == 1,
-                "profiled carrier `{carrier}` number {number} must match exactly one registered anchor; matched {}",
-                matches.len()
-            );
-            let profile = matches[0];
-            ensure!(
-                seen_anchors.insert(profile.anchor),
-                "duplicate profiled carrier `{carrier}` anchor {}",
-                profile.anchor
-            );
-            classified.push((profile, number, file.caps));
-        }
+/// One profiled file, resolved to the single registered profile its filename number selects.
+struct ClassifiedProfiledFile {
+    profile: &'static Profile,
+    number: u64,
+    caps: UeCaps,
+}
 
-        let signature = classified.iter().map(|(_, number, _)| *number).fold(0, gcd);
+/// Resolve every one of a carrier's files to exactly one registered anchor, rejecting an
+/// unmatched, ambiguous, or duplicated anchor.
+fn classify_profiled_files(
+    carrier: &str,
+    mut files: Vec<ProfiledNrFile>,
+) -> anyhow::Result<Vec<ClassifiedProfiledFile>> {
+    files.sort_by_key(|file| file.number);
+    let mut classified = Vec::with_capacity(files.len());
+    let mut seen_anchors = BTreeSet::new();
+    for file in files {
+        let number = file.number;
+        let matches = matching_anchors(number);
         ensure!(
-            signature != 0,
-            "profiled carrier `{carrier}` has zero filename signature"
+            matches.len() == 1,
+            "profiled carrier `{carrier}` number {number} must match exactly one registered anchor; matched {}",
+            matches.len()
         );
-
-        let profiled_id = classified[0].2.id;
-        for (_, _, caps) in &classified {
-            ensure!(
-                caps.id == profiled_id,
-                "profiled carrier `{carrier}` has inconsistent field 2 IDs"
-            );
-        }
-        let mut carrier_tier = None;
-        let mut profiles = BTreeMap::new();
-        for (profile, number, caps) in classified {
-            let Some((fingerprint_family, tier)) = fp_info(caps.version) else {
-                anyhow::bail!(
-                    "profiled carrier `{carrier}` anchor {} has unknown fingerprint {}",
-                    profile.anchor,
-                    caps.version
-                );
-            };
-            ensure!(
-                fingerprint_family == profile.family,
-                "profiled carrier `{carrier}` anchor {} fingerprint family {:?} differs from profile family {:?}",
-                profile.anchor,
-                fingerprint_family,
-                profile.family
-            );
-            let tier = source_tier(tier);
-            if let Some(previous) = carrier_tier {
-                ensure!(
-                    previous == tier,
-                    "profiled carrier `{carrier}` has inconsistent fingerprint tiers"
-                );
-            } else {
-                carrier_tier = Some(tier);
-            }
-
-            let multiplier = number / signature;
-            let rebuilt = signature.checked_mul(multiplier).with_context(|| {
-                format!(
-                    "filename product overflow for profiled carrier `{carrier}` anchor {}",
-                    profile.anchor
-                )
-            })?;
-            ensure!(
-                rebuilt == number,
-                "filename multiplier does not exactly reconstruct {number} for profiled carrier `{carrier}` anchor {}",
-                profile.anchor
-            );
-
-            let skus = profile_model_codes(profile.anchor);
-            let skus: Vec<Sku> = if skus.is_empty() {
-                vec![Sku::Prime(profile.anchor)]
-            } else {
-                skus.into_iter()
-                    .map(|code| Sku::Model(code.into()))
-                    .collect()
-            };
-            for sku in &skus {
-                domain_members.insert((carrier.as_str().into(), sku.clone()));
-            }
-            for payload in canonical_payloads(&caps, InputLayout::Profiled, &carrier)? {
-                let key = RawNrPayloadKey::from(&payload);
-                let (_, relation) = payloads
-                    .entry(key)
-                    .or_insert_with(|| (payload, BTreeSet::new()));
-                relation.extend(
-                    skus.iter()
-                        .cloned()
-                        .map(|sku| (carrier.as_str().into(), sku)),
-                );
-            }
-
-            profiles.insert(
-                profile.anchor.to_string(),
-                ProfileSource {
-                    multiplier: DecimalU64(multiplier),
-                    unknown: DecimalU64(caps.unknown),
-                },
-            );
-        }
-
-        let source = carriers.entry(carrier.clone()).or_default();
-        source.profiled_id = profiled_id.map(i64::from);
-        source.signature = Some(DecimalU64(signature));
-        source.tier = carrier_tier;
-        source.profiles = profiles;
+        let profile = matches[0];
+        ensure!(
+            seen_anchors.insert(profile.anchor),
+            "duplicate profiled carrier `{carrier}` anchor {}",
+            profile.anchor
+        );
+        classified.push(ClassifiedProfiledFile {
+            profile,
+            number,
+            caps: file.caps,
+        });
     }
+    Ok(classified)
+}
+
+/// Confirm one profiled file's fingerprint resolves to a family consistent with its matched
+/// anchor, returning the tier it resolved to.
+fn verify_fingerprint_family(
+    carrier: &str,
+    file: &ClassifiedProfiledFile,
+) -> anyhow::Result<CarrierTier> {
+    let Some((fingerprint_family, tier)) = fp_info(file.caps.version) else {
+        anyhow::bail!(
+            "profiled carrier `{carrier}` anchor {} has unknown fingerprint {}",
+            file.profile.anchor,
+            file.caps.version
+        );
+    };
+    ensure!(
+        fingerprint_family == file.profile.family,
+        "profiled carrier `{carrier}` anchor {} fingerprint family {:?} differs from profile family {:?}",
+        file.profile.anchor,
+        fingerprint_family,
+        file.profile.family
+    );
+    Ok(source_tier(tier))
+}
+
+/// Reconstruct the multiplier that, combined with the carrier's shared filename signature,
+/// exactly reproduces `number` -- the filename-encoding invariant every profiled file must
+/// satisfy.
+fn exact_multiplier(
+    carrier: &str,
+    profile: &Profile,
+    number: u64,
+    signature: u64,
+) -> anyhow::Result<u64> {
+    let multiplier = number / signature;
+    let rebuilt = signature.checked_mul(multiplier).with_context(|| {
+        format!(
+            "filename product overflow for profiled carrier `{carrier}` anchor {}",
+            profile.anchor
+        )
+    })?;
+    ensure!(
+        rebuilt == number,
+        "filename multiplier does not exactly reconstruct {number} for profiled carrier `{carrier}` anchor {}",
+        profile.anchor
+    );
+    Ok(multiplier)
+}
+
+/// Resolve one profile's applicable SKUs, record them in the applicability domain, and fold
+/// every one of `caps`'s canonical payloads into the ingest under those SKUs.
+fn fold_profiled_payloads(
+    ingest: &mut NrIngest,
+    carrier: &str,
+    profile: &Profile,
+    caps: &UeCaps,
+) -> anyhow::Result<()> {
+    let skus = profile_model_codes(profile.anchor);
+    let skus: Vec<Sku> = if skus.is_empty() {
+        vec![Sku::Prime(profile.anchor)]
+    } else {
+        skus.into_iter()
+            .map(|code| Sku::Model(code.into()))
+            .collect()
+    };
+    for sku in &skus {
+        ingest.domain_members.insert((carrier.into(), sku.clone()));
+    }
+    for payload in canonical_payloads(caps, InputLayout::Profiled, carrier)? {
+        ingest.add_payload(
+            payload,
+            skus.iter().cloned().map(|sku| (carrier.into(), sku)),
+        );
+    }
+    Ok(())
+}
+
+/// Ingest one profiled carrier: classify its files, derive its signature/id/tier metadata, and
+/// fold every payload into the shared tables.
+fn ingest_profiled_carrier(
+    ingest: &mut NrIngest,
+    carrier: &str,
+    files: Vec<ProfiledNrFile>,
+) -> anyhow::Result<()> {
+    let classified = classify_profiled_files(carrier, files)?;
+    let signature = classified.iter().map(|file| file.number).fold(0, gcd);
+    ensure!(
+        signature != 0,
+        "profiled carrier `{carrier}` has zero filename signature"
+    );
+
+    let profiled_id = classified[0].caps.id;
+    for file in &classified {
+        ensure!(
+            file.caps.id == profiled_id,
+            "profiled carrier `{carrier}` has inconsistent field 2 IDs"
+        );
+    }
+
+    let mut carrier_tier = None;
+    let mut profiles = BTreeMap::new();
+    for file in classified {
+        let tier = verify_fingerprint_family(carrier, &file)?;
+        if let Some(previous) = carrier_tier {
+            ensure!(
+                previous == tier,
+                "profiled carrier `{carrier}` has inconsistent fingerprint tiers"
+            );
+        } else {
+            carrier_tier = Some(tier);
+        }
+
+        let ClassifiedProfiledFile {
+            profile,
+            number,
+            caps,
+        } = file;
+        let multiplier = exact_multiplier(carrier, profile, number, signature)?;
+        fold_profiled_payloads(ingest, carrier, profile, &caps)?;
+
+        profiles.insert(
+            profile.anchor.to_string(),
+            ProfileSource {
+                multiplier: DecimalU64(multiplier),
+                unknown: DecimalU64(caps.unknown),
+            },
+        );
+    }
+
+    let source = ingest.carriers.entry(carrier.to_string()).or_default();
+    source.profiled_id = profiled_id.map(i64::from);
+    source.signature = Some(DecimalU64(signature));
+    source.tier = carrier_tier;
+    source.profiles = profiles;
+    Ok(())
+}
+
+/// Turn the accumulated ingest into the finished document: sort the bitmask lists, build the
+/// domain and feature catalogs, and resolve each payload's relation into a canonical selection.
+fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<NrDocument> {
+    let NrIngest {
+        mut bitmask_carriers,
+        fingerprints,
+        mut carriers,
+        domain_members,
+        payloads,
+    } = ingest;
 
     for entry in mapping.mappings {
         let carrier = carriers.entry(entry.name).or_default();
@@ -581,6 +685,25 @@ pub(crate) fn ingest_nr(
         ul_features: features.ul,
         combo,
     })
+}
+
+pub(crate) fn ingest_nr(
+    legacy: Vec<LegacyNrFile>,
+    profiled: Vec<ProfiledNrFile>,
+    mapping: &MappingRoot,
+) -> anyhow::Result<NrDocument> {
+    let mapping = canonical_mapping(mapping)?;
+    let mut ingest = NrIngest {
+        bitmask_carriers: Vec::with_capacity(legacy.len()),
+        ..Default::default()
+    };
+    for file in legacy {
+        ingest_legacy_file(&mut ingest, file)?;
+    }
+    for (carrier, files) in group_profiled_by_carrier(profiled)? {
+        ingest_profiled_carrier(&mut ingest, &carrier, files)?;
+    }
+    finish_nr_document(ingest, mapping)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
