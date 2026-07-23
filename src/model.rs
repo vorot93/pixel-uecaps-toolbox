@@ -13,13 +13,13 @@
 //! Pixels instead use unnumbered carrier files with per-combination model bitmasks.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Family {
+pub(crate) enum Family {
     A,
     B,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
+pub(crate) enum Tier {
     /// 16 profiles; US/EU/APAC majors carry full per-carrier capability data.
     Main,
     /// 14 profiles (no P15/P16); India + emerging markets. Per-operator files
@@ -27,7 +27,7 @@ pub enum Tier {
     Alt,
 }
 
-pub struct Profile {
+pub(crate) struct Profile {
     /// Unique prime that divides the number of every file for this profile.
     pub anchor: u64,
     /// Full prime tag (one prime per SKU; several primes = a group of SKUs).
@@ -38,7 +38,7 @@ pub struct Profile {
 }
 
 /// The 16 capability profiles.
-pub static PROFILES: &[Profile] = &[
+pub(crate) static PROFILES: &[Profile] = &[
     Profile {
         anchor: 167,
         core: &[67, 167],
@@ -145,7 +145,7 @@ pub const MAIN_ONLY_ANCHORS: &[u64] = &[2_912_407, 3539];
 
 /// Expected profile-file count for a tier: `PROFILES.len()` for Main (16), minus the
 /// Main-only anchors for Alt (14).
-pub fn tier_profile_count(tier: Tier) -> usize {
+pub(crate) fn tier_profile_count(tier: Tier) -> usize {
     match tier {
         Tier::Main => PROFILES.len(),
         Tier::Alt => PROFILES.len() - MAIN_ONLY_ANCHORS.len(),
@@ -157,7 +157,7 @@ pub fn tier_profile_count(tier: Tier) -> usize {
 /// Returns `None` for `0` even though `0.is_multiple_of(x)` is true for every nonzero `x`:
 /// `<CARRIER>_0.binarypb` is a degenerate filename that belongs to no profile, and without
 /// this guard `identify_profile(0)` would spuriously return the *first* profile.
-pub fn identify_profile(number: u64) -> Option<&'static Profile> {
+pub(crate) fn identify_profile(number: u64) -> Option<&'static Profile> {
     if number == 0 {
         return None;
     }
@@ -165,7 +165,7 @@ pub fn identify_profile(number: u64) -> Option<&'static Profile> {
 }
 
 /// Every profile whose anchor divides `number` (>1 means an ambiguous file).
-pub fn matching_anchors(number: u64) -> Vec<&'static Profile> {
+pub(crate) fn matching_anchors(number: u64) -> Vec<&'static Profile> {
     PROFILES
         .iter()
         .filter(|p| number.is_multiple_of(p.anchor))
@@ -186,7 +186,7 @@ pub(crate) fn ambiguous_anchors(anchors: &[&'static Profile]) -> String {
 /// A modem LTE-config selection-table entry: the `lte_<id>` filename number, the Shannon
 /// firmware family name, the hardware/SKU category codes that select it, and the confirmed
 /// Pixel model (`None` when only the raw family is known).
-pub struct LteConfig {
+pub(crate) struct LteConfig {
     pub id: u64,
     pub family: &'static str,
     pub category_codes: &'static [u32],
@@ -195,7 +195,7 @@ pub struct LteConfig {
 
 /// The modem's LTE-config selection table (from `g5400c-main.bin`). The id is the
 /// `lte_<id>.binarypb` filename number; selection is hardware/SKU-category driven, not SIM/MCC.
-pub static LTE_CONFIGS: &[LteConfig] = &[
+pub(crate) static LTE_CONFIGS: &[LteConfig] = &[
     LteConfig {
         id: 400_907_661,
         family: "mmw",
@@ -253,7 +253,7 @@ pub static LTE_CONFIGS: &[LteConfig] = &[
 ];
 
 /// The modem selection-table entry for an `lte_<id>` file, if known.
-pub fn lte_config(id: u64) -> Option<&'static LteConfig> {
+pub(crate) fn lte_config(id: u64) -> Option<&'static LteConfig> {
     LTE_CONFIGS.iter().find(|c| c.id == id)
 }
 
@@ -552,7 +552,7 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
 ];
 
 /// Look up a phone model by its CLI code after trimming and ASCII upper-casing it.
-pub fn phone_model(code: &str) -> Option<&'static PhoneModel> {
+pub(crate) fn phone_model(code: &str) -> Option<&'static PhoneModel> {
     let code = code.trim();
     PHONE_MODELS
         .iter()
@@ -572,21 +572,21 @@ fn sorted_model_codes(keep: impl Fn(&PhoneModel) -> bool) -> Vec<&'static str> {
 }
 
 /// Registered profiled model codes that select `anchor`, in lexical order.
-pub fn profile_model_codes(anchor: u64) -> Vec<&'static str> {
+pub(crate) fn profile_model_codes(anchor: u64) -> Vec<&'static str> {
     sorted_model_codes(
         |m| matches!(m.layout, CapabilityLayout::Profiled { nr_anchor, .. } if nr_anchor == anchor),
     )
 }
 
 /// Registered profiled model codes that select LTE file `id`, in lexical order.
-pub fn lte_model_codes(id: u64) -> Vec<&'static str> {
+pub(crate) fn lte_model_codes(id: u64) -> Vec<&'static str> {
     sorted_model_codes(
         |m| matches!(m.layout, CapabilityLayout::Profiled { lte_id, .. } if lte_id == id),
     )
 }
 
 /// Every registered model code, in lexical order.
-pub fn known_model_codes() -> Vec<&'static str> {
+pub(crate) fn known_model_codes() -> Vec<&'static str> {
     sorted_model_codes(|_| true)
 }
 
@@ -594,7 +594,7 @@ pub fn known_model_codes() -> Vec<&'static str> {
 /// The single source for [`fp_info`] and for deriving per-tier fingerprint sets, so report
 /// strings (e.g. `check`'s headers) don't hardcode the values. Currently 4: 2 families ×
 /// 2 tiers.
-pub const FINGERPRINTS: &[(u64, Family, Tier)] = &[
+pub(crate) const FINGERPRINTS: &[(u64, Family, Tier)] = &[
     (874_888_686, Family::A, Tier::Main),
     (862_505_271, Family::B, Tier::Main),
     (707_802_847, Family::A, Tier::Alt),
@@ -602,7 +602,7 @@ pub const FINGERPRINTS: &[(u64, Family, Tier)] = &[
 ];
 
 /// In-file capability fingerprint (protobuf field 1) -> (family, tier).
-pub const fn fp_info(fp: u64) -> Option<(Family, Tier)> {
+pub(crate) const fn fp_info(fp: u64) -> Option<(Family, Tier)> {
     let mut i = 0;
     while i < FINGERPRINTS.len() {
         let (id, family, tier) = FINGERPRINTS[i];
@@ -616,7 +616,7 @@ pub const fn fp_info(fp: u64) -> Option<(Family, Tier)> {
 
 /// The fingerprint for a `(family, tier)` pair — the forward of [`fp_info`], from the same
 /// [`FINGERPRINTS`] table. `None` if the pair is not a known combination (all four are).
-pub fn fingerprint_for(family: Family, tier: Tier) -> Option<u64> {
+pub(crate) fn fingerprint_for(family: Family, tier: Tier) -> Option<u64> {
     FINGERPRINTS
         .iter()
         .find(|(_, f, t)| *f == family && *t == tier)
@@ -624,7 +624,7 @@ pub fn fingerprint_for(family: Family, tier: Tier) -> Option<u64> {
 }
 
 /// The known fingerprints for `tier`, in table order (family A before B).
-pub fn tier_fingerprints(tier: Tier) -> Vec<u64> {
+pub(crate) fn tier_fingerprints(tier: Tier) -> Vec<u64> {
     FINGERPRINTS
         .iter()
         .filter(|(_, _, t)| *t == tier)
@@ -632,7 +632,7 @@ pub fn tier_fingerprints(tier: Tier) -> Vec<u64> {
         .collect()
 }
 
-pub const fn family_desc(f: Family) -> &'static str {
+pub(crate) const fn family_desc(f: Family) -> &'static str {
     match f {
         Family::A => "capability family A",
         Family::B => "capability family B",
@@ -640,7 +640,7 @@ pub const fn family_desc(f: Family) -> &'static str {
 }
 
 /// Family as a short label: `"A"` / `"B"` (the compact form; cf. `family_desc`).
-pub const fn family_short(f: Family) -> &'static str {
+pub(crate) const fn family_short(f: Family) -> &'static str {
     match f {
         Family::A => "A",
         Family::B => "B",
@@ -648,7 +648,7 @@ pub const fn family_short(f: Family) -> &'static str {
 }
 
 /// Tier as a short key: `"main"` / `"alt"`.
-pub const fn tier_short(t: Tier) -> &'static str {
+pub(crate) const fn tier_short(t: Tier) -> &'static str {
     match t {
         Tier::Main => "main",
         Tier::Alt => "alt",
@@ -657,7 +657,7 @@ pub const fn tier_short(t: Tier) -> &'static str {
 
 /// What a filename refers to.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Parsed {
+pub(crate) enum Parsed {
     /// `ap_plmn_mapping.binarypb` — the PLMN→carrier legend.
     Mapping,
     /// `lte_<n>.binarypb` — LTE-only fallback, outside the profile scheme.
@@ -668,7 +668,7 @@ pub enum Parsed {
     Other,
 }
 
-pub fn parse_name(filename: &str) -> Parsed {
+pub(crate) fn parse_name(filename: &str) -> Parsed {
     let base = std::path::Path::new(filename)
         .file_name()
         .and_then(|s| s.to_str())
@@ -698,7 +698,7 @@ pub fn parse_name(filename: &str) -> Parsed {
 /// Decode a 3GPP packed-BCD PLMN integer into (MCC, MNC). Filler/hex nibbles
 /// (0xA-0xF) render as `*` (wildcard, or the 2-digit-MNC marker for MNC digit 3).
 /// Shares the packed-BCD layout with the canonical `mapping::Plmn`.
-pub fn decode_plmn(v: u64) -> (String, String) {
+pub(crate) fn decode_plmn(v: u64) -> (String, String) {
     let plmn = crate::mapping::Plmn::from_encoded(v & 0xFF_FFFF).expect("masked to 24 bits");
     let (mcc_n, mnc_n, mnc3) = plmn.nibbles();
     let d = |x: u8| if x < 10 { (b'0' + x) as char } else { '*' };
@@ -711,7 +711,7 @@ pub fn decode_plmn(v: u64) -> (String, String) {
 }
 
 /// MCC -> country/territory for the regions present in the dataset.
-pub fn mcc_country(mcc: &str) -> Option<&'static str> {
+pub(crate) fn mcc_country(mcc: &str) -> Option<&'static str> {
     Some(match mcc {
         "302" => "Canada",
         "310" | "311" | "312" | "313" | "316" => "USA",

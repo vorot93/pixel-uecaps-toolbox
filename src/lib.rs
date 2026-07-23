@@ -3,10 +3,10 @@
 
 pub(crate) mod atomic;
 pub mod compiler;
-pub mod factor;
+pub(crate) mod factor;
 pub(crate) mod kdl_support;
 pub(crate) mod magisk;
-pub mod mapping;
+pub(crate) mod mapping;
 pub mod model;
 pub mod outcome;
 pub mod proto;
