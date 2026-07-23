@@ -40,24 +40,12 @@ fn cc_class(dl: Option<i32>, ul: Option<i32>) -> String {
 /// NR bands are stored offset by this base; `band >= NR_BAND_OFFSET` marks an NR band.
 pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 
-/// The band label for a component of a **known** radio kind: `n<num>` (NR) or `B<num>`
-/// (E-UTRA). The single source of the band-prefix convention for every caller that can see
-/// *both* kinds — `band_label` (which *infers* the kind from `NR_BAND_OFFSET`),
-/// `RawSubBlock::band_label`, and all of `raw_nr`'s validation/guard messages.
-/// Display code that is statically single-kind — `report::lte` — formats `B` inline
-/// instead; that is correct there because no NR component can reach it.
-pub(crate) fn band_label_for(kind: SubBlockKind, band: i32) -> String {
-    match kind {
-        SubBlockKind::Nr => format!("n{band}"),
-        SubBlockKind::Lte => format!("B{band}"),
-    }
-}
-
 /// Canonical band label for a combo component, inferring the kind from the raw protobuf band:
-/// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA).
+/// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA). The kind-known counterpart —
+/// the single source of the `n`/`B` prefix convention — is [`SubBlockKind::band_label`].
 pub(crate) fn band_label(band: i32) -> String {
     let (kind, plain) = SubBlockKind::split_raw_band(band);
-    band_label_for(kind, plain)
+    kind.band_label(plain)
 }
 
 fn is_nr_band(label: &str) -> bool {
@@ -199,7 +187,7 @@ pub(crate) struct Combo {
 fn build_sub_block(raw: &combo_group::combo::SubBlock, caps: &UeCaps) -> SubBlock {
     let (kind, plain_band) = SubBlockKind::split_raw_band(raw.band);
     SubBlock {
-        band: band_label_for(kind, plain_band),
+        band: kind.band_label(plain_band),
         dl_bw_class: raw.dl_bw_class,
         ul_bw_class: raw.ul_bw_class,
         dl_features: resolve_all(
@@ -412,10 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn band_label_for_takes_the_kind_enum_not_a_bool() {
+    fn sub_block_kind_band_label_uses_n_and_b_prefixes() {
         use crate::raw_nr::SubBlockKind;
-        assert_eq!(band_label_for(SubBlockKind::Nr, 78), "n78");
-        assert_eq!(band_label_for(SubBlockKind::Lte, 66), "B66");
+        assert_eq!(SubBlockKind::Nr.band_label(78), "n78");
+        assert_eq!(SubBlockKind::Lte.band_label(66), "B66");
     }
 
     #[test]

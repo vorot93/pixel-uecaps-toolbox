@@ -9,7 +9,7 @@ use super::{
         LteDocument, LteFileSource, LteSourceCombo, LteSourceComponent, ValidatedLte,
         ValidatedLteCombo,
     },
-    selection::{LteDomain, LteRelation, Sku},
+    selection::{LteDomain, LteRelation, SelectionRect, Sku},
 };
 use crate::{
     model::lte_model_codes,
@@ -52,6 +52,40 @@ impl From<&LteCombo> for RawLteCombo {
             bcs: combo.bcs,
             unknown1: combo.unknown1,
             unknown2: combo.unknown2,
+        }
+    }
+}
+
+impl From<&LteSourceComponent> for LteComponent {
+    fn from(component: &LteSourceComponent) -> Self {
+        Self {
+            band: component.band,
+            dl_bw_class_mimo: component.dl_bw_class_mimo,
+            ul_bw_class_mimo: component.ul_bw_class_mimo,
+        }
+    }
+}
+
+impl From<&LteSourceCombo> for LteCombo {
+    fn from(source: &LteSourceCombo) -> Self {
+        Self {
+            components: source.components.iter().map(LteComponent::from).collect(),
+            bcs: source.bcs,
+            unknown1: source.unknown1,
+            unknown2: source.unknown2,
+        }
+    }
+}
+
+impl RawLteCombo {
+    /// This payload as an `LteSourceCombo` with the given canonical selection attached.
+    fn to_source(&self, selection: Option<Vec<SelectionRect>>) -> LteSourceCombo {
+        LteSourceCombo {
+            selection,
+            bcs: self.bcs,
+            unknown1: self.unknown1,
+            unknown2: self.unknown2,
+            components: self.components.clone(),
         }
     }
 }
@@ -166,7 +200,7 @@ fn canonical_lte_combos(
             .remove(&payload)
             .expect("every ordered LTE payload has applicability");
         let relation = LteRelation::new(members);
-        let source = source_from_raw(&payload, relation.canonical_selection(domain)?);
+        let source = payload.to_source(relation.canonical_selection(domain)?);
         source_combos.push(source.clone());
         validated_combos.push(ValidatedLteCombo { source, relation });
     }
@@ -253,7 +287,7 @@ pub(crate) fn generate_lte_file(
         .combo
         .iter()
         .filter(|combo| combo.relation.iter().any(|selected| selected == sku))
-        .map(|combo| proto_from_source(&combo.source))
+        .map(|combo| LteCombo::from(&combo.source))
         .collect();
     let caps = LteCaps {
         fingerprint: metadata.fingerprint,
@@ -337,36 +371,6 @@ fn topological_order(
         indegree.len() - ordered.len()
     );
     Ok(ordered)
-}
-
-fn source_from_raw(
-    payload: &RawLteCombo,
-    selection: Option<Vec<super::selection::SelectionRect>>,
-) -> LteSourceCombo {
-    LteSourceCombo {
-        selection,
-        bcs: payload.bcs,
-        unknown1: payload.unknown1,
-        unknown2: payload.unknown2,
-        components: payload.components.clone(),
-    }
-}
-
-fn proto_from_source(source: &LteSourceCombo) -> LteCombo {
-    LteCombo {
-        components: source
-            .components
-            .iter()
-            .map(|component| LteComponent {
-                band: component.band,
-                dl_bw_class_mimo: component.dl_bw_class_mimo,
-                ul_bw_class_mimo: component.ul_bw_class_mimo,
-            })
-            .collect(),
-        bcs: source.bcs,
-        unknown1: source.unknown1,
-        unknown2: source.unknown2,
-    }
 }
 
 #[cfg(test)]

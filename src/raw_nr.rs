@@ -5,7 +5,7 @@ use crate::{
         ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
         combo_group::{Combo as ProtoCombo, ComboHeader, combo::SubBlock as ProtoSubBlock},
     },
-    report::combos::{NR_BAND_OFFSET, band_label_for, resolve_all},
+    report::combos::{NR_BAND_OFFSET, resolve_all},
 };
 
 /// Per-component radio kind for a raw NR combo payload.
@@ -35,6 +35,19 @@ impl SubBlockKind {
             (Self::Nr, raw - NR_BAND_OFFSET)
         } else {
             (Self::Lte, raw)
+        }
+    }
+
+    /// The human band label for a plain band number of this kind: `n<band>` (NR) or `B<band>`
+    /// (E-UTRA). The single source of the `n`/`B` prefix convention for every caller that
+    /// already knows a component's kind; the free [`report::combos::band_label`](crate::report::combos::band_label)
+    /// *infers* the kind from a raw band instead. Statically single-kind display code
+    /// (`report::lte`, LTE-only) formats `B` inline rather than calling this — correct there,
+    /// since no NR component can reach it.
+    pub(crate) fn band_label(self, band: i32) -> String {
+        match self {
+            Self::Nr => format!("n{band}"),
+            Self::Lte => format!("B{band}"),
         }
     }
 }
@@ -377,7 +390,7 @@ fn resolve_or_placeholder<T: Copy>(
             anyhow::ensure!(
                 is_placeholder(bytes),
                 "component {} {direction} selector {bytes:?} resolves to no feature and is not the all-zero placeholder",
-                band_label_for(kind, band),
+                kind.band_label(band),
             );
             Ok(Some(PerCc::Selector(bytes.to_vec())))
         }
@@ -419,7 +432,7 @@ impl RawNrSubBlock {
     }
 
     fn band_label(&self) -> String {
-        band_label_for(SubBlockKind::Nr, self.band)
+        SubBlockKind::Nr.band_label(self.band)
     }
 }
 
@@ -612,7 +625,7 @@ impl RawSubBlock {
     }
 
     pub(crate) fn band_label(&self) -> String {
-        band_label_for(self.kind(), self.band())
+        self.kind().band_label(self.band())
     }
 }
 
