@@ -1,6 +1,9 @@
 //! Band-combination model and rendering shared by `inspect`.
 
-use crate::proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps};
+use crate::{
+    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+    raw_nr::SubBlockKind,
+};
 use std::collections::BTreeMap;
 
 /// Marker rendered for an absent / not-applicable capability value.
@@ -37,11 +40,10 @@ pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 /// `RawSubBlock::band_label`, and all of `raw_nr`'s validation/guard messages (C-band).
 /// Display code that is statically single-kind — `report::lte` — formats `B` inline
 /// instead; that is correct there because no NR component can reach it.
-pub(crate) fn band_label_for(is_nr: bool, band: i32) -> String {
-    if is_nr {
-        format!("n{band}")
-    } else {
-        format!("B{band}")
+pub(crate) fn band_label_for(kind: SubBlockKind, band: i32) -> String {
+    match kind {
+        SubBlockKind::Nr => format!("n{band}"),
+        SubBlockKind::Lte => format!("B{band}"),
     }
 }
 
@@ -49,9 +51,9 @@ pub(crate) fn band_label_for(is_nr: bool, band: i32) -> String {
 /// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA).
 pub(crate) fn band_label(band: i32) -> String {
     if band >= NR_BAND_OFFSET {
-        band_label_for(true, band - NR_BAND_OFFSET)
+        band_label_for(SubBlockKind::Nr, band - NR_BAND_OFFSET)
     } else {
-        band_label_for(false, band)
+        band_label_for(SubBlockKind::Lte, band)
     }
 }
 
@@ -221,13 +223,13 @@ impl SubBlock {
     /// mod-order / 90 MHz, per direction) are projected from the feature sets — used by the
     /// folder compiler's `build_combos_with_bitmasks` (C-proj).
     ///
-    /// `is_nr` is the explicit kind assertion: the caller already knows whether this is an
+    /// `kind` is the explicit kind assertion: the caller already knows whether this is an
     /// NR or E-UTRA component, so it routes through `band_label_for` directly instead of the
     /// inferring `band_label`. `plain_band` is the actual band number (e.g. `78` for n78,
     /// `66` for B66), NOT the raw protobuf `NR_BAND_OFFSET + n` encoding.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_raw_fields(
-        is_nr: bool,
+        kind: SubBlockKind,
         plain_band: i32,
         dl_bw_class: Option<i32>,
         ul_bw_class: Option<i32>,
@@ -243,7 +245,7 @@ impl SubBlock {
         let dl0 = dl.first();
         let ul0 = ul.first();
         Self {
-            band: band_label_for(is_nr, plain_band),
+            band: band_label_for(kind, plain_band),
             dl_bw_class,
             ul_bw_class,
             dl_feature_index,
@@ -293,14 +295,17 @@ pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u3
                     .unwrap_or_default();
                     // Protobuf bands encode the kind via the offset; split it once at the
                     // call site so `from_raw_fields` gets an explicit kind assertion.
-                    let is_nr = x.band >= NR_BAND_OFFSET;
-                    let plain_band = if is_nr {
-                        x.band - NR_BAND_OFFSET
+                    let kind = if x.band >= NR_BAND_OFFSET {
+                        SubBlockKind::Nr
                     } else {
-                        x.band
+                        SubBlockKind::Lte
+                    };
+                    let plain_band = match kind {
+                        SubBlockKind::Nr => x.band - NR_BAND_OFFSET,
+                        SubBlockKind::Lte => x.band,
                     };
                     SubBlock::from_raw_fields(
-                        is_nr,
+                        kind,
                         plain_band,
                         x.dl_bw_class,
                         x.ul_bw_class,
@@ -488,9 +493,12 @@ pub(crate) fn print_combos(combos: &[Combo], full: bool) {
 mod tests {
     use super::*;
 
-    fn cc_base(nr: bool) -> SubBlock {
+    fn cc_base(kind: SubBlockKind) -> SubBlock {
         SubBlock {
-            band: if nr { "n78".into() } else { "B1".into() },
+            band: match kind {
+                SubBlockKind::Nr => "n78".into(),
+                SubBlockKind::Lte => "B1".into(),
+            },
             dl_bw_class: None,
             ul_bw_class: None,
             dl_feature_index: None,
@@ -515,18 +523,25 @@ mod tests {
     }
 
     #[test]
+    fn band_label_for_takes_the_kind_enum_not_a_bool() {
+        use crate::raw_nr::SubBlockKind;
+        assert_eq!(band_label_for(SubBlockKind::Nr, 78), "n78");
+        assert_eq!(band_label_for(SubBlockKind::Lte, 66), "B66");
+    }
+
+    #[test]
     fn component_label_band_and_class() {
-        let mut cc = cc_base(true); // n78, no class
+        let mut cc = cc_base(SubBlockKind::Nr); // n78, no class
         assert_eq!(cc_component_label(&cc), "n78");
         cc.dl_bw_class = Some(1);
         cc.ul_bw_class = Some(1);
         assert_eq!(cc_component_label(&cc), "n78A");
-        assert_eq!(cc_component_label(&cc_base(false)), "B1");
+        assert_eq!(cc_component_label(&cc_base(SubBlockKind::Lte)), "B1");
     }
 
     #[test]
     fn format_features_nr() {
-        let mut cc = cc_base(true);
+        let mut cc = cc_base(SubBlockKind::Nr);
         cc.dl_max_bw_mhz = Some(100);
         cc.dl_mimo = Some("4x4".into());
         cc.dl_mod_order = Some("QAM256".into());
@@ -545,7 +560,7 @@ mod tests {
 
     #[test]
     fn format_features_partial_nr_without_bandwidth() {
-        let mut cc = cc_base(true);
+        let mut cc = cc_base(SubBlockKind::Nr);
         cc.dl_mimo = Some("(7)".into());
 
         assert_eq!(fmt_cc_features(&cc), "DL — (7) —");
@@ -553,7 +568,7 @@ mod tests {
 
     #[test]
     fn format_features_unknown_raw_scs_without_bandwidth() {
-        let mut cc = cc_base(true);
+        let mut cc = cc_base(SubBlockKind::Nr);
         cc.dl_features = vec![crate::proto::ShannonFeatureSetDlPerCcNr {
             max_scs: Some(9),
             ..Default::default()
@@ -565,11 +580,14 @@ mod tests {
     #[test]
     fn format_features_markers() {
         assert_eq!(
-            fmt_cc_features(&cc_base(false)),
+            fmt_cc_features(&cc_base(SubBlockKind::Lte)),
             "E-UTRA — no NR feature set"
         );
-        assert_eq!(fmt_cc_features(&cc_base(true)), "(no NR feature set)");
-        let mut cc = cc_base(false);
+        assert_eq!(
+            fmt_cc_features(&cc_base(SubBlockKind::Nr)),
+            "(no NR feature set)"
+        );
+        let mut cc = cc_base(SubBlockKind::Lte);
         cc.srs_tx_switch = Some(1);
         assert_eq!(fmt_cc_features(&cc), "E-UTRA — no NR feature set · srs:1");
     }
@@ -729,10 +747,10 @@ mod tests {
     fn ul_only_scs_change_is_visible() {
         // R5: DL and UL SCS must render independently; a UL-only SCS change (DL equal)
         // must change the caps line so `compare` sees it.
-        let mut a = cc_base(true);
+        let mut a = cc_base(SubBlockKind::Nr);
         a.dl_scs_khz = Some(30);
         a.ul_scs_khz = Some(15);
-        let mut b = cc_base(true);
+        let mut b = cc_base(SubBlockKind::Nr);
         b.dl_scs_khz = Some(30);
         b.ul_scs_khz = Some(30);
         assert_ne!(
@@ -745,7 +763,7 @@ mod tests {
     #[test]
     fn ul_90mhz_is_not_masked_by_dl() {
         // R5: dl_bw90=false must not fold away ul_bw90=true (inspect --full dropped it).
-        let mut cc = cc_base(true);
+        let mut cc = cc_base(SubBlockKind::Nr);
         cc.dl_bw90mhz = Some(false);
         cc.ul_bw90mhz = Some(true);
         let text = fmt_cc_features(&cc);

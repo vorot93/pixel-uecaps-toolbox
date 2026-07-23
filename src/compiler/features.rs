@@ -378,7 +378,7 @@ impl NrSourceSubBlock {
                 ensure!(
                     dl.is_empty() && ul.is_empty() && self.srs_tx_switch.is_none(),
                     "LTE component {} carries NR-only fields",
-                    band_label_for(false, self.band)
+                    band_label_for(SubBlockKind::Lte, self.band)
                 );
                 RawLteSubBlock {
                     band: self.band,
@@ -399,7 +399,7 @@ impl NrSourceSubBlock {
                 ensure!(
                     self.dl_feature_index.is_none() && self.ul_feature_index.is_none(),
                     "NR component {} stores a feature index; NR derives it from its feature set",
-                    band_label_for(true, self.band)
+                    band_label_for(SubBlockKind::Nr, self.band)
                 );
                 RawNrSubBlock {
                     band: self.band,

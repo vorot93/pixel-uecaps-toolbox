@@ -403,7 +403,7 @@ fn resolve_or_placeholder<T: Copy>(
             anyhow::ensure!(
                 !is_non_placeholder(bytes),
                 "component {} {direction} selector {bytes:?} resolves to no feature and is not the all-zero placeholder",
-                band_label_for(matches!(kind, SubBlockKind::Nr), band),
+                band_label_for(kind, band),
             );
             Ok(Some(PerCc::Selector(bytes.to_vec())))
         }
@@ -445,7 +445,7 @@ impl RawNrSubBlock {
     }
 
     fn band_label(&self) -> String {
-        band_label_for(true, self.band)
+        band_label_for(SubBlockKind::Nr, self.band)
     }
 }
 
@@ -706,7 +706,7 @@ impl RawSubBlock {
     }
 
     pub(crate) fn band_label(&self) -> String {
-        band_label_for(matches!(self, Self::Nr(_)), self.band())
+        band_label_for(self.kind(), self.band())
     }
 }
 
