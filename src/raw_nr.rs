@@ -564,48 +564,39 @@ impl RawSubBlock {
         }
     }
 
-    /// Build a raw component directly from its protobuf `SubBlock` and the file's
-    /// feature-set lists — the folder-ingest counterpart of [`from_sub_block`](Self::from_sub_block). It
-    /// skips constructing the report `SubBlock` DTO, so it allocates no band-label string, does not
-    /// re-parse the band back out (the `raw_band` R3 panic surface), and computes none of the
-    /// discarded display projections. Byte-equivalent to resolving the DTO and calling
-    /// `from_sub_block(..).with_resolved_feature_sets(dl, ul)` (E6).
-    ///
-    /// This is the strict ingest boundary for `ul_bw_class`: corpus-verified always `Some`
-    /// on a real decoded sub-block (never `None`), so its absence here — which the compiler
-    /// KDL source now normalizes away by omitting `Some(0)` (Task 8) — fails closed instead
-    /// of silently normalizing to `0` on data that has never actually shown that shape.
-    pub(crate) fn from_proto_sub_block(
+    /// The LTE half of [`from_proto_sub_block`](Self::from_proto_sub_block): an E-UTRA
+    /// component's fields carry over verbatim — no per-CC feature-set resolution, no
+    /// NR-only `srs_tx_switch`.
+    fn lte_from_proto_sub_block(component: &ProtoSubBlock, band: i32) -> Self {
+        RawLteSubBlock {
+            band,
+            dl: LteDirection {
+                bw_class: component.dl_bw_class,
+                feature_index: component.dl_feature_index,
+                selector: component.dl_feature_per_cc_ids.clone(),
+            },
+            ul: LteDirection {
+                bw_class: component.ul_bw_class,
+                feature_index: component.ul_feature_index,
+                selector: component.ul_feature_per_cc_ids.clone(),
+            },
+        }
+        .into()
+    }
+
+    /// The NR half of [`from_proto_sub_block`](Self::from_proto_sub_block): resolve both
+    /// directions' per-CC selector bytes against the file's catalogs —
+    /// [`resolve_or_placeholder`] keeps an unresolved selector only as the all-zero
+    /// placeholder, hard-erroring on anything else — then confirm the file's stored
+    /// `dl`/`ul_feature_index` agrees with what NR derives from those feature sets, since
+    /// NR keeps no source index (see [`dl_feature_index`](Self::dl_feature_index)).
+    fn nr_from_proto_sub_block(
         component: &ProtoSubBlock,
+        band: i32,
+        kind: SubBlockKind,
         dl_list: &[ShannonFeatureSetDlPerCcNr],
         ul_list: &[ShannonFeatureSetUlPerCcNr],
     ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            component.ul_bw_class.is_some(),
-            "sub-block omits ul_bw_class (never observed; refusing to normalize to 0)"
-        );
-        let is_nr = component.band >= NR_BAND_OFFSET;
-        let (kind, band) = if is_nr {
-            (SubBlockKind::Nr, component.band - NR_BAND_OFFSET)
-        } else {
-            (SubBlockKind::Lte, component.band)
-        };
-        if !is_nr {
-            return Ok(RawLteSubBlock {
-                band,
-                dl: LteDirection {
-                    bw_class: component.dl_bw_class,
-                    feature_index: component.dl_feature_index,
-                    selector: component.dl_feature_per_cc_ids.clone(),
-                },
-                ul: LteDirection {
-                    bw_class: component.ul_bw_class,
-                    feature_index: component.ul_feature_index,
-                    selector: component.ul_feature_per_cc_ids.clone(),
-                },
-            }
-            .into());
-        }
         let dl = resolve_all(component.dl_feature_per_cc_ids.as_deref(), dl_list);
         let ul = resolve_all(component.ul_feature_per_cc_ids.as_deref(), ul_list);
         let raw = RawNrSubBlock {
@@ -639,6 +630,41 @@ impl RawSubBlock {
             ul: component.ul_feature_index,
         })?;
         Ok(raw.into())
+    }
+
+    /// Build a raw component directly from its protobuf `SubBlock` and the file's
+    /// feature-set lists — the folder-ingest counterpart of [`from_sub_block`](Self::from_sub_block). It
+    /// skips constructing the report `SubBlock` DTO, so it allocates no band-label string, does not
+    /// re-parse the band back out (the `raw_band` R3 panic surface), and computes none of the
+    /// discarded display projections. Byte-equivalent to resolving the DTO and calling
+    /// `from_sub_block(..).with_resolved_feature_sets(dl, ul)` (E6).
+    ///
+    /// This is the strict ingest boundary for `ul_bw_class`: corpus-verified always `Some`
+    /// on a real decoded sub-block (never `None`), so its absence here — which the compiler
+    /// KDL source now normalizes away by omitting `Some(0)` (Task 8) — fails closed instead
+    /// of silently normalizing to `0` on data that has never actually shown that shape. Kind
+    /// dispatch is [`lte_from_proto_sub_block`](Self::lte_from_proto_sub_block) /
+    /// [`nr_from_proto_sub_block`](Self::nr_from_proto_sub_block).
+    pub(crate) fn from_proto_sub_block(
+        component: &ProtoSubBlock,
+        dl_list: &[ShannonFeatureSetDlPerCcNr],
+        ul_list: &[ShannonFeatureSetUlPerCcNr],
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            component.ul_bw_class.is_some(),
+            "sub-block omits ul_bw_class (never observed; refusing to normalize to 0)"
+        );
+        let is_nr = component.band >= NR_BAND_OFFSET;
+        let (kind, band) = if is_nr {
+            (SubBlockKind::Nr, component.band - NR_BAND_OFFSET)
+        } else {
+            (SubBlockKind::Lte, component.band)
+        };
+        if is_nr {
+            Self::nr_from_proto_sub_block(component, band, kind, dl_list, ul_list)
+        } else {
+            Ok(Self::lte_from_proto_sub_block(component, band))
+        }
     }
 
     /// Invariants that the type cannot express. "LTE carries NR-only fields" is no longer
