@@ -124,12 +124,7 @@ fn analyse_file(dir: &Path, name: &str, number: u64) -> FileFinding {
         let why = if anchors.is_empty() {
             "no profile (0 anchor primes divide number)".to_string()
         } else {
-            let anchor_ids: Vec<_> = anchors.iter().map(|p| p.anchor).collect();
-            format!(
-                "ambiguous: divisible by {} anchors {:?}",
-                anchors.len(),
-                anchor_ids
-            )
+            crate::model::ambiguous_anchors(&anchors)
         };
         return FileFinding {
             anomaly: Some((name.to_string(), why)),

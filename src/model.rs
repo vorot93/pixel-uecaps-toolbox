@@ -172,6 +172,17 @@ pub fn matching_anchors(number: u64) -> Vec<&'static Profile> {
         .collect()
 }
 
+/// The "ambiguous SKU" message shared by the `check` and `inspect` report paths: a number
+/// divisible by more than one anchor prime cannot pick a single profile.
+pub(crate) fn ambiguous_anchors(anchors: &[&'static Profile]) -> String {
+    let anchor_ids: Vec<_> = anchors.iter().map(|p| p.anchor).collect();
+    format!(
+        "ambiguous: divisible by {} anchors {:?}",
+        anchors.len(),
+        anchor_ids
+    )
+}
+
 /// A modem LTE-config selection-table entry: the `lte_<id>` filename number, the Shannon
 /// firmware family name, the hardware/SKU category codes that select it, and the confirmed
 /// Pixel model (`None` when only the raw family is known).

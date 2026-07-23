@@ -229,12 +229,7 @@ fn print_sku_profile(caps: Option<&UeCaps>, carrier: &str, number: u64, detail: 
         let why = if anchors.is_empty() {
             "no anchor prime divides the number".to_string()
         } else {
-            let anchor_ids: Vec<_> = anchors.iter().map(|p| p.anchor).collect();
-            format!(
-                "ambiguous: divisible by {} anchors {:?}",
-                anchors.len(),
-                anchor_ids
-            )
+            crate::model::ambiguous_anchors(&anchors)
         };
         println!("SKU profile  : UNRECOGNISED ({why})");
         outcome = Outcome::Findings;
