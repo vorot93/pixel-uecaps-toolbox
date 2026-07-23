@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use crate::{compiler::schema::one_trailing_newline, raw_nr::SubBlockKind};
+use crate::raw_nr::SubBlockKind;
 
 // ---- component radio-kind codec (compiler `cc`) ----
 /// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
@@ -60,6 +60,14 @@ pub(crate) fn str_list_node(name: &str, items: &[String]) -> KdlNode {
         n.push(KdlEntry::new(it.as_str()));
     }
     n
+}
+/// Collapse any run of trailing newlines to exactly one — KDL documents end with a single `\n`.
+fn one_trailing_newline(mut text: String) -> String {
+    while text.ends_with('\n') {
+        text.pop();
+    }
+    text.push('\n');
+    text
 }
 pub(crate) fn finish_doc(mut doc: KdlDocument) -> String {
     doc.autoformat();

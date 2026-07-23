@@ -407,14 +407,6 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub(crate) fn one_trailing_newline(mut text: String) -> String {
-    while text.ends_with('\n') {
-        text.pop();
-    }
-    text.push('\n');
-    text
-}
-
 fn build_nr_domain(nr: &NrDocument, carriers: &BTreeMap<String, ValidatedCarrier>) -> NrDomain {
     let mut members: BTreeSet<(CompactString, Sku)> = nr
         .bitmask_carriers
