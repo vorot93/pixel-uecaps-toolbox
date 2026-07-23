@@ -93,27 +93,42 @@ fn has_unique_labels(sig: &Signature) -> bool {
     labels.windows(2).all(|w| w[0] != w[1])
 }
 
+/// Per-component `(label, a_line, b_line)` triples for every component whose caps line
+/// differs between two same-shape signatures. Assumes both sides already have unique
+/// labels (the caller checks via [`has_unique_labels`] before calling this).
+fn per_component_diffs(a: &Signature, b: &Signature) -> Vec<(String, String, String)> {
+    let bmap: BTreeMap<&str, &str> = b.iter().map(|(l, ln)| (l.as_str(), ln.as_str())).collect();
+    let mut diffs = Vec::new();
+    for (label, a_line) in a {
+        if let Some(&b_line) = bmap.get(label.as_str())
+            && a_line != b_line
+        {
+            diffs.push((label.clone(), a_line.clone(), b_line.to_string()));
+        }
+    }
+    diffs
+}
+
 fn classify_change(sa: &BTreeSet<Signature>, sb: &BTreeSet<Signature>) -> CapsChange {
     if sa.len() == 1 && sb.len() == 1 {
         let a = sa.iter().next().unwrap();
         let b = sb.iter().next().unwrap();
         if has_unique_labels(a) && has_unique_labels(b) {
-            let bmap: BTreeMap<&str, &str> =
-                b.iter().map(|(l, ln)| (l.as_str(), ln.as_str())).collect();
-            let mut diffs = Vec::new();
-            for (label, a_line) in a {
-                if let Some(&b_line) = bmap.get(label.as_str())
-                    && a_line != b_line
-                {
-                    diffs.push((label.clone(), a_line.clone(), b_line.to_string()));
-                }
-            }
-            return CapsChange::PerComponent(diffs);
+            return CapsChange::PerComponent(per_component_diffs(a, b));
         }
     }
     CapsChange::Variants {
         a: sa.iter().cloned().collect(),
         b: sb.iter().cloned().collect(),
+    }
+}
+
+/// One key's `ChangedCombo` once `sa`/`sb` (its two files' distinct-signature sets) are
+/// already known to differ.
+fn changed_combo(key: &str, sa: &BTreeSet<Signature>, sb: &BTreeSet<Signature>) -> ChangedCombo {
+    ChangedCombo {
+        key: key.to_string(),
+        change: classify_change(sa, sb),
     }
 }
 
@@ -137,10 +152,7 @@ pub(crate) fn diff_combos(a: &[Combo], b: &[Combo]) -> ComboDiff {
         if let Some(sb) = ib.get(k) {
             common.push(k.clone());
             if sa != sb {
-                changed.push(ChangedCombo {
-                    key: k.clone(),
-                    change: classify_change(sa, sb),
-                });
+                changed.push(changed_combo(k, sa, sb));
             }
         }
     }
@@ -184,6 +196,77 @@ fn render_common_section(diff: &ComboDiff) -> String {
     out
 }
 
+/// Render one `only in <label> (N):` section (`label` is `'A'`/`'B'`; `marker` is the
+/// leading `-`/`+`, matching the summary line's arithmetic sign): one `  <marker> <key>`
+/// line per key. Returns "" when `keys` is empty, so callers can invoke it unconditionally.
+fn render_only_in_section(label: char, keys: &[String], marker: char) -> String {
+    if keys.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("\nonly in {label} ({}):\n", keys.len());
+    for k in keys {
+        let _ = writeln!(out, "  {marker} {k}");
+    }
+    out
+}
+
+/// Render one `~ <key>` per-component change: each differing component's `A:`/`B:` caps
+/// lines. Only reached when both sides have unique labels, so each label appears once.
+fn render_per_component_diff(key: &str, diffs: &[(String, String, String)]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "  ~ {key}");
+    for (label, a_line, b_line) in diffs {
+        let _ = writeln!(out, "      {label:<6} A: {a_line}");
+        let _ = writeln!(out, "      {:<6} B: {b_line}", "");
+    }
+    out
+}
+
+/// Render one side's (`label` `'A'`/`'B'`) numbered signature list under a
+/// [`CapsChange::Variants`] entry: `<label>[i]:` followed by each component's caps line.
+fn render_variant_side(label: char, sigs: &[Signature]) -> String {
+    let mut out = String::new();
+    for (i, sig) in sigs.iter().enumerate() {
+        let _ = writeln!(out, "      {label}[{}]:", i + 1);
+        for (comp_label, line) in sig {
+            let _ = writeln!(out, "        {comp_label:<6} {line}");
+        }
+    }
+    out
+}
+
+/// Render one `~ <key>  (multiple variants)` change: both sides' full signature lists,
+/// verbatim — reached when component labels collided, so no per-component pairing was
+/// possible ([`classify_change`] falls back to this whenever [`has_unique_labels`] fails).
+fn render_variant_diff(key: &str, a: &[Signature], b: &[Signature]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "  ~ {key}  (multiple variants)");
+    out.push_str(&render_variant_side('A', a));
+    out.push_str(&render_variant_side('B', b));
+    out
+}
+
+/// Render the `caps changed (N):` detail block (only under [`Detail::Full`]): per changed
+/// combo, either its [`CapsChange::PerComponent`] before/after lines or its
+/// [`CapsChange::Variants`] full lists. Returns "" when `changed` is empty, so the caller
+/// can invoke it unconditionally once `detail.is_full()`.
+fn render_changed_section(changed: &[ChangedCombo]) -> String {
+    if changed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "\ncaps changed ({}):", changed.len());
+    for ch in changed {
+        match &ch.change {
+            CapsChange::PerComponent(diffs) => {
+                out.push_str(&render_per_component_diff(&ch.key, diffs))
+            }
+            CapsChange::Variants { a, b } => out.push_str(&render_variant_diff(&ch.key, a, b)),
+        }
+    }
+    out
+}
+
 /// Render the summary + set diff (+ caps detail under [`Detail::Full`]). Header is separate.
 fn render_diff_body(diff: &ComboDiff, detail: Detail, common: Common) -> String {
     let mut out = String::new();
@@ -202,49 +285,13 @@ fn render_diff_body(diff: &ComboDiff, detail: Detail, common: Common) -> String 
         diff.only_in_a.len(),
         diff.only_in_b.len(),
     );
-    if !diff.only_in_a.is_empty() {
-        let _ = writeln!(out, "\nonly in A ({}):", diff.only_in_a.len());
-        for k in &diff.only_in_a {
-            let _ = writeln!(out, "  - {k}");
-        }
-    }
-    if !diff.only_in_b.is_empty() {
-        let _ = writeln!(out, "\nonly in B ({}):", diff.only_in_b.len());
-        for k in &diff.only_in_b {
-            let _ = writeln!(out, "  + {k}");
-        }
-    }
+    out.push_str(&render_only_in_section('A', &diff.only_in_a, '-'));
+    out.push_str(&render_only_in_section('B', &diff.only_in_b, '+'));
     if common.is_shown() {
         out.push_str(&render_common_section(diff));
     }
-    if detail.is_full() && !diff.changed.is_empty() {
-        let _ = writeln!(out, "\ncaps changed ({}):", diff.changed.len());
-        for ch in &diff.changed {
-            match &ch.change {
-                CapsChange::PerComponent(diffs) => {
-                    let _ = writeln!(out, "  ~ {}", ch.key);
-                    for (label, a_line, b_line) in diffs {
-                        let _ = writeln!(out, "      {label:<6} A: {a_line}");
-                        let _ = writeln!(out, "      {:<6} B: {b_line}", "");
-                    }
-                }
-                CapsChange::Variants { a, b } => {
-                    let _ = writeln!(out, "  ~ {}  (multiple variants)", ch.key);
-                    for (i, sig) in a.iter().enumerate() {
-                        let _ = writeln!(out, "      A[{}]:", i + 1);
-                        for (label, line) in sig {
-                            let _ = writeln!(out, "        {label:<6} {line}");
-                        }
-                    }
-                    for (i, sig) in b.iter().enumerate() {
-                        let _ = writeln!(out, "      B[{}]:", i + 1);
-                        for (label, line) in sig {
-                            let _ = writeln!(out, "        {label:<6} {line}");
-                        }
-                    }
-                }
-            }
-        }
+    if detail.is_full() {
+        out.push_str(&render_changed_section(&diff.changed));
     }
     out
 }
