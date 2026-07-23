@@ -141,6 +141,37 @@ const fn wire_name(wire_type: u64) -> &'static str {
     }
 }
 
+/// Consume one length-delimited field (a `Bytes` or nested `Message` field): read its
+/// length prefix, slice out the payload, advance `offset` past it, and recurse into
+/// [`scan`] when `modeled` names a nested message.
+fn scan_length_delimited(
+    bytes: &[u8],
+    offset: &mut usize,
+    message: ModeledMessage,
+    field_number: u64,
+    modeled: ModeledField,
+) -> anyhow::Result<()> {
+    let len = read_varint(bytes, offset).with_context(|| {
+        format!(
+            "reading the length of {} field #{field_number}",
+            message.name()
+        )
+    })?;
+    let len = usize::try_from(len)
+        .with_context(|| format!("{} field #{field_number} is too large", message.name()))?;
+    let end = offset
+        .checked_add(len)
+        .with_context(|| format!("{} field #{field_number} length overflows", message.name()))?;
+    let payload = bytes
+        .get(*offset..end)
+        .with_context(|| format!("truncated {} field #{field_number}", message.name()))?;
+    *offset = end;
+    if let ModeledField::Message(child) = modeled {
+        scan(payload, child)?;
+    }
+    Ok(())
+}
+
 /// Recursively walk one modeled message, rejecting unknown fields and incorrect wire
 /// types before decoding can silently normalize or discard them.
 fn scan(bytes: &[u8], message: ModeledMessage) -> anyhow::Result<()> {
@@ -173,25 +204,7 @@ fn scan(bytes: &[u8], message: ModeledMessage) -> anyhow::Result<()> {
                     .with_context(|| format!("reading {} field #{field_number}", message.name()))?;
             }
             ModeledField::Bytes | ModeledField::Message(_) => {
-                let len = read_varint(bytes, &mut offset).with_context(|| {
-                    format!(
-                        "reading the length of {} field #{field_number}",
-                        message.name()
-                    )
-                })?;
-                let len = usize::try_from(len).with_context(|| {
-                    format!("{} field #{field_number} is too large", message.name())
-                })?;
-                let end = offset.checked_add(len).with_context(|| {
-                    format!("{} field #{field_number} length overflows", message.name())
-                })?;
-                let payload = bytes.get(offset..end).with_context(|| {
-                    format!("truncated {} field #{field_number}", message.name())
-                })?;
-                offset = end;
-                if let ModeledField::Message(child) = modeled {
-                    scan(payload, child)?;
-                }
+                scan_length_delimited(bytes, &mut offset, message, field_number, modeled)?;
             }
         }
     }
