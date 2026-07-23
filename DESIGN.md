@@ -219,7 +219,8 @@ rest".
    byte-identical. Serialization is itself a validation boundary: everything the ingest
    computed is re-derived from the text form and must agree (`validate_documents` therefore
    runs twice per decompose — canonicalize the ingest, then reparse as the validation
-   boundary; see the perf note in [CONTRIBUTING](CONTRIBUTING.md#performance-dont-de-optimize)).
+   boundary; see the perf note in
+   [CONTRIBUTING](CONTRIBUTING.md#performance-readability-first-then-re-optimize)).
 9. **Regenerate every internal target and compare** (`verify_internal_targets`): the
    legacy target must produce exactly the whitelist's file set; every stored anchor must
    produce exactly its carriers' numbered file set (through a registered model code, else
