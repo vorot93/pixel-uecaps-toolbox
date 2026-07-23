@@ -320,13 +320,17 @@ mod tests {
     use super::*;
     use crate::report::combos::SubBlock;
 
-    fn nr_cc(band_n: i32, class: i32, mimo: &str) -> SubBlock {
+    /// `mimo` is the raw DL MIMO code: 2 renders as `4x4`, 3 as `8x8`.
+    fn nr_cc(band_n: i32, class: i32, mimo: i32) -> SubBlock {
         SubBlock {
             band: format!("n{band_n}"),
             dl_bw_class: Some(class),
             ul_bw_class: Some(class),
-            dl_max_bw_mhz: Some(100),
-            dl_mimo: Some(mimo.to_string()),
+            dl_features: vec![crate::proto::ShannonFeatureSetDlPerCcNr {
+                max_bw: Some(100),
+                max_mimo: Some(mimo),
+                ..Default::default()
+            }],
             ..Default::default()
         }
     }
@@ -339,22 +343,16 @@ mod tests {
 
     #[test]
     fn key_is_order_independent() {
-        let a = combo(vec![nr_cc(78, 1, "4x4"), nr_cc(3, 1, "4x4")]);
-        let b = combo(vec![nr_cc(3, 1, "4x4"), nr_cc(78, 1, "4x4")]);
+        let a = combo(vec![nr_cc(78, 1, 2), nr_cc(3, 1, 2)]);
+        let b = combo(vec![nr_cc(3, 1, 2), nr_cc(78, 1, 2)]);
         assert_eq!(combo_key(&a), "n3A + n78A");
         assert_eq!(combo_key(&a), combo_key(&b));
     }
 
     #[test]
     fn set_diff_added_removed_shared() {
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(41, 1, "4x4")]),
-        ];
-        let b = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(1, 1, "4x4")]),
-        ];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
         let d = diff_combos(&a, &b);
         assert_eq!(d.only_in_a, vec!["n41A"]);
         assert_eq!(d.only_in_b, vec!["n1A"]);
@@ -365,8 +363,8 @@ mod tests {
 
     #[test]
     fn detects_caps_change_per_component() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
-        let b = vec![combo(vec![nr_cc(78, 1, "8x8")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
         let d = diff_combos(&a, &b);
         assert_eq!(d.only_in_a.len(), 0);
         assert_eq!(d.only_in_b.len(), 0);
@@ -385,7 +383,7 @@ mod tests {
 
     #[test]
     fn identical_inputs_have_no_differences() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
         let d = diff_combos(&a, &a);
         assert!(!d.has_differences());
         assert_eq!(d.common, vec!["n78A"]);
@@ -394,11 +392,8 @@ mod tests {
     #[test]
     fn multi_variant_takes_block_path() {
         // same key n78A, two distinct caps variants on side A, one on side B
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(78, 1, "8x8")]),
-        ];
-        let b = vec![combo(vec![nr_cc(78, 1, "4x4")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(78, 1, 3)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 2)])];
         let d = diff_combos(&a, &b);
         assert_eq!(d.changed.len(), 1);
         match &d.changed[0].change {
@@ -427,7 +422,7 @@ mod tests {
 
     #[test]
     fn body_no_differences() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
         let d = diff_combos(&a, &a);
         assert_eq!(
             render_diff_body(&d, Detail::Summary, Common::Hide),
@@ -437,14 +432,8 @@ mod tests {
 
     #[test]
     fn body_set_diff_summary_and_lists() {
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(41, 1, "4x4")]),
-        ];
-        let b = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(1, 1, "4x4")]),
-        ];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(
             out.starts_with("  1 common (0 caps-changed) · 1 only in A · 1 only in B\n"),
@@ -456,8 +445,8 @@ mod tests {
 
     #[test]
     fn body_full_shows_caps_change() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
-        let b = vec![combo(vec![nr_cc(78, 1, "8x8")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Full, Common::Hide);
         assert!(out.contains("caps changed (1):\n"), "{out}");
         assert!(out.contains("~ n78A\n"), "{out}");
@@ -467,8 +456,8 @@ mod tests {
 
     #[test]
     fn body_omits_caps_detail_without_full() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
-        let b = vec![combo(vec![nr_cc(78, 1, "8x8")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(out.contains("1 common (1 caps-changed)"), "{out}");
         assert!(!out.contains("caps changed (1):"), "{out}");
@@ -478,14 +467,14 @@ mod tests {
     fn common_lists_all_with_markers() {
         // n41A identical in both (=), n78A caps differ (~), one unique key each side.
         let a = vec![
-            combo(vec![nr_cc(41, 1, "4x4")]),
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(5, 1, "4x4")]),
+            combo(vec![nr_cc(41, 1, 2)]),
+            combo(vec![nr_cc(78, 1, 2)]),
+            combo(vec![nr_cc(5, 1, 2)]),
         ];
         let b = vec![
-            combo(vec![nr_cc(41, 1, "4x4")]),
-            combo(vec![nr_cc(78, 1, "8x8")]),
-            combo(vec![nr_cc(1, 1, "4x4")]),
+            combo(vec![nr_cc(41, 1, 2)]),
+            combo(vec![nr_cc(78, 1, 3)]),
+            combo(vec![nr_cc(1, 1, 2)]),
         ];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
         assert!(out.contains("\ncommon (2):\n"), "{out}");
@@ -500,14 +489,8 @@ mod tests {
 
     #[test]
     fn common_off_by_default_has_no_section() {
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(41, 1, "4x4")]),
-        ];
-        let b = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(1, 1, "4x4")]),
-        ];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(!out.contains("\ncommon ("), "{out}");
         assert!(out.starts_with("  1 common (0 caps-changed)"), "{out}");
@@ -515,10 +498,7 @@ mod tests {
 
     #[test]
     fn common_with_no_differences_lists_all() {
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(41, 1, "4x4")]),
-        ];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
         let out = render_diff_body(&diff_combos(&a, &a), Detail::Summary, Common::Show);
         assert!(out.starts_with("  2 common · no differences\n"), "{out}");
         assert!(out.contains("\ncommon (2):\n"), "{out}");
@@ -529,8 +509,8 @@ mod tests {
 
     #[test]
     fn common_empty_omits_section() {
-        let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
-        let b = vec![combo(vec![nr_cc(1, 1, "4x4")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
+        let b = vec![combo(vec![nr_cc(1, 1, 2)])];
         let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
         assert!(!out.contains("\ncommon ("), "{out}");
         assert!(
@@ -545,11 +525,8 @@ mod tests {
         // lands in `changed` via the Variants path (not PerComponent). It must
         // still be marked `~` in the common section, since the marker keys off
         // `changed` membership, not the CapsChange variant.
-        let a = vec![
-            combo(vec![nr_cc(78, 1, "4x4")]),
-            combo(vec![nr_cc(78, 1, "8x8")]),
-        ];
-        let b = vec![combo(vec![nr_cc(78, 1, "4x4")])];
+        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(78, 1, 3)])];
+        let b = vec![combo(vec![nr_cc(78, 1, 2)])];
         let d = diff_combos(&a, &b);
         assert!(matches!(d.changed[0].change, CapsChange::Variants { .. }));
         let out = render_diff_body(&d, Detail::Summary, Common::Show);
@@ -572,9 +549,9 @@ mod tests {
     fn header_field_change_is_detected() {
         // Identical CC lists but a different combo-header field (power_class) must be
         // a difference.
-        let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
+        let mut a = combo(vec![nr_cc(78, 1, 2)]);
         a.power_class = Some(3);
-        let mut b = combo(vec![nr_cc(78, 1, "4x4")]);
+        let mut b = combo(vec![nr_cc(78, 1, 2)]);
         b.power_class = Some(2);
         let d = diff_combos(&[a], &[b]);
         assert!(d.has_differences(), "power_class change must be detected");
@@ -585,9 +562,9 @@ mod tests {
     #[test]
     fn bitmask_change_is_detected() {
         // Per-combo bit_mask is part of a combo's identity; compare must agree.
-        let mut a = combo(vec![nr_cc(78, 1, "4x4")]);
+        let mut a = combo(vec![nr_cc(78, 1, 2)]);
         a.bit_mask = 1;
-        let b = combo(vec![nr_cc(78, 1, "4x4")]); // bit_mask 0
+        let b = combo(vec![nr_cc(78, 1, 2)]); // bit_mask 0
         let d = diff_combos(&[a], &[b]);
         assert!(d.has_differences(), "bit_mask change must be detected");
     }

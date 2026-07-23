@@ -15,7 +15,7 @@ use prost::Message;
 use std::{collections::BTreeMap, path::Path};
 
 pub struct CarrierEntry {
-    pub index: Option<u64>,
+    pub index: u64,
     pub plmns: Vec<u64>,
 }
 
@@ -61,7 +61,7 @@ pub fn load_mapping_report(dir: &Path) -> LegendReport {
         entries.insert(
             c.name,
             CarrierEntry {
-                index: Some(c.index),
+                index: c.index,
                 plmns: c.plmns,
             },
         );
@@ -95,16 +95,18 @@ mod tests {
                 name: "TEST".into(),
             }],
         };
-        let dir = std::env::temp_dir().join(format!("uecaps-maptest-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ap_plmn_mapping.binarypb"), map.encode_to_vec()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ap_plmn_mapping.binarypb"),
+            map.encode_to_vec(),
+        )
+        .unwrap();
 
-        let loaded = load_mapping(&dir);
-        std::fs::remove_dir_all(&dir).ok();
+        let loaded = load_mapping(dir.path());
 
         assert_eq!(loaded.len(), 1);
         let entry = loaded.get("TEST").expect("carrier TEST present");
-        assert_eq!(entry.index, Some(63));
+        assert_eq!(entry.index, 63);
         assert_eq!(entry.plmns, vec![5_566_544]);
     }
 }

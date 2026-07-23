@@ -4,7 +4,10 @@ use super::read_ue_caps;
 use crate::{
     factor::{factor_display, gcd},
     mapping::load_mapping,
-    model::*,
+    model::{
+        Parsed, Profile, decode_plmn, family_desc, family_short, fp_info, matching_anchors,
+        mcc_country, parse_name, tier_short,
+    },
     outcome::Outcome,
     proto::UeCaps,
     report::{
@@ -24,11 +27,6 @@ use std::{
 fn plmn_label(v: u64) -> String {
     let (mcc, mnc) = decode_plmn(v);
     format!("{mcc}-{mnc}")
-}
-
-/// A mapping index as text, or `"-"` when absent.
-fn idx_str(index: Option<u64>) -> String {
-    index.map_or_else(|| "-".into(), |i| i.to_string())
 }
 
 /// Distinct countries covered by a PLMN list, in first-seen order.
@@ -155,8 +153,7 @@ fn print_carrier_identity(dir: &Path, carrier: &str, detail: Detail) {
     println!("Carrier      : {carrier}");
     if let Some(entry) = mapping.get(carrier) {
         if detail.is_full() {
-            let idx = idx_str(entry.index);
-            println!("  mapping idx: {idx}");
+            println!("  mapping idx: {}", entry.index);
         }
         let mut sample: Vec<String> = entry
             .plmns
@@ -300,13 +297,12 @@ fn inspect_mapping(dir: &Path) {
             "carrier", "idx", "#PLMNs"
         );
         for (name, entry) in &mapping {
-            let idx = idx_str(entry.index);
             let countries = country_summary(&entry.plmns);
             let head: Vec<&str> = countries.iter().take(6).map(String::as_str).collect();
             println!(
                 "  {:<18} {:>4} {:>7}  {}",
                 name,
-                idx,
+                entry.index,
                 entry.plmns.len(),
                 head.join(", ")
             );

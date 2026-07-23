@@ -17,13 +17,17 @@ pub(crate) enum Sku {
     Lte(u64),
 }
 
-impl Sku {
-    pub(crate) fn token(&self) -> String {
+/// The canonical source-format spelling of an SKU — what `nr.kdl`/`lte.kdl` carry in a
+/// `selection` block's `skus` list, and what error messages name it by. `parse_nr_sku` /
+/// `parse_lte_sku` are the inverse, but they need the surrounding domain to disambiguate, so
+/// there is deliberately no `FromStr`.
+impl std::fmt::Display for Sku {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Legacy => "legacy".into(),
-            Self::Model(code) => code.to_string(),
-            Self::Prime(anchor) => format!("prime:{anchor}"),
-            Self::Lte(id) => format!("lte:{id}"),
+            Self::Legacy => f.write_str("legacy"),
+            Self::Model(code) => f.write_str(code),
+            Self::Prime(anchor) => write!(f, "prime:{anchor}"),
+            Self::Lte(id) => write!(f, "lte:{id}"),
         }
     }
 }
@@ -411,7 +415,7 @@ impl LteRelation {
 
         Ok(Some(vec![SelectionRect {
             carriers: None,
-            skus: Some(self.0.iter().map(Sku::token).collect()),
+            skus: Some(self.0.iter().map(Sku::to_string).collect()),
         }]))
     }
 
@@ -436,7 +440,7 @@ impl CanonicalRect {
             }),
             skus: self.skus.map(|skus| {
                 skus.into_iter()
-                    .map(|sku| domain.sku_values[sku as usize].token())
+                    .map(|sku| domain.sku_values[sku as usize].to_string())
                     .collect()
             }),
         }
@@ -541,7 +545,7 @@ mod tests {
             .iter()
             .map(|(carrier, sku)| SelectionRect {
                 carriers: Some(vec![carrier.to_string(), carrier.to_string()]),
-                skus: Some(vec![sku.token(), sku.token()]),
+                skus: Some(vec![sku.to_string(), sku.to_string()]),
             })
             .collect()
     }
@@ -556,7 +560,7 @@ mod tests {
         rows.into_iter()
             .map(|(carrier, mut skus)| {
                 skus.reverse();
-                let mut tokens: Vec<_> = skus.into_iter().map(|sku| sku.token()).collect();
+                let mut tokens: Vec<_> = skus.iter().map(Sku::to_string).collect();
                 tokens.extend(tokens.clone());
                 SelectionRect {
                     carriers: Some(vec![carrier.clone(), carrier]),
@@ -581,7 +585,7 @@ mod tests {
                 carriers.extend(carriers.clone());
                 SelectionRect {
                     carriers: Some(carriers),
-                    skus: Some(vec![sku.token(), sku.token()]),
+                    skus: Some(vec![sku.to_string(), sku.to_string()]),
                 }
             })
             .collect()

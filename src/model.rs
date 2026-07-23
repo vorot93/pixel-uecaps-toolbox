@@ -271,11 +271,18 @@ impl PhoneModel {
         matches!(self.layout, CapabilityLayout::Bitmask)
     }
 
-    /// The profiled selector pair, or `None` for a legacy bitmask model.
-    pub const fn profiled_ids(self) -> Option<(u64, u64)> {
+    /// This model's provisioning selectors, or `None` for a legacy bitmask model (which has
+    /// neither an NR anchor nor an LTE id). The single place that flattens a `PhoneModel` +
+    /// [`CapabilityLayout::Profiled`] pair into a [`ModelInfo`].
+    pub const fn model_info(&self) -> Option<ModelInfo> {
         match self.layout {
             CapabilityLayout::Bitmask => None,
-            CapabilityLayout::Profiled { nr_anchor, lte_id } => Some((nr_anchor, lte_id)),
+            CapabilityLayout::Profiled { nr_anchor, lte_id } => Some(ModelInfo {
+                code: self.code,
+                display: self.display,
+                lte_id,
+                nr_anchor,
+            }),
         }
     }
 }
@@ -604,41 +611,41 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
 
 /// Look up a phone model by its CLI code after trimming and ASCII upper-casing it.
 pub fn phone_model(code: &str) -> Option<&'static PhoneModel> {
-    let code = code.trim().to_ascii_uppercase();
-    PHONE_MODELS.iter().find(|m| m.code == code)
+    let code = code.trim();
+    PHONE_MODELS
+        .iter()
+        .find(|m| m.code.eq_ignore_ascii_case(code))
+}
+
+/// Registered model codes matching `keep`, in lexical order — the shared body of the three
+/// registry lookups below.
+fn sorted_model_codes(keep: impl Fn(&PhoneModel) -> bool) -> Vec<&'static str> {
+    let mut codes: Vec<_> = PHONE_MODELS
+        .iter()
+        .filter(|m| keep(m))
+        .map(|m| m.code)
+        .collect();
+    codes.sort_unstable();
+    codes
 }
 
 /// Registered profiled model codes that select `anchor`, in lexical order.
 pub fn profile_model_codes(anchor: u64) -> Vec<&'static str> {
-    let mut codes: Vec<_> = PHONE_MODELS
-        .iter()
-        .filter_map(|m| match m.layout {
-            CapabilityLayout::Profiled { nr_anchor, .. } if nr_anchor == anchor => Some(m.code),
-            _ => None,
-        })
-        .collect();
-    codes.sort_unstable();
-    codes
+    sorted_model_codes(
+        |m| matches!(m.layout, CapabilityLayout::Profiled { nr_anchor, .. } if nr_anchor == anchor),
+    )
 }
 
 /// Registered profiled model codes that select LTE file `id`, in lexical order.
 pub fn lte_model_codes(id: u64) -> Vec<&'static str> {
-    let mut codes: Vec<_> = PHONE_MODELS
-        .iter()
-        .filter_map(|m| match m.layout {
-            CapabilityLayout::Profiled { lte_id, .. } if lte_id == id => Some(m.code),
-            _ => None,
-        })
-        .collect();
-    codes.sort_unstable();
-    codes
+    sorted_model_codes(
+        |m| matches!(m.layout, CapabilityLayout::Profiled { lte_id, .. } if lte_id == id),
+    )
 }
 
 /// Every registered model code, in lexical order.
 pub fn known_model_codes() -> Vec<&'static str> {
-    let mut codes: Vec<_> = PHONE_MODELS.iter().map(|m| m.code).collect();
-    codes.sort_unstable();
-    codes
+    sorted_model_codes(|_| true)
 }
 
 /// A device model resolved from its hardware SKU — the fields a caller needs to
@@ -652,42 +659,28 @@ pub struct ModelInfo {
     pub nr_anchor: u64,
 }
 
-impl From<&PhoneModel> for ModelInfo {
-    /// Preserve the original profiled-model conversion API.
-    ///
-    /// # Panics
-    ///
-    /// Panics for a bitmask model, which has no LTE ID or NR anchor. Check
-    /// [`PhoneModel::profiled_ids`] or [`device_model_layout`] first when the
-    /// caller may receive either layout.
-    fn from(m: &PhoneModel) -> Self {
-        let CapabilityLayout::Profiled { nr_anchor, lte_id } = m.layout else {
-            panic!("ModelInfo requires a profiled Exynos 5400 model");
-        };
-        Self {
-            code: m.code,
-            display: m.display,
-            lte_id,
-            nr_anchor,
-        }
+impl TryFrom<&PhoneModel> for ModelInfo {
+    type Error = NotProfiled;
+
+    /// A bitmask model has no LTE ID or NR anchor, so the conversion is fallible — use
+    /// [`PhoneModel::model_info`] or [`device_model_layout`] when the caller may receive
+    /// either layout.
+    fn try_from(m: &PhoneModel) -> Result<Self, Self::Error> {
+        m.model_info().ok_or(NotProfiled)
     }
 }
+
+/// The model uses the legacy unnumbered bitmask layout, so it has no profiled selectors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("model uses the legacy bitmask layout, which has no NR anchor or LTE id")]
+pub struct NotProfiled;
 
 /// Resolve a `ro.boot.product.hardware.sku` value (e.g. `"GUL82"`) to a known
 /// profiled Pixel model. The legacy bitmask layout has no LTE ID or NR anchor, so
 /// callers can distinguish it with [`device_model_layout`] instead of receiving
 /// invented sentinel values. `None` if unknown or if the model uses bitmasks.
 pub fn device_model(sku: &str) -> Option<ModelInfo> {
-    let m = phone_model(sku)?;
-    let CapabilityLayout::Profiled { nr_anchor, lte_id } = m.layout else {
-        return None;
-    };
-    Some(ModelInfo {
-        code: m.code,
-        display: m.display,
-        lte_id,
-        nr_anchor,
-    })
+    phone_model(sku)?.model_info()
 }
 
 /// Resolve a hardware SKU to its capability layout without requiring profiled IDs.

@@ -168,14 +168,12 @@ mod tests {
         // Two files for the same carrier both divisible by anchor 3347 (3347 and
         // 6694 = 2*3347) must not silently overwrite — both must appear and the run
         // must exit 1.
-        let dir = std::env::temp_dir().join(format!("uecaps-matrix-r9-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ALPHA_3347.binarypb"), b"x").unwrap();
-        std::fs::write(dir.join("ALPHA_6694.binarypb"), b"x").unwrap();
-        let out = dir.join("m.csv");
-        let code = matrix(&dir, Some(&out)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ALPHA_3347.binarypb"), b"x").unwrap();
+        std::fs::write(dir.path().join("ALPHA_6694.binarypb"), b"x").unwrap();
+        let out = dir.path().join("m.csv");
+        let code = matrix(dir.path(), Some(&out)).unwrap();
         let csv = std::fs::read_to_string(&out).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
         assert_eq!(
             code,
             Outcome::Findings,

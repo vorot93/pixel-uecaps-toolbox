@@ -30,9 +30,11 @@ pub(crate) fn str_to_cckind(s: &str, what: &str) -> Result<SubBlockKind> {
 }
 
 // ---- writer helpers ----
-pub(crate) fn opt_int_prop(node: &mut KdlNode, key: &str, v: Option<i128>) {
+/// Generic over the integer width so call sites pass their natural type (`i32`/`u32`/`u64`)
+/// instead of an `as i128` cast at each one.
+pub(crate) fn opt_int_prop<T: Into<i128>>(node: &mut KdlNode, key: &str, v: Option<T>) {
     if let Some(v) = v {
-        node.push(KdlEntry::new_prop(key, v));
+        node.push(KdlEntry::new_prop(key, v.into()));
     }
 }
 pub(crate) fn opt_str_prop(node: &mut KdlNode, key: &str, v: Option<&str>) {
@@ -94,36 +96,37 @@ impl<'a> NodeReader<'a> {
             .collect()
     }
 
-    /// Next positional arg as an owned string (advances the arg cursor).
-    pub(crate) fn key_str(&mut self) -> Result<String> {
-        let args = self.positional();
-        let v = args.get(self.args_used).ok_or_else(|| {
+    /// The next unconsumed positional arg, advancing the cursor. Shared preamble of
+    /// [`key_str`](Self::key_str) and [`key_int`](Self::key_int).
+    fn next_arg(&mut self) -> Result<&'a KdlValue> {
+        let v = *self.positional().get(self.args_used).ok_or_else(|| {
             anyhow!(
                 "`{}` is missing a required argument",
                 self.node.name().value()
             )
         })?;
         self.args_used += 1;
-        Ok(v.as_string()
-            .ok_or_else(|| anyhow!("`{}` argument must be a string", self.node.name().value()))?
+        Ok(v)
+    }
+
+    /// Next positional arg as an owned string (advances the arg cursor).
+    pub(crate) fn key_str(&mut self) -> Result<String> {
+        let name = self.node.name().value().to_string();
+        Ok(self
+            .next_arg()?
+            .as_string()
+            .ok_or_else(|| anyhow!("`{name}` argument must be a string"))?
             .to_string())
     }
 
     /// Next positional arg as a range-checked integer (advances the arg cursor).
     pub(crate) fn key_int<T: TryFrom<i128>>(&mut self) -> Result<T> {
-        let args = self.positional();
-        let v = args.get(self.args_used).ok_or_else(|| {
-            anyhow!(
-                "`{}` is missing a required argument",
-                self.node.name().value()
-            )
-        })?;
-        self.args_used += 1;
-        let i = v
+        let name = self.node.name().value().to_string();
+        let i = self
+            .next_arg()?
             .as_integer()
-            .ok_or_else(|| anyhow!("`{}` argument must be an integer", self.node.name().value()))?;
-        T::try_from(i)
-            .map_err(|_| anyhow!("`{}` argument {i} out of range", self.node.name().value()))
+            .ok_or_else(|| anyhow!("`{name}` argument must be an integer"))?;
+        T::try_from(i).map_err(|_| anyhow!("`{name}` argument {i} out of range"))
     }
 
     /// All remaining positional args as strings (consumes them). For list nodes.
@@ -145,29 +148,27 @@ impl<'a> NodeReader<'a> {
 
     pub(crate) fn opt_str(&mut self, key: &str) -> Result<Option<String>> {
         self.props_used.insert(key.to_string());
-        match self.node.get(key) {
-            None => Ok(None),
-            Some(v) => Ok(Some(
+        self.node
+            .get(key)
+            .map(|v| {
                 v.as_string()
-                    .ok_or_else(|| anyhow!("property `{key}` must be a string"))?
-                    .to_string(),
-            )),
-        }
+                    .ok_or_else(|| anyhow!("property `{key}` must be a string"))
+                    .map(str::to_string)
+            })
+            .transpose()
     }
 
     pub(crate) fn opt_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Option<T>> {
         self.props_used.insert(key.to_string());
-        match self.node.get(key) {
-            None => Ok(None),
-            Some(v) => {
+        self.node
+            .get(key)
+            .map(|v| {
                 let i = v
                     .as_integer()
                     .ok_or_else(|| anyhow!("property `{key}` must be an integer"))?;
-                Ok(Some(T::try_from(i).map_err(|_| {
-                    anyhow!("property `{key}` value {i} out of range")
-                })?))
-            }
-        }
+                T::try_from(i).map_err(|_| anyhow!("property `{key}` value {i} out of range"))
+            })
+            .transpose()
     }
 
     pub(crate) fn req_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<T> {
@@ -202,14 +203,13 @@ impl<'a> NodeReader<'a> {
 
     pub(crate) fn opt_bool(&mut self, key: &str) -> Result<Option<bool>> {
         self.props_used.insert(key.to_string());
-        match self.node.get(key) {
-            None => Ok(None),
-            Some(v) => {
-                Ok(Some(v.as_bool().ok_or_else(|| {
-                    anyhow!("property `{key}` must be a boolean")
-                })?))
-            }
-        }
+        self.node
+            .get(key)
+            .map(|v| {
+                v.as_bool()
+                    .ok_or_else(|| anyhow!("property `{key}` must be a boolean"))
+            })
+            .transpose()
     }
 
     /// All child nodes with this name (marks the name consumed).

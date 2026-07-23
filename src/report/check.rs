@@ -3,7 +3,10 @@
 use super::{binarypb_names, read_ue_caps};
 use crate::{
     mapping::{LegendReport, load_mapping_report},
-    model::*,
+    model::{
+        FINGERPRINTS, Parsed, Tier, family_desc, fp_info, matching_anchors, parse_name,
+        tier_fingerprints, tier_profile_count, tier_short,
+    },
     outcome::Outcome,
     proto::UeCaps,
 };
@@ -91,10 +94,10 @@ struct CarrierFinding {
     anomalies: Vec<(String, String)>,
     /// Filenames with a profile and fingerprint but no capability payload.
     stubs: Vec<String>,
-    /// Whether the carrier's majority tier is alt.
-    is_alt: bool,
-    /// `Some((seen, expected, tier))` when the profile set is short.
-    incomplete: Option<(usize, usize, &'static str)>,
+    /// The carrier's majority tier, or `None` when no file carried a recognised fingerprint.
+    tier: Option<Tier>,
+    /// `Some((seen, expected))` when the profile set is short.
+    incomplete: Option<(usize, usize)>,
 }
 
 /// What analysing one file within a carrier's group found. Returned rather than pushed
@@ -110,7 +113,7 @@ struct FileFinding {
     /// The profile anchor this file's number resolved to, when exactly one matched.
     profile_anchor: Option<u64>,
     /// This file's vote for the carrier's tier, when its fingerprint was recognised.
-    tier_vote: Option<&'static str>,
+    tier_vote: Option<Tier>,
 }
 
 /// Analyses one carrier file in isolation: which profile (if any) its number resolves to,
@@ -152,7 +155,7 @@ fn analyse_file(dir: &Path, name: &str, number: u64) -> FileFinding {
             ));
         }
         Some((ffam, tier)) => {
-            finding.tier_vote = Some(tier_short(tier));
+            finding.tier_vote = Some(tier);
             if ffam != profile.family {
                 finding.anomaly = Some((
                     name.to_string(),
@@ -178,7 +181,7 @@ fn analyse_file(dir: &Path, name: &str, number: u64) -> FileFinding {
 /// (via [`analyse_file`]), then the carrier-wide tier-majority and profile-completeness checks.
 fn analyse_carrier(dir: &Path, carrier: &str, files: &[(u64, String)]) -> CarrierFinding {
     let mut finding = CarrierFinding::default();
-    let mut tier_votes: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut tier_votes = TierVotes::default();
     let mut profiles_seen: BTreeSet<u64> = BTreeSet::new();
 
     for (number, name) in files {
@@ -192,43 +195,64 @@ fn analyse_carrier(dir: &Path, carrier: &str, files: &[(u64, String)]) -> Carrie
         if let Some(anchor) = file.profile_anchor {
             profiles_seen.insert(anchor);
         }
-        if let Some(tier_key) = file.tier_vote {
-            *tier_votes.entry(tier_key).or_insert(0) += 1;
+        if let Some(tier) = file.tier_vote {
+            tier_votes.add(tier);
         }
     }
 
-    // A real carrier's files all share one tier; a split vote is anomalous data, so
-    // surface it explicitly rather than relying on the implicit BTreeMap-order tie-break
-    // (which would silently classify a 8/8 split as "main" and expect 16 profiles).
-    if tier_votes.len() > 1 {
-        let tally: Vec<String> = tier_votes.iter().map(|(k, n)| format!("{k}={n}")).collect();
+    // A real carrier's files all share one tier; a split vote is anomalous data, so surface it
+    // explicitly rather than letting the majority rule quietly pick a side.
+    if let Some(tally) = tier_votes.split_tally() {
         finding.anomalies.push((
             carrier.to_string(),
-            format!("carrier mixes tier fingerprints ({})", tally.join(", ")),
+            format!("carrier mixes tier fingerprints ({tally})"),
         ));
     }
 
-    // Pick the majority tier. `BTreeMap` iter order is sorted, so `max_by_key` on a tie
-    // returns the lexically-last key — `"main"` (since `"alt" < "main"`). The split-vote
-    // anomaly above already flags the genuine ambiguity; this just selects a deterministic
-    // expected-profile count so the incomplete-profiles check still runs.
-    let tier = tier_votes
-        .iter()
-        .max_by_key(|(_, n)| **n)
-        .map_or("?", |(k, _)| *k);
-    if tier == "alt" {
-        finding.is_alt = true;
-    }
-    let expected = if tier == "alt" {
-        tier_profile_count(Tier::Alt)
-    } else {
-        tier_profile_count(Tier::Main)
-    };
+    finding.tier = tier_votes.majority();
+    // No recognised fingerprint at all still needs a deterministic expected count, and Main is
+    // the same fallback the tie-break uses.
+    let expected = tier_profile_count(finding.tier.unwrap_or(Tier::Main));
     if profiles_seen.len() != expected {
-        finding.incomplete = Some((profiles_seen.len(), expected, tier));
+        finding.incomplete = Some((profiles_seen.len(), expected));
     }
 
     finding
+}
+
+/// Per-tier fingerprint votes across one carrier's files.
+#[derive(Default)]
+struct TierVotes {
+    main: usize,
+    alt: usize,
+}
+
+impl TierVotes {
+    fn add(&mut self, tier: Tier) {
+        match tier {
+            Tier::Main => self.main += 1,
+            Tier::Alt => self.alt += 1,
+        }
+    }
+
+    /// `alt=<n>, main=<n>` when both tiers got a vote — the anomalous mixed-tier case. The
+    /// order is alt-then-main, as the old `BTreeMap<&str, _>` tally rendered it.
+    fn split_tally(&self) -> Option<String> {
+        (self.main > 0 && self.alt > 0).then(|| format!("alt={}, main={}", self.alt, self.main))
+    }
+
+    /// The majority tier, or `None` when nothing voted. **A tie resolves to `Main`** — the
+    /// split-vote anomaly above already flags the genuine ambiguity, and this only has to pick
+    /// a deterministic expected-profile count. (This was previously implicit in `max_by_key`
+    /// returning the lexically-last `BTreeMap` key, `"main"`; spelling it out keeps the
+    /// behaviour when the key stops being a string.)
+    const fn majority(&self) -> Option<Tier> {
+        match (self.main, self.alt) {
+            (0, 0) => None,
+            (main, alt) if alt > main => Some(Tier::Alt),
+            _ => Some(Tier::Main),
+        }
+    }
 }
 
 /// Legend corruption the lenient collapse would otherwise hide: the write path
@@ -262,7 +286,7 @@ struct Findings {
     anomalies: Vec<(String, String)>,
     stubs: Vec<String>,
     alt_carriers: Vec<String>,
-    incomplete: Vec<(String, usize, usize, &'static str)>,
+    incomplete: Vec<(String, usize, usize, Option<Tier>)>,
     not_in_legend: Vec<String>,
 }
 
@@ -277,13 +301,13 @@ fn collect_findings(dir: &Path, scan: &FolderScan, legend: &LegendReport) -> Fin
         let finding = analyse_carrier(dir, carrier, files);
         findings.anomalies.extend(finding.anomalies);
         findings.stubs.extend(finding.stubs);
-        if finding.is_alt {
+        if finding.tier == Some(Tier::Alt) {
             findings.alt_carriers.push(carrier.clone());
         }
-        if let Some((seen, expected, tier)) = finding.incomplete {
+        if let Some((seen, expected)) = finding.incomplete {
             findings
                 .incomplete
-                .push((carrier.clone(), seen, expected, tier));
+                .push((carrier.clone(), seen, expected, finding.tier));
         }
     }
 
@@ -351,12 +375,13 @@ fn print_not_in_legend_section(not_in_legend: &[String]) {
     }
 }
 
-fn print_incomplete_section(incomplete: &[(String, usize, usize, &'static str)]) {
+fn print_incomplete_section(incomplete: &[(String, usize, usize, Option<Tier>)]) {
     println!("\n## incomplete profile sets (fewer files than the tier expects)");
     if incomplete.is_empty() {
         println!("   none");
     } else {
         for (c, got, exp, tier) in incomplete {
+            let tier = tier.map_or("?", tier_short);
             println!("   {c:<16} {got}/{exp} profiles ({tier} tier)");
         }
     }
@@ -425,7 +450,7 @@ pub fn check_folder(dir: &Path) -> anyhow::Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outcome::Outcome;
+    use crate::{model::PROFILES, outcome::Outcome};
 
     #[test]
     fn headers_derive_counts_and_fingerprints_from_the_model() {

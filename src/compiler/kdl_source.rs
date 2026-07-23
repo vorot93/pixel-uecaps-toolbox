@@ -8,7 +8,9 @@ use kdl::{KdlDocument, KdlEntry, KdlNode};
 
 use crate::{
     compiler::{
-        features::{DlFeatureSource, NrSourceSubBlock, UlFeatureSource},
+        features::{
+            DlFeatureSource, NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock, UlFeatureSource,
+        },
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
             LteSourceCombo, LteSourceComponent, NrDocument, NrSourceCombo, ProfileSource,
@@ -53,71 +55,55 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
     node
 }
 
-/// The `dl-feature` values to push for `cc`, in emit order: `lte`'s single scalar proto-4/5
-/// index (0 or 1 values — the former `dl-feature-index` source override was dropped, so this
-/// is provision-derived and never written back), or the other kinds' per-CC compact-catalog
-/// references (0..N values, one per CC). Same property name either way; only the value count
-/// differs by kind — see `cc_to_node`'s header comment for the full per-kind spelling rule.
-fn dl_feature_values(cc: &NrSourceSubBlock) -> Vec<i128> {
-    match cc.kind {
-        SubBlockKind::Lte => cc.dl_feature_index.map(|v| v as i128).into_iter().collect(),
-        _ => cc.dl_feature.iter().map(|&v| v as i128).collect(),
-    }
-}
-
-/// The `ul-feature` values to push for `cc`: `lte`'s always-`Some` scalar index with a real
-/// `Some(0)` omitted (Task 8 omit-when-0 — `read_sub_block` re-defaults it), or the other
-/// kinds' per-CC compact-catalog references.
-fn ul_feature_values(cc: &NrSourceSubBlock) -> Vec<i128> {
-    match cc.kind {
-        SubBlockKind::Lte => cc
-            .ul_feature_index
-            .filter(|&v| v != 0)
-            .map(|v| v as i128)
-            .into_iter()
-            .collect(),
-        _ => cc.ul_feature.iter().map(|&v| v as i128).collect(),
-    }
-}
-
+/// Emit one `nr.kdl` sub-block node. Property order is load-bearing for byte-identity:
+/// `band` positional, then `dl-bw-class`, `dl-feature`, `ul-bw-class`, `ul-feature`,
+/// `srs-tx-switch` — direction-grouped, so DL and UL each read as a contiguous run.
+///
+/// The two node kinds spell proto 4/5 and 6/7 differently, which is why the source model is a
+/// sum type and this matches on it once:
+///   * `nr`: the proto-4/5 index is NOT surfaced — NR derives it from its feature set on
+///     provision. The per-CC catalog list becomes repeated `dl-feature=`/`ul-feature=`. An
+///     unresolved NR selector is only ever the all-zero placeholder (corpus: 0 of 1.74M
+///     non-zero), omitted here and re-derived by the reader.
+///   * `lte`: the index becomes a single scalar `dl-feature`/`ul-feature` (the LTE MIMO ×
+///     CC-count value). LTE never carries a per-CC list, so the un-suffixed name is free.
+///     `ul-feature` is always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted
+///     (Task 8 omit-when-0) and the reader re-defaults it. LTE has no `srs-tx-switch`.
 pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
-    let mut node = KdlNode::new(cckind_to_str(cc.kind));
+    let mut node = KdlNode::new(cckind_to_str(cc.kind()));
     // `band` is the node's sole leading positional argument (`nr 78 …`), pushed before
     // any property so the autoformatter keeps it leading.
-    node.push(KdlEntry::new(i128::from(cc.band)));
-    opt_int_prop(&mut node, "dl-bw-class", cc.dl_bw_class.map(|v| v as i128));
-    // The proto-4/5 feature index and the proto-6/7 per-CC catalog list are spelled per node
-    // kind:
-    //   * `nr`: the index is NOT surfaced — NR derives it from its feature set on provision (the
-    //     former `dl-feature-index`/`ul-feature-index` source override was dropped; the proto
-    //     field is still materialized on provision/decompose). Per-CC list → repeated
-    //     `dl-feature=`/`ul-feature=`; an unresolved NR selector is only ever the all-zero
-    //     placeholder (corpus: 0 of 1.74M non-zero), omitted here and re-derived by the reader.
-    //   * `lte`: index → single scalar `dl-feature`/`ul-feature` (the LTE MIMO × CC-count value).
-    //     LTE never carries a per-CC list (its selectors are the all-zero placeholder — corpus:
-    //     0 of 1.74M non-zero), so the un-suffixed name is free. `ul-feature` is always-`Some`
-    //     on LTE with `Some(0)` ⟺ no UL, so its zero is omitted (Task 8 omit-when-0) and the
-    //     reader re-defaults it. `dl_feature_values`/`ul_feature_values` above resolve the
-    //     kind-dependent value count; `push_repeated_int_prop` writes 0, 1, or N entries
-    //     uniformly, so `dl-feature` is written exactly once on an `lte` node.
-    // Properties are emitted direction-grouped — `dl-bw-class`, `dl-feature`, `ul-bw-class`,
-    // `ul-feature` — so DL and UL each read as a contiguous group instead of interleaved
-    // bw-class/feature pairs.
-    push_repeated_int_prop(&mut node, "dl-feature", &dl_feature_values(cc));
+    node.push(KdlEntry::new(i128::from(cc.band())));
+    opt_int_prop(&mut node, "dl-bw-class", cc.dl_bw_class());
+
+    let (dl_features, ul_features, srs_tx_switch): (Vec<i128>, Vec<i128>, Option<i32>) = match cc {
+        NrSourceSubBlock::Lte(cc) => (
+            cc.dl_feature_index.map(i128::from).into_iter().collect(),
+            cc.ul_feature_index
+                .filter(|&v| v != 0)
+                .map(i128::from)
+                .into_iter()
+                .collect(),
+            None,
+        ),
+        NrSourceSubBlock::Nr(cc) => (
+            cc.dl_feature.iter().map(|&v| v as i128).collect(),
+            cc.ul_feature.iter().map(|&v| v as i128).collect(),
+            cc.srs_tx_switch,
+        ),
+    };
+
+    push_repeated_int_prop(&mut node, "dl-feature", &dl_features);
     // `ul-bw-class` is corpus-verified always `Some` on a real sub-block (never `None`),
     // so `Some(0)` is omitted here and re-defaulted to `Some(0)` by `read_sub_block` below
     // (Task 8 omit-when-0) — a value-faithful round trip, not a lossy one.
     opt_int_prop(
         &mut node,
         "ul-bw-class",
-        cc.ul_bw_class.filter(|&v| v != 0).map(|v| v as i128),
+        cc.ul_bw_class().filter(|&v| v != 0),
     );
-    push_repeated_int_prop(&mut node, "ul-feature", &ul_feature_values(cc));
-    opt_int_prop(
-        &mut node,
-        "srs-tx-switch",
-        cc.srs_tx_switch.map(|v| v as i128),
-    );
+    push_repeated_int_prop(&mut node, "ul-feature", &ul_features);
+    opt_int_prop(&mut node, "srs-tx-switch", srs_tx_switch);
     node
 }
 
@@ -128,44 +114,28 @@ pub(crate) fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
         "dl-bw-class-mimo",
         comp.dl_bw_class_mimo as i128,
     ));
-    opt_int_prop(
-        &mut node,
-        "ul-bw-class-mimo",
-        comp.ul_bw_class_mimo.map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "ul-bw-class-mimo", comp.ul_bw_class_mimo);
     node
 }
 
 fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
     let mut node = KdlNode::new("dl-feature");
-    opt_int_prop(&mut node, "max-scs", f.max_scs.map(|v| v as i128));
-    opt_int_prop(&mut node, "max-mimo", f.max_mimo.map(|v| v as i128));
-    opt_int_prop(&mut node, "max-bw", f.max_bw.map(|v| v as i128));
-    opt_int_prop(
-        &mut node,
-        "max-mod-order",
-        f.max_mod_order.map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "max-scs", f.max_scs);
+    opt_int_prop(&mut node, "max-mimo", f.max_mimo);
+    opt_int_prop(&mut node, "max-bw", f.max_bw);
+    opt_int_prop(&mut node, "max-mod-order", f.max_mod_order);
     opt_bool_prop(&mut node, "bw-90mhz-supported", f.bw_90mhz_supported);
     node
 }
 
 fn emit_ul_feature(f: &UlFeatureSource) -> KdlNode {
     let mut node = KdlNode::new("ul-feature");
-    opt_int_prop(&mut node, "max-scs", f.max_scs.map(|v| v as i128));
-    opt_int_prop(&mut node, "max-mimo-cb", f.max_mimo_cb.map(|v| v as i128));
-    opt_int_prop(&mut node, "max-bw", f.max_bw.map(|v| v as i128));
-    opt_int_prop(
-        &mut node,
-        "max-mod-order",
-        f.max_mod_order.map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "max-scs", f.max_scs);
+    opt_int_prop(&mut node, "max-mimo-cb", f.max_mimo_cb);
+    opt_int_prop(&mut node, "max-bw", f.max_bw);
+    opt_int_prop(&mut node, "max-mod-order", f.max_mod_order);
     opt_bool_prop(&mut node, "bw-90mhz-supported", f.bw_90mhz_supported);
-    opt_int_prop(
-        &mut node,
-        "max-mimo-non-cb",
-        f.max_mimo_non_cb.map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "max-mimo-non-cb", f.max_mimo_non_cb);
     node
 }
 
@@ -190,13 +160,9 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     opt_int_prop(
         &mut node,
         "power-class",
-        combo.power_class.filter(|&v| v != 0).map(|v| v as i128),
+        combo.power_class.filter(|&v| v != 0),
     );
-    opt_int_prop(
-        &mut node,
-        "bcs-nr",
-        combo.bcs_nr.filter(|&v| v != 0).map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "bcs-nr", combo.bcs_nr.filter(|&v| v != 0));
     // Task 2: `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
     // exactly when it advertises that mode (`intra-band-en-dc-support == 1`). Derive the
     // common `Some(0)` from that flag and omit it; write only the ~20 exceptional zeros
@@ -212,21 +178,18 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
              omission (would re-derive as Some(0)); this combo is unexpected \
              (sub-block bands {:?}) — see \
              DESIGN.md",
-            combo.sub_blocks.iter().map(|c| c.band).collect::<Vec<_>>()
+            combo
+                .sub_blocks
+                .iter()
+                .map(NrSourceSubBlock::band)
+                .collect::<Vec<_>>()
         ),
     }
-    opt_int_prop(
-        &mut node,
-        "bcs-eutra",
-        combo.bcs_eutra.filter(|&v| v != 0).map(|v| v as i128),
-    );
+    opt_int_prop(&mut node, "bcs-eutra", combo.bcs_eutra.filter(|&v| v != 0));
     opt_int_prop(
         &mut node,
         "intra-band-en-dc-support",
-        combo
-            .intra_band_en_dc_support
-            .filter(|&v| v != 0)
-            .map(|v| v as i128),
+        combo.intra_band_en_dc_support.filter(|&v| v != 0),
     );
     if combo.selection.is_some() || !combo.sub_blocks.is_empty() {
         let kids = node.ensure_children();
@@ -244,9 +207,9 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
 
 fn emit_lte_combo(combo: &LteSourceCombo) -> KdlNode {
     let mut node = KdlNode::new("combo");
-    opt_int_prop(&mut node, "bcs", combo.bcs.map(|v| v as i128));
-    opt_int_prop(&mut node, "unknown1", combo.unknown1.map(|v| v as i128));
-    opt_int_prop(&mut node, "unknown2", combo.unknown2.map(|v| v as i128));
+    opt_int_prop(&mut node, "bcs", combo.bcs);
+    opt_int_prop(&mut node, "unknown1", combo.unknown1);
+    opt_int_prop(&mut node, "unknown2", combo.unknown2);
     if combo.selection.is_some() || !combo.components.is_empty() {
         let kids = node.ensure_children();
         if let Some(sel) = &combo.selection {
@@ -296,9 +259,9 @@ fn profile_node(key: &str, p: &ProfileSource) -> KdlNode {
 fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
     let mut node = KdlNode::new("carrier");
     node.push(KdlEntry::new(name));
-    opt_int_prop(&mut node, "bitmask-id", c.bitmask_id.map(|v| v as i128));
-    opt_int_prop(&mut node, "profiled-id", c.profiled_id.map(|v| v as i128));
-    opt_int_prop(&mut node, "mapping-id", c.mapping_id.map(|v| v as i128));
+    opt_int_prop(&mut node, "bitmask-id", c.bitmask_id);
+    opt_int_prop(&mut node, "profiled-id", c.profiled_id);
+    opt_int_prop(&mut node, "mapping-id", c.mapping_id);
     opt_int_prop(&mut node, "signature", c.signature.map(|v| v.0 as i128));
     opt_str_prop(&mut node, "tier", c.tier.map(tier_to_str));
     if c.plmns.is_some() || !c.profiles.is_empty() {
@@ -485,38 +448,31 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     // re-defaults to `Some(0)` (Task 8 omit-when-0, LTE-only). On `nr` the index is not
     // surfaced at all — it is derived from the feature set on provision — so the reader carries no
     // NR index (`None`); the source override (`dl-feature-index`/`ul-feature-index`) was dropped.
-    let (dl_feature_index, ul_feature_index, dl_feature, ul_feature) = match kind {
-        SubBlockKind::Lte => (
-            r.opt_int::<i32>("dl-feature")?,
-            r.opt_int::<i32>("ul-feature")?.or(Some(0)),
-            Vec::new(),
-            Vec::new(),
-        ),
-        _ => (
-            None, // NR derives the index on provision; no source override
-            None,
-            r.repeated_int::<usize>("dl-feature")?,
-            r.repeated_int::<usize>("ul-feature")?,
-        ),
+    let cc: NrSourceSubBlock = match kind {
+        SubBlockKind::Lte => SourceLteSubBlock {
+            band,
+            dl_bw_class,
+            ul_bw_class,
+            dl_feature_index: r.opt_int::<i32>("dl-feature")?,
+            ul_feature_index: r.opt_int::<i32>("ul-feature")?.or(Some(0)),
+        }
+        .into(),
+        SubBlockKind::Nr => SourceNrSubBlock {
+            band,
+            dl_bw_class,
+            ul_bw_class,
+            dl_feature: r.repeated_int::<usize>("dl-feature")?,
+            ul_feature: r.repeated_int::<usize>("ul-feature")?,
+            srs_tx_switch: r.opt_int::<i32>("srs-tx-switch")?,
+        }
+        .into(),
     };
-    let srs_tx_switch = r.opt_int::<i32>("srs-tx-switch")?;
     r.finish()?; // now rejects any stray dl-cc-id / *-feature-index as unknown properties
     // The raw selector bytes are NOT reconstructed here. An unresolved direction only ever
-    // carries the all-zero placeholder, which is a pure function of `kind` + `bw_class`, so
+    // carries the all-zero placeholder, which is a pure function of kind + `bw_class`, so
     // `cc_to_node` omits it and `NrSourceSubBlock::resolve` (the single provision-path boundary
-    // that needs the bytes) re-derives it. Carrying it on the source model would let a
-    // component hold a catalog reference and a raw selector for the same direction.
-    Ok(NrSourceSubBlock {
-        kind,
-        band,
-        dl_bw_class,
-        ul_bw_class,
-        dl_feature_index,
-        ul_feature_index,
-        dl_feature,
-        ul_feature,
-        srs_tx_switch,
-    })
+    // that needs the bytes) re-derives it.
+    Ok(cc)
 }
 
 fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
@@ -580,7 +536,7 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
 
 /// Parses `bitmask-carriers`, or errors if it already appeared once — same duplicate-before-
 /// parse order as `read_version`.
-fn read_bitmask_carriers(node: &KdlNode, existing: Option<&Vec<String>>) -> Result<Vec<String>> {
+fn read_bitmask_carriers(node: &KdlNode, existing: Option<&[String]>) -> Result<Vec<String>> {
     if existing.is_some() {
         bail!("duplicate `bitmask-carriers`");
     }
@@ -611,7 +567,7 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
         match node.name().value() {
             "version" => version = Some(read_version(node, version)?),
             "bitmask-carriers" => {
-                bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_ref())?);
+                bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
             }
             "bitmask-fingerprint" => bitmask_fingerprints.push(read_fingerprint(node)?),
             "carrier" => insert_unique(&mut carriers, "carrier", read_carrier(node)?)?,
@@ -778,16 +734,12 @@ mod combinator_tests {
 #[cfg(test)]
 mod nr_tests {
     use super::*;
-    use crate::{
-        compiler::{
-            features::{DlFeatureSource, NrSourceSubBlock, UlFeatureSource},
-            schema::{
-                BitmaskFingerprint, CarrierSource, DecimalU64, NrDocument, NrSourceCombo,
-                ProfileSource,
-            },
-            selection::SelectionRect,
+    use crate::compiler::{
+        features::{DlFeatureSource, NrSourceSubBlock, SourceNrSubBlock, UlFeatureSource},
+        schema::{
+            BitmaskFingerprint, CarrierSource, DecimalU64, NrDocument, NrSourceCombo, ProfileSource,
         },
-        raw_nr::SubBlockKind,
+        selection::SelectionRect,
     };
     use std::collections::BTreeMap;
 
@@ -842,17 +794,15 @@ mod nr_tests {
                 bcs_intra_endc: None,
                 bcs_eutra: None,
                 intra_band_en_dc_support: None,
-                sub_blocks: vec![NrSourceSubBlock {
-                    kind: SubBlockKind::Nr,
-                    band: 78,
-                    dl_bw_class: Some(1),
-                    ul_bw_class: None,
-                    dl_feature_index: None,
-                    ul_feature_index: None,
-                    dl_feature: vec![0],
-                    ul_feature: vec![],
-                    srs_tx_switch: None,
-                }],
+                sub_blocks: vec![
+                    SourceNrSubBlock {
+                        band: 78,
+                        dl_bw_class: Some(1),
+                        dl_feature: vec![0],
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
             }],
         }
     }
@@ -893,10 +843,12 @@ mod nr_tests {
         let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr 48 dl-bw-class=2 dl-feature=5 dl-feature=8\n    lte 66 dl-bw-class=1\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
-        assert_eq!(cc[0].kind, SubBlockKind::Nr);
-        assert_eq!(cc[0].dl_feature, vec![5, 8], "repeated dl-feature");
-        assert_eq!(cc[1].kind, SubBlockKind::Lte);
-        assert!(cc[1].dl_feature.is_empty());
+        let NrSourceSubBlock::Nr(nr) = &cc[0] else {
+            panic!("first sub-block is an `nr` node, got {:?}", cc[0])
+        };
+        assert_eq!(nr.dl_feature, vec![5, 8], "repeated dl-feature");
+        // The `lte` variant has no per-CC feature list to be empty — that is the point.
+        assert!(matches!(cc[1], NrSourceSubBlock::Lte(_)));
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
             text,
@@ -912,16 +864,16 @@ mod nr_tests {
         let text = "version 1\nbitmask-carriers ATT\ncombo {\n    lte 7 dl-bw-class=2 dl-feature=1 ul-bw-class=1 ul-feature=2\n    lte 66 dl-bw-class=1 dl-feature=3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
-        assert_eq!(cc[0].kind, SubBlockKind::Lte);
-        assert_eq!(cc[0].dl_feature_index, Some(1));
-        assert_eq!(cc[0].ul_feature_index, Some(2));
-        assert!(
-            cc[0].dl_feature.is_empty() && cc[0].ul_feature.is_empty(),
-            "LTE carries no per-CC feature list"
-        );
-        assert_eq!(cc[1].dl_feature_index, Some(3));
+        // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
+        // variant simply has no such field.
+        let [NrSourceSubBlock::Lte(first), NrSourceSubBlock::Lte(second)] = &cc[..] else {
+            panic!("both sub-blocks are `lte` nodes, got {cc:?}")
+        };
+        assert_eq!(first.dl_feature_index, Some(1));
+        assert_eq!(first.ul_feature_index, Some(2));
+        assert_eq!(second.dl_feature_index, Some(3));
         assert_eq!(
-            cc[1].ul_feature_index,
+            second.ul_feature_index,
             Some(0),
             "absent ul-feature on an lte node defaults to Some(0)"
         );

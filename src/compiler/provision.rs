@@ -7,13 +7,13 @@ use super::{
     decompose::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
     lte::generate_lte_file,
     nr::{NrTarget, generate_nr_files},
-    schema::{ValidatedNr, ValidatedSources, parse_sources},
+    schema::{ValidatedNr, ValidatedSources, legend_root, parse_sources},
     selection::Sku,
 };
 use crate::{
     atomic::write_bytes_atomic,
     magisk::{ModuleEntry, replacement_module, validate_module_basename},
-    mapping::{MappingEntry, MappingRoot, Plmn, encode_root_verified},
+    mapping::encode_root_verified,
     model::{CapabilityLayout, PhoneModel, known_model_codes, phone_model},
     outcome::Outcome,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
@@ -141,33 +141,7 @@ pub(crate) fn generate_files(
 }
 
 fn generate_mapping_file(nr: &ValidatedNr) -> anyhow::Result<GeneratedFile> {
-    let mut mappings = nr
-        .carriers
-        .iter()
-        .filter_map(|(name, carrier)| {
-            carrier.plmns.as_ref().map(|plmns| {
-                let id = carrier
-                    .mapping_id
-                    .expect("validated carrier with PLMNs has mapping_id");
-                let plmns = plmns
-                    .iter()
-                    .map(|value| {
-                        Plmn::from_encoded(*value)
-                            .expect("validated source PLMN remains within 24 bits")
-                            .to_string()
-                    })
-                    .collect();
-                MappingEntry {
-                    id,
-                    name: name.clone(),
-                    plmns,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    mappings.sort_by_key(|entry| entry.id);
-
-    let root = MappingRoot { mappings };
+    let root = legend_root(&nr.carriers);
     let bytes = encode_root_verified(&root, "generated ap_plmn_mapping.binarypb")?;
     Ok(GeneratedFile {
         basename: MAPPING_BASENAME.into(),
@@ -263,7 +237,7 @@ mod tests {
         compiler::{
             GeneratedFile,
             decompose::decompose,
-            features::{DlFeatureSource, NrSourceSubBlock},
+            features::{DlFeatureSource, NrSourceSubBlock, SourceNrSubBlock},
             schema::{
                 BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
                 LteFileSource, LteSourceCombo, LteSourceComponent, NrDocument, NrSourceCombo,
@@ -275,7 +249,6 @@ mod tests {
         model::{known_model_codes, phone_model},
         outcome::Outcome,
         proto::PlmnMap,
-        raw_nr::SubBlockKind,
         report::combos::build_combos_with_bitmasks,
         wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
     };
@@ -305,13 +278,15 @@ mod tests {
             bcs_intra_endc: None,
             bcs_eutra: Some(0),
             intra_band_en_dc_support: Some(0),
-            sub_blocks: vec![NrSourceSubBlock {
-                kind: SubBlockKind::Nr,
-                band,
-                dl_bw_class: Some(1),
-                ul_bw_class: Some(1),
-                ..Default::default()
-            }],
+            sub_blocks: vec![
+                SourceNrSubBlock {
+                    band,
+                    dl_bw_class: Some(1),
+                    ul_bw_class: Some(1),
+                    ..Default::default()
+                }
+                .into(),
+            ],
         }
     }
 
@@ -1079,7 +1054,10 @@ mod tests {
         too_many_features.combo = (1..=256)
             .map(|max_scs| {
                 let mut combo = nr_combo(1, &["ALPHA"], &["legacy"]);
-                combo.sub_blocks[0].dl_feature = vec![max_scs as usize];
+                let NrSourceSubBlock::Nr(cc) = &mut combo.sub_blocks[0] else {
+                    panic!("nr_combo builds an `nr` sub-block")
+                };
+                cc.dl_feature = vec![max_scs as usize];
                 combo
             })
             .collect();

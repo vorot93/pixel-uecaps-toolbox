@@ -12,8 +12,8 @@ use super::{
     lte::{DecodedLteFile, generate_lte_file, ingest_lte},
     nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
     schema::{
-        LteDocument, NrDocument, ValidatedLte, ValidatedNr, ValidatedSources, parse_sources,
-        validate_documents,
+        LteDocument, NrDocument, ValidatedLte, ValidatedNr, ValidatedSources, legend_root,
+        parse_sources, validate_documents,
     },
     selection::Sku,
 };
@@ -23,14 +23,9 @@ use crate::{
     mapping::{MappingRoot, map_to_root, root_to_map},
     model::{lte_model_codes, profile_model_codes},
     outcome::Outcome,
-    proto::{Carrier, PlmnMap},
+    proto::PlmnMap,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum BitmaskInputName {
-    Carrier(String),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ProfiledInputName {
@@ -47,12 +42,10 @@ struct ClassifiedFile<T> {
 }
 
 /// Every bitmask-folder file, decoded into its `LegacyNrFile` capture.
-fn decode_legacy_files(
-    files: Vec<ClassifiedFile<BitmaskInputName>>,
-) -> anyhow::Result<Vec<LegacyNrFile>> {
+fn decode_legacy_files(files: Vec<ClassifiedFile<String>>) -> anyhow::Result<Vec<LegacyNrFile>> {
     let mut legacy = Vec::with_capacity(files.len());
     for file in files {
-        let BitmaskInputName::Carrier(carrier) = file.kind;
+        let carrier = file.kind;
         let bytes = read_file(&file.path, &file.basename)?;
         let caps = decode_uecaps(&bytes, &file.basename)?;
         legacy.push(LegacyNrFile { carrier, caps });
@@ -220,7 +213,7 @@ pub fn decompose(
     Ok(Outcome::Clean)
 }
 
-fn classify_bitmask_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<BitmaskInputName>>> {
+fn classify_bitmask_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<String>>> {
     let files = classify_directory(dir, "bitmask", classify_bitmask_name)?;
     ensure!(
         !files.is_empty(),
@@ -299,7 +292,9 @@ fn classify_directory<T>(
     Ok(files)
 }
 
-fn classify_bitmask_name(basename: &str) -> anyhow::Result<BitmaskInputName> {
+/// A bitmask-folder basename is just its carrier name — there is only one shape, unlike the
+/// profiled folder's three ([`ProfiledInputName`]).
+fn classify_bitmask_name(basename: &str) -> anyhow::Result<String> {
     let stem = basename
         .strip_suffix(".binarypb")
         .expect("caller filters exact binarypb extension");
@@ -317,13 +312,12 @@ fn classify_bitmask_name(basename: &str) -> anyhow::Result<BitmaskInputName> {
     {
         anyhow::bail!("unsupported numbered file `{basename}` in bitmask input");
     }
-    Ok(BitmaskInputName::Carrier(stem.into()))
+    Ok(stem.into())
 }
 
 /// Require a generated legacy NR basename to classify exactly as a bitmask carrier input.
 pub(super) fn validate_bitmask_carrier_basename(basename: &str) -> anyhow::Result<()> {
-    let BitmaskInputName::Carrier(_) = classify_bitmask_name(basename)?;
-    Ok(())
+    classify_bitmask_name(basename).map(drop)
 }
 
 fn classify_profiled_name(basename: &str) -> anyhow::Result<ProfiledInputName> {
@@ -407,9 +401,8 @@ fn verify_legacy_nr_target(sources: &ValidatedNr) -> anyhow::Result<()> {
     ensure!(
         legacy
             .iter()
-            .map(|file| file.basename.clone())
-            .collect::<Vec<_>>()
-            == expected_legacy,
+            .map(|file| file.basename.as_str())
+            .eq(expected_legacy.iter().map(String::as_str)),
         "legacy NR target generated an unexpected file set"
     );
     for file in &legacy {
@@ -425,7 +418,12 @@ fn verify_profiled_nr_targets(sources: &ValidatedNr) -> anyhow::Result<()> {
     let anchors = sources
         .carriers
         .values()
-        .flat_map(|carrier| carrier.profiles.keys().copied())
+        .flat_map(|carrier| {
+            carrier
+                .profiled
+                .iter()
+                .flat_map(|p| p.profiles.keys().copied())
+        })
         .collect::<BTreeSet<_>>();
     for anchor in anchors {
         let sku = profile_model_codes(anchor)
@@ -438,6 +436,8 @@ fn verify_profiled_nr_targets(sources: &ValidatedNr) -> anyhow::Result<()> {
             .iter()
             .filter_map(|(carrier, source)| {
                 source
+                    .profiled
+                    .as_ref()?
                     .profiles
                     .get(&anchor)
                     .map(|profile| format!("{carrier}_{}.binarypb", profile.number))
@@ -447,9 +447,8 @@ fn verify_profiled_nr_targets(sources: &ValidatedNr) -> anyhow::Result<()> {
         ensure!(
             generated
                 .iter()
-                .map(|file| file.basename.clone())
-                .collect::<Vec<_>>()
-                == expected,
+                .map(|file| file.basename.as_str())
+                .eq(expected.iter().map(String::as_str)),
             "NR profile anchor {anchor} generated an unexpected file set"
         );
         for file in &generated {
@@ -505,23 +504,9 @@ fn verify_internal_targets(
 }
 
 fn rebuild_mapping(sources: &ValidatedSources) -> anyhow::Result<Vec<u8>> {
-    let mut carriers = sources
-        .nr
-        .carriers
-        .iter()
-        .filter_map(|(name, source)| {
-            source.plmns.as_ref().map(|plmns| Carrier {
-                plmns: plmns.clone(),
-                index: source
-                    .mapping_id
-                    .expect("validated PLMN carrier has mapping_id"),
-                name: name.clone(),
-            })
-        })
-        .collect::<Vec<_>>();
-    carriers.sort_by_key(|carrier| carrier.index);
-    let mapping = PlmnMap { carriers };
-    let root = map_to_root(&mapping).context("building self-verification PLMN mapping")?;
+    // The same id-ordered projection `provision` ships, so this self-check compares the
+    // original bytes against exactly what generation would produce.
+    let root = legend_root(&sources.nr.carriers);
     let mapping = root_to_map(&root).context("validating self-verification PLMN mapping")?;
     let bytes = mapping.encode_to_vec();
     let decoded = decode_plmn_map(&bytes, "rebuilt ap_plmn_mapping.binarypb")?;

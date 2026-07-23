@@ -19,7 +19,7 @@ enum ModeledMessage {
     ComboGroup,
     Header,
     Combo,
-    Cc,
+    SubBlock,
     DlFeature,
     UlFeature,
     LteCaps,
@@ -46,7 +46,7 @@ impl ModeledMessage {
             Self::ComboGroup => "ComboGroup",
             Self::Header => "ComboGroup.ComboHeader",
             Self::Combo => "ComboGroup.Combo",
-            Self::Cc => "ComboGroup.Combo.SubBlock",
+            Self::SubBlock => "ComboGroup.Combo.SubBlock",
             Self::DlFeature => "ShannonFeatureSetDlPerCCNr",
             Self::UlFeature => "ShannonFeatureSetUlPerCCNr",
             Self::LteCaps => "LteCaps",
@@ -81,8 +81,8 @@ impl ModeledField {
 const fn modeled_field(message: ModeledMessage, field: u64) -> Option<ModeledField> {
     use ModeledField::{Bytes, Message, Varint};
     use ModeledMessage::{
-        Carrier, Cc, Combo, ComboGroup, DlFeature, Header, LteCaps, LteCombo, LteComponent,
-        PlmnMap, UeCaps, UlFeature,
+        Carrier, Combo, ComboGroup, DlFeature, Header, LteCaps, LteCombo, LteComponent, PlmnMap,
+        SubBlock, UeCaps, UlFeature,
     };
 
     Some(match (message, field) {
@@ -93,10 +93,10 @@ const fn modeled_field(message: ModeledMessage, field: u64) -> Option<ModeledFie
         (ComboGroup, 1) => Message(Header),
         (ComboGroup, 2) => Message(Combo),
         (Header, 1..=5) => Varint,
-        (Combo, 1) => Message(Cc),
+        (Combo, 1) => Message(SubBlock),
         (Combo, 2) => Varint,
-        (Cc, 1..=5 | 8) => Varint,
-        (Cc, 6 | 7) => Bytes,
+        (SubBlock, 1..=5 | 8) => Varint,
+        (SubBlock, 6 | 7) => Bytes,
         (DlFeature, 1..=5) => Varint,
         (UlFeature, 1..=6) => Varint,
         (LteCaps, 1 | 3) => Varint,
@@ -237,55 +237,29 @@ pub(crate) fn decode_plmn_map(bytes: &[u8], label: &str) -> anyhow::Result<PlmnM
 
 #[cfg(test)]
 mod tests {
-    use super::{RootMessage, decode_lte_caps, decode_plmn_map, decode_uecaps, ensure_modeled};
+    use super::{
+        RootMessage, decode_lte_caps, decode_plmn_map, decode_uecaps, ensure_modeled, modeled_field,
+    };
     use crate::proto::{
         Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr,
         ShannonFeatureSetUlPerCcNr, UeCaps,
-        combo_group::{Combo, ComboHeader, combo::SubBlock},
+        combo_group::{Combo, ComboHeader, combo::SubBlock as ProtoSubBlock},
     };
     use prost::Message;
 
-    #[derive(Clone, Copy, Debug)]
-    enum TestMessage {
-        UeCaps,
-        ComboGroup,
-        Header,
-        Combo,
-        Cc,
-        DlFeature,
-        UlFeature,
-        LteCaps,
-        LteCombo,
-        LteComponent,
-        PlmnMap,
-        Carrier,
-    }
+    /// The test fixtures hang off the production enum rather than a copy of it, so a message
+    /// added to [`ModeledMessage`] is a compile error here until it is covered, instead of
+    /// silently dropping out of the sweeps below.
+    use super::ModeledMessage as TestMessage;
 
     impl TestMessage {
-        const fn name(self) -> &'static str {
-            match self {
-                Self::UeCaps => "UeCaps",
-                Self::ComboGroup => "ComboGroup",
-                Self::Header => "ComboGroup.ComboHeader",
-                Self::Combo => "ComboGroup.Combo",
-                Self::Cc => "ComboGroup.Combo.SubBlock",
-                Self::DlFeature => "ShannonFeatureSetDlPerCCNr",
-                Self::UlFeature => "ShannonFeatureSetUlPerCCNr",
-                Self::LteCaps => "LteCaps",
-                Self::LteCombo => "LteCombo",
-                Self::LteComponent => "LteComponent",
-                Self::PlmnMap => "PlmnMap",
-                Self::Carrier => "Carrier",
-            }
-        }
-
         fn valid_bytes(self) -> Vec<u8> {
             match self {
                 Self::UeCaps => UeCaps::default().encode_to_vec(),
                 Self::ComboGroup => ComboGroup::default().encode_to_vec(),
                 Self::Header => ComboHeader::default().encode_to_vec(),
                 Self::Combo => Combo::default().encode_to_vec(),
-                Self::Cc => SubBlock::default().encode_to_vec(),
+                Self::SubBlock => ProtoSubBlock::default().encode_to_vec(),
                 Self::DlFeature => ShannonFeatureSetDlPerCcNr::default().encode_to_vec(),
                 Self::UlFeature => ShannonFeatureSetUlPerCcNr::default().encode_to_vec(),
                 Self::LteCaps => LteCaps::default().encode_to_vec(),
@@ -308,7 +282,7 @@ mod tests {
                     RootMessage::UeCaps,
                     length_delimited(3, length_delimited(2, payload)),
                 ),
-                Self::Cc => (
+                Self::SubBlock => (
                     RootMessage::UeCaps,
                     length_delimited(3, length_delimited(2, length_delimited(1, payload))),
                 ),
@@ -331,7 +305,7 @@ mod tests {
         TestMessage::ComboGroup,
         TestMessage::Header,
         TestMessage::Combo,
-        TestMessage::Cc,
+        TestMessage::SubBlock,
         TestMessage::DlFeature,
         TestMessage::UlFeature,
         TestMessage::LteCaps,
@@ -341,44 +315,17 @@ mod tests {
         TestMessage::Carrier,
     ];
 
-    const MODELED_FIELDS: &[(TestMessage, &[(u64, u8)])] = &[
-        (
-            TestMessage::UeCaps,
-            &[(1, 0), (2, 0), (3, 2), (6, 2), (7, 2), (9, 0)],
-        ),
-        (TestMessage::ComboGroup, &[(1, 2), (2, 2)]),
-        (
-            TestMessage::Header,
-            &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)],
-        ),
-        (TestMessage::Combo, &[(1, 2), (2, 0)]),
-        (
-            TestMessage::Cc,
-            &[
-                (1, 0),
-                (2, 0),
-                (3, 0),
-                (4, 0),
-                (5, 0),
-                (6, 2),
-                (7, 2),
-                (8, 0),
-            ],
-        ),
-        (
-            TestMessage::DlFeature,
-            &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)],
-        ),
-        (
-            TestMessage::UlFeature,
-            &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0), (6, 0)],
-        ),
-        (TestMessage::LteCaps, &[(1, 0), (2, 2), (3, 0)]),
-        (TestMessage::LteCombo, &[(1, 2), (2, 0), (3, 0), (4, 0)]),
-        (TestMessage::LteComponent, &[(1, 0), (2, 0), (3, 0)]),
-        (TestMessage::PlmnMap, &[(1, 2)]),
-        (TestMessage::Carrier, &[(1, 0), (2, 0), (3, 2)]),
-    ];
+    /// Every `(field, expected wire type)` the schema models for `message`, read back out of
+    /// [`modeled_field`] itself rather than re-listed here — a hand-copied table would let a
+    /// newly modeled field go silently untested. Field 15 is the highest the schema uses (the
+    /// unknown-field probes below encode 15), so scanning past it would find nothing.
+    fn modeled_fields(message: TestMessage) -> Vec<(u64, u8)> {
+        (1..=15)
+            .filter_map(|field| {
+                modeled_field(message, field).map(|modeled| (field, modeled.wire_type() as u8))
+            })
+            .collect()
+    }
 
     fn push_varint(mut value: u64, out: &mut Vec<u8>) {
         while value >= 0x80 {
@@ -431,8 +378,10 @@ mod tests {
 
     #[test]
     fn rejects_the_wrong_wire_type_for_every_modeled_field() {
-        for &(message, fields) in MODELED_FIELDS {
-            for &(field, expected_wire) in fields {
+        for &message in MESSAGES {
+            let fields = modeled_fields(message);
+            assert!(!fields.is_empty(), "{message:?} models no fields");
+            for (field, expected_wire) in fields {
                 let (wrong_wire, invalid) = if expected_wire == 0 {
                     (2, length_delimited(field, Vec::new()))
                 } else {

@@ -17,22 +17,21 @@ use crate::{
     wire::decode_lte_caps,
 };
 
+/// An LTE combo's identity: everything but its `selection`. Field order is load-bearing — the
+/// derived `Ord` drives `topological_order`'s `BTreeSet::pop_first`, which fixes `lte.kdl`'s
+/// combo order and hence the generated LTE bytes. Do not reorder.
+///
+/// This is also the dedup key `validate_lte_combos` builds from an `LteSourceCombo`, so the
+/// ingest side and the validate side compare payloads by exactly the same definition.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RawLteCombo {
-    pub(crate) components: Vec<RawLteComponent>,
+    pub(crate) components: Vec<LteSourceComponent>,
     pub(crate) bcs: Option<u64>,
     pub(crate) unknown1: Option<u64>,
     pub(crate) unknown2: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct RawLteComponent {
-    pub(crate) band: i32,
-    pub(crate) dl_bw_class_mimo: i32,
-    pub(crate) ul_bw_class_mimo: Option<i32>,
-}
-
-impl From<&LteComponent> for RawLteComponent {
+impl From<&LteComponent> for LteSourceComponent {
     fn from(component: &LteComponent) -> Self {
         Self {
             band: component.band,
@@ -45,7 +44,11 @@ impl From<&LteComponent> for RawLteComponent {
 impl From<&LteCombo> for RawLteCombo {
     fn from(combo: &LteCombo) -> Self {
         Self {
-            components: combo.components.iter().map(RawLteComponent::from).collect(),
+            components: combo
+                .components
+                .iter()
+                .map(LteSourceComponent::from)
+                .collect(),
             bcs: combo.bcs,
             unknown1: combo.unknown1,
             unknown2: combo.unknown2,
@@ -179,13 +182,12 @@ fn verify_lte_ingest(
 ) -> anyhow::Result<()> {
     for (id, file) in files_by_id {
         for sku in skus_for_file(*id) {
-            let generated = generate_lte_file(validated, *id, &sku).with_context(|| {
-                format!("self-verifying lte_{id}.binarypb for `{}`", sku.token())
-            })?;
+            let generated = generate_lte_file(validated, *id, &sku)
+                .with_context(|| format!("self-verifying lte_{id}.binarypb for `{}`", sku))?;
             ensure!(
                 generated.bytes == file.original,
                 "LTE decode self-verification for lte_{id}.binarypb and `{}` was not byte-identical",
-                sku.token()
+                sku
             );
         }
     }
@@ -241,7 +243,7 @@ pub(crate) fn generate_lte_file(
     ensure!(
         lte.domain.iter().any(|eligible| eligible == sku),
         "SKU token `{}` is absent from the LTE source domain",
-        sku.token()
+        sku
     );
     let metadata = lte
         .files
@@ -289,7 +291,7 @@ fn validate_target(id: u64, sku: &Sku) -> anyhow::Result<()> {
     ensure!(
         eligible.contains(sku),
         "SKU token `{}` does not select LTE file ID {id}",
-        sku.token()
+        sku
     );
     Ok(())
 }
@@ -346,15 +348,7 @@ fn source_from_raw(
         bcs: payload.bcs,
         unknown1: payload.unknown1,
         unknown2: payload.unknown2,
-        components: payload
-            .components
-            .iter()
-            .map(|component| LteSourceComponent {
-                band: component.band,
-                dl_bw_class_mimo: component.dl_bw_class_mimo,
-                ul_bw_class_mimo: component.ul_bw_class_mimo,
-            })
-            .collect(),
+        components: payload.components.clone(),
     }
 }
 

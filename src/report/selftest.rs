@@ -1,6 +1,14 @@
 //! Data-independent runtime sanity checks (`self-test`).
 
-use crate::{factor::factorize, model::*, outcome::Outcome, proto::UeCaps};
+use crate::{
+    factor::factorize,
+    model::{
+        CapabilityLayout, Family, LTE_CONFIGS, PHONE_MODELS, PROFILES, Tier, decode_plmn, fp_info,
+        identify_profile, known_model_codes,
+    },
+    outcome::Outcome,
+    proto::UeCaps,
+};
 use pixel_bands::PIXEL_BANDS;
 use prost::Message;
 

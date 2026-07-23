@@ -40,7 +40,7 @@ fn lib_exposes_phone_models() {
 #[test]
 fn lib_keeps_profiled_model_info_compatible() {
     let model = phone_model("GUL82").unwrap();
-    let info = ModelInfo::from(model);
+    let info = ModelInfo::try_from(model).expect("GUL82 is a profiled model");
     assert_eq!(info.lte_id, 1_254_026_417);
     assert_eq!(info.nr_anchor, 3_616_442_437);
     assert_eq!(device_model(" gul82\n"), Some(info));
@@ -50,4 +50,7 @@ fn lib_keeps_profiled_model_info_compatible() {
         Some(CapabilityLayout::Bitmask)
     );
     assert!(device_model("G0DZQ").is_none());
+    // A bitmask model has no profiled selectors, so the conversion fails rather than panics.
+    let bitmask = phone_model("G0DZQ").unwrap();
+    assert!(ModelInfo::try_from(bitmask).is_err());
 }

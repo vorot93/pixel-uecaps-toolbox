@@ -17,6 +17,10 @@ use zip::ZipArchive;
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
 
+/// Mirrors `report::combos::NR_BAND_OFFSET`, which is `pub(crate)` and so unreachable from
+/// this integration-test crate.
+const NR_BAND_OFFSET: i32 = 10_000;
+
 fn read_lte_sequences(dir: &Path) -> BTreeMap<u64, Vec<Vec<u8>>> {
     let mut sequences = BTreeMap::new();
     for entry in fs::read_dir(dir).expect("reading the optional profiled corpus") {
@@ -365,7 +369,6 @@ fn nr_feature_index_matches_derivation_formula() {
         eprintln!("skipping NR feature-index formula test: set both corpus variables");
         return;
     };
-    const NR_BAND_OFFSET: i32 = 10_000;
 
     /// All-or-nothing per-CC resolution (mirrors `report::combos::resolve_all`): every
     /// selector byte must be a valid 1-based catalog index, or none of them resolve.
@@ -473,7 +476,6 @@ fn lte_feature_index_is_always_some_in_corpus() {
         eprintln!("skipping LTE feature-index always-Some test: set both corpus variables");
         return;
     };
-    const NR_BAND_OFFSET: i32 = 10_000;
 
     let mut checked = 0u64;
     for dir in [Path::new(&bitmask), Path::new(&profiled)] {
@@ -557,7 +559,6 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
         eprintln!("skipping ATT n48 non-uniform sub-block regression: set both corpus variables");
         return;
     };
-    const NR_BAND_OFFSET: i32 = 10_000;
     const ATT_N48_BAND: i32 = NR_BAND_OFFSET + 48;
 
     let bitmask = Path::new(&bitmask);

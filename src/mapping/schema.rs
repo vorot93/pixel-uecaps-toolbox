@@ -19,7 +19,10 @@ pub(crate) struct Root {
 pub(crate) struct MappingEntry {
     pub(crate) id: u64,
     pub(crate) name: String,
-    pub(crate) plmns: Vec<String>,
+    /// Carried as the validated newtype, not as text: `Plmn` is bijective with its `MCC-MNC`
+    /// spelling, so keeping the parsed form means the codec below is the only place that
+    /// touches the packed-BCD encoding, and no downstream site can hold an unvalidated one.
+    pub(crate) plmns: Vec<Plmn>,
 }
 
 /// proto → editable model (decode). Preserves entry and `plmns` order verbatim.
@@ -29,7 +32,7 @@ pub(crate) fn map_to_root(map: &PlmnMap) -> Result<Root, Error> {
         let plmns = c
             .plmns
             .iter()
-            .map(|&v| Ok(Plmn::from_encoded(v)?.to_string()))
+            .map(|&v| Plmn::from_encoded(v))
             .collect::<Result<Vec<_>, Error>>()?;
         mappings.push(MappingEntry {
             id: c.index,
@@ -56,10 +59,7 @@ pub(crate) fn root_to_map(root: &Root) -> Result<PlmnMap, Error> {
         if !seen_names.insert(name.as_str()) {
             return Err(Error::DuplicateName(name.clone()));
         }
-        let plmns = plmns
-            .iter()
-            .map(|s| Ok(s.parse::<Plmn>()?.to_encoded()))
-            .collect::<Result<Vec<_>, Error>>()?;
+        let plmns = plmns.iter().copied().map(Plmn::to_encoded).collect();
         carriers.push(Carrier {
             plmns,
             index: *id,
@@ -153,6 +153,9 @@ mod tests {
         let root = map_to_root(&map).unwrap();
         assert_eq!(root.mappings[0].id, 7);
         assert_eq!(root.mappings[0].name, "X");
-        assert_eq!(root.mappings[0].plmns, vec!["250-01".to_string()]);
+        assert_eq!(
+            root.mappings[0].plmns,
+            vec!["250-01".parse::<Plmn>().unwrap()]
+        );
     }
 }

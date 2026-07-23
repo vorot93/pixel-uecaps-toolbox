@@ -9,19 +9,19 @@ use crate::{
         GeneratedFile,
         features::{FeatureCatalogs, LocalFeaturePlan},
         schema::{
-            BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, NrDocument, NrSourceCombo,
-            ProfileSource, ValidatedNr, modern_fingerprint, validate_carrier_name,
+            BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, NrDocument, ProfileSource,
+            ValidatedNr, modern_fingerprint, nr_source_combo, validate_carrier_name,
         },
         selection::{NrDomain, Sku},
     },
     factor::gcd,
-    mapping::{MappingRoot, map_to_root, root_to_map},
-    model::{PROFILES, Profile, Tier, fp_info, matching_anchors, profile_model_codes},
+    mapping::{MappingRoot, Plmn, map_to_root, root_to_map},
+    model::{PROFILES, Profile, fp_info, matching_anchors, profile_model_codes},
     proto::{
         ComboGroup, UeCaps,
         combo_group::{Combo, ComboHeader, combo::SubBlock as ProtoSubBlock},
     },
-    raw_nr::{RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
+    raw_nr::{Direction, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
     report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
 };
 
@@ -98,13 +98,16 @@ fn generate_profiled_files(
 
     let mut files = Vec::new();
     for (carrier, source) in &nr.carriers {
-        let Some(profile_source) = source.profiles.get(&anchor) else {
+        // A carrier without a profiled role has no profile for this anchor either; the two
+        // used to be separate `Option`s that this loop re-checked one at a time.
+        let Some(profiled) = &source.profiled else {
             continue;
         };
-        let signature = source.signature.with_context(|| {
-            format!("profiled carrier `{carrier}` is missing its filename signature")
-        })?;
-        let number = signature
+        let Some(profile_source) = profiled.profiles.get(&anchor) else {
+            continue;
+        };
+        let number = profiled
+            .signature
             .checked_mul(profile_source.multiplier)
             .with_context(|| {
                 format!("filename product overflow for carrier `{carrier}` profile {anchor}")
@@ -113,10 +116,7 @@ fn generate_profiled_files(
             number == profile_source.number,
             "filename product changed for carrier `{carrier}` profile {anchor}"
         );
-        let tier = source
-            .tier
-            .with_context(|| format!("profiled carrier `{carrier}` is missing its tier"))?;
-        let fingerprint = modern_fingerprint(profile.family, tier);
+        let fingerprint = modern_fingerprint(profile.family, profiled.tier);
         ensure!(
             fingerprint == profile_source.fingerprint,
             "derived fingerprint changed for carrier `{carrier}` profile {anchor}"
@@ -185,7 +185,7 @@ fn build_generated_file(
     bitmask: u32,
     layout: InputLayout,
 ) -> anyhow::Result<GeneratedFile> {
-    let plan = LocalFeaturePlan::new(features, &payloads, &basename, &sku.token())?;
+    let plan = LocalFeaturePlan::new(features, &payloads, &basename, &sku.to_string())?;
     let mut combo_groups = Vec::with_capacity(payloads.len());
     for (payload_index, payload) in payloads.iter().enumerate() {
         // `payload.sub_blocks` is already sorted by `RawSubBlockKey` when the combo is
@@ -237,7 +237,7 @@ fn build_generated_file(
 fn verify_compact_feature_list<T>(
     records: &[T],
     entries: impl IntoIterator<Item = (i32, Option<i32>, Option<Vec<u8>>)>,
-    direction: &str,
+    direction: Direction,
     basename: &str,
 ) -> anyhow::Result<()> {
     let mut referenced = BTreeSet::new();
@@ -246,11 +246,7 @@ fn verify_compact_feature_list<T>(
         if feature_index(Some(&ids), records.len()).is_none() {
             continue;
         }
-        let kind = if raw_band >= NR_BAND_OFFSET {
-            SubBlockKind::Nr
-        } else {
-            SubBlockKind::Lte
-        };
+        let (kind, _) = SubBlockKind::split_raw_band(raw_band);
         let bw_class = bw_class.with_context(|| {
             format!(
                 "generated {basename} has a resolved {direction} selector with no bw_class to derive its CC count"
@@ -300,7 +296,7 @@ fn verify_compact_feature_lists(
                 component.dl_feature_per_cc_ids.clone(),
             )
         }),
-        "DL",
+        Direction::Dl,
         basename,
     )?;
     verify_compact_feature_list(
@@ -312,7 +308,7 @@ fn verify_compact_feature_lists(
                 component.ul_feature_per_cc_ids.clone(),
             )
         }),
-        "UL",
+        Direction::Ul,
         basename,
     )?;
     Ok(())
@@ -538,7 +534,7 @@ fn verify_fingerprint_family(
         fingerprint_family,
         file.profile.family
     );
-    Ok(source_tier(tier))
+    Ok(tier.into())
 }
 
 /// Reconstruct the multiplier that, combined with the carrier's shared filename signature,
@@ -667,7 +663,7 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
     for entry in mapping.mappings {
         let carrier = carriers.entry(entry.name).or_default();
         carrier.mapping_id = Some(entry.id);
-        carrier.plmns = Some(entry.plmns);
+        carrier.plmns = Some(entry.plmns.iter().map(Plmn::to_string).collect());
     }
 
     bitmask_carriers.sort_unstable();
@@ -687,19 +683,7 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         .into_values()
         .map(|(payload, relation)| {
             let relation = domain.relation(relation);
-            Ok(NrSourceCombo {
-                selection: relation.canonical_selection(&domain)?,
-                power_class: payload.power_class,
-                bcs_nr: payload.bcs_nr,
-                bcs_intra_endc: payload.bcs_intra_endc,
-                bcs_eutra: payload.bcs_eutra,
-                intra_band_en_dc_support: payload.intra_band_en_dc_support,
-                sub_blocks: payload
-                    .sub_blocks
-                    .iter()
-                    .map(|component| features.source_sub_block(component))
-                    .collect(),
-            })
+            nr_source_combo(&payload, &relation, &domain, &features)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -841,13 +825,6 @@ fn canonical_payloads(
     Ok(payloads)
 }
 
-const fn source_tier(tier: Tier) -> CarrierTier {
-    match tier {
-        Tier::Main => CarrierTier::Main,
-        Tier::Alt => CarrierTier::Alt,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -856,9 +833,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        compiler::schema::{
-            CarrierTier, DecimalU64, LteDocument, LteFileSource, ValidatedNr, ValidatedNrCombo,
-            parse_sources, to_kdl,
+        compiler::{
+            features::NrSourceSubBlock,
+            schema::{
+                CarrierTier, DecimalU64, LteDocument, LteFileSource, ValidatedNr, ValidatedNrCombo,
+                parse_sources, to_kdl,
+            },
         },
         mapping::{MappingEntry, MappingRoot},
         proto::{
@@ -883,10 +863,20 @@ mod tests {
     }
 
     fn raw_payloads(caps: &UeCaps) -> Vec<RawNrPayload> {
-        build_combos(caps)
-            .iter()
-            .map(RawNrPayload::from_compiler_combo)
-            .collect()
+        RawNrPayload::all_from_caps(caps).expect("fixture caps carry a complete combo header")
+    }
+
+    /// The four corpus-verified always-`Some` header fields. Ingest fails closed on a missing
+    /// one, so even a fixture that says nothing about the header has to carry a complete one —
+    /// real input always does.
+    fn full_header() -> Option<ComboHeader> {
+        Some(ComboHeader {
+            power_class: Some(0),
+            bcs_nr: Some(0),
+            bcs_intra_endc: None,
+            bcs_eutra: Some(0),
+            intra_band_en_dc_support: Some(0),
+        })
     }
 
     fn one_combo_caps(
@@ -946,7 +936,7 @@ mod tests {
                 .map(|(id, name, plmns)| MappingEntry {
                     id: *id,
                     name: (*name).into(),
-                    plmns: plmns.iter().map(|plmn| (*plmn).into()).collect(),
+                    plmns: plmns.iter().map(|plmn| plmn.parse().unwrap()).collect(),
                 })
                 .collect(),
         }
@@ -1034,17 +1024,14 @@ mod tests {
         let caps = UeCaps {
             combo_groups: vec![
                 ComboGroup {
-                    combo_header: Some(ComboHeader {
-                        power_class: Some(0),
-                        ..Default::default()
-                    }),
+                    combo_header: full_header(),
                     combo: vec![Combo {
                         sub_blocks: vec![cc(10_078, 9), cc(10_078, 2)],
                         bitmask: Some(7),
                     }],
                 },
                 ComboGroup {
-                    combo_header: None,
+                    combo_header: full_header(),
                     combo: vec![Combo {
                         sub_blocks: vec![cc(10_041, 1)],
                         bitmask: None,
@@ -1094,7 +1081,9 @@ mod tests {
                         // `raw_conversion_preserves_every_selector_only_presence_shape`
                         // and `resolve_all_keeps_every_cc_or_none`).
                         dl_feature_per_cc_ids: Some(vec![1]),
-                        ul_feature_per_cc_ids: Some(vec![0, 2]),
+                        // The all-zero placeholder: resolves to nothing, so it survives
+                        // verbatim rather than being superseded like DL's.
+                        ul_feature_per_cc_ids: Some(vec![0]),
                         srstxswitch: Some(0),
                         ..Default::default()
                     }],
@@ -1125,57 +1114,27 @@ mod tests {
             None,
             "resolved raw values must suppress the source selector"
         );
-        assert_eq!(component.ul_selector(), Some([0, 2].as_slice()));
+        assert_eq!(component.ul_selector(), Some([0].as_slice()));
     }
 
-    #[test]
-    fn raw_conversion_preserves_every_selector_only_presence_shape() {
-        let selectors = [
-            None,
-            Some(vec![]),
-            Some(vec![0]),
-            Some(vec![1, 9]),
-            Some(vec![2]),
-        ];
-        let caps = UeCaps {
-            combo_groups: vec![ComboGroup {
-                combo_header: None,
-                combo: vec![Combo {
-                    sub_blocks: selectors
-                        .iter()
-                        .enumerate()
-                        .map(|(index, selector)| SubBlock {
-                            band: 10_078,
-                            dl_feature_index: Some(index as i32),
-                            dl_feature_per_cc_ids: selector.clone(),
-                            ..Default::default()
-                        })
-                        .collect(),
-                    bitmask: None,
-                }],
-            }],
-            ..Default::default()
-        };
-
-        let payload = raw_payloads(&caps).pop().unwrap();
-        assert_eq!(
-            payload
-                .sub_blocks
-                .iter()
-                .map(|component| component.dl_selector().map(<[u8]>::to_vec))
-                .collect::<Vec<_>>(),
-            selectors
-        );
-    }
+    // The former `raw_conversion_preserves_every_selector_only_presence_shape` lived here. It
+    // fed arbitrary selectors (`[1, 9]`, `[2]`) and a mismatched NR `dl_feature_index` through
+    // the report-DTO ingest path, which applied neither the unresolvable-selector nor the
+    // index-derivation guard. That path is gone, and the guards it bypassed are covered
+    // directly by `raw_nr`'s `from_proto_rejects_non_placeholder_unresolvable_selector`,
+    // `from_proto_accepts_the_all_zero_placeholder_selector`,
+    // `from_proto_rejects_nr_feature_index_mismatch`, and
+    // `from_proto_accepts_a_matching_nr_feature_index`.
 
     #[test]
     fn compiler_conversion_preserves_a_referenced_default_feature_record() {
         let caps = UeCaps {
             combo_groups: vec![ComboGroup {
-                combo_header: None,
+                combo_header: full_header(),
                 combo: vec![Combo {
                     sub_blocks: vec![SubBlock {
                         band: 10_078,
+                        ul_bw_class: Some(0),
                         // A single in-range byte: all-or-nothing resolution needs every
                         // byte in range to resolve, unlike the old first-byte rule.
                         dl_feature_per_cc_ids: Some(vec![1]),
@@ -1254,8 +1213,11 @@ mod tests {
         assert_eq!(nr.ul_features.len(), 1);
         assert_eq!(nr.dl_features[0].max_scs, Some(3));
         assert_eq!(nr.ul_features[0].max_scs, Some(4));
-        assert_eq!(nr.combo[0].sub_blocks[0].dl_feature, vec![1]);
-        assert_eq!(nr.combo[0].sub_blocks[0].ul_feature, vec![1]);
+        let NrSourceSubBlock::Nr(cc) = &nr.combo[0].sub_blocks[0] else {
+            panic!("expected an `nr` sub-block")
+        };
+        assert_eq!(cc.dl_feature, vec![1]);
+        assert_eq!(cc.ul_feature, vec![1]);
     }
 
     #[test]
@@ -1400,7 +1362,7 @@ mod tests {
         let real = nr
             .combo
             .iter()
-            .find(|combo| combo.sub_blocks[0].band == 77)
+            .find(|combo| combo.sub_blocks[0].band() == 77)
             .unwrap();
         assert_eq!(
             real.selection.as_ref().unwrap()[0].skus.as_deref(),
@@ -1409,7 +1371,7 @@ mod tests {
         let synthetic = nr
             .combo
             .iter()
-            .find(|combo| combo.sub_blocks[0].band == 41)
+            .find(|combo| combo.sub_blocks[0].band() == 41)
             .unwrap();
         assert_eq!(
             synthetic.selection.as_ref().unwrap()[0].skus.as_deref(),

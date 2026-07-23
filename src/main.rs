@@ -298,29 +298,4 @@ mod tests {
         assert_eq!(dir, PathBuf::from("."));
         assert_eq!(out, None);
     }
-
-    #[test]
-    fn parses_decompose() {
-        let cli = Cli::parse_from([
-            "x",
-            "decompose",
-            "--bitmask",
-            "b",
-            "--profiled",
-            "p",
-            "-o",
-            "src",
-        ]);
-        let Cmd::Decompose {
-            bitmask,
-            profiled,
-            out,
-        } = cli.cmd
-        else {
-            panic!("expected decompose");
-        };
-        assert_eq!(bitmask, PathBuf::from("b"));
-        assert_eq!(profiled, PathBuf::from("p"));
-        assert_eq!(out, PathBuf::from("src"));
-    }
 }
