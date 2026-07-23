@@ -78,7 +78,6 @@ fn generate_legacy_files(nr: &ValidatedNr) -> anyhow::Result<Vec<GeneratedFile>>
             id,
             0,
             payloads,
-            65_535,
             InputLayout::Legacy,
         )?);
     }
@@ -131,7 +130,6 @@ fn generate_profiled_files(
             id,
             profile_source.unknown,
             payloads,
-            0,
             InputLayout::Profiled,
         )?);
     }
@@ -182,9 +180,9 @@ fn build_generated_file(
     id: Option<i32>,
     unknown: u64,
     payloads: Vec<&RawNrPayload>,
-    bitmask: u32,
     layout: InputLayout,
 ) -> anyhow::Result<GeneratedFile> {
+    let bitmask = layout.bitmask();
     let plan = LocalFeaturePlan::new(features, &payloads, &basename, &sku.to_string())?;
     let mut combo_groups = Vec::with_capacity(payloads.len());
     for (payload_index, payload) in payloads.iter().enumerate() {
@@ -223,7 +221,7 @@ fn build_generated_file(
         unknown,
     };
     let bytes = caps.encode_to_vec();
-    verify_generated_file(&basename, &bytes, &caps, &payloads, layout, bitmask)?;
+    verify_generated_file(&basename, &bytes, &caps, &payloads, layout)?;
     Ok(GeneratedFile { basename, bytes })
 }
 
@@ -344,8 +342,8 @@ fn verify_generated_file(
     expected_caps: &UeCaps,
     expected_payloads: &[&RawNrPayload],
     layout: InputLayout,
-    expected_bitmask: u32,
 ) -> anyhow::Result<()> {
+    let expected_bitmask = layout.bitmask();
     let decoded = UeCaps::decode(bytes)
         .with_context(|| format!("self-verifying generated NR file {basename}"))?;
     ensure!(
@@ -728,6 +726,17 @@ pub(crate) fn ingest_nr(
 enum InputLayout {
     Legacy,
     Profiled,
+}
+
+impl InputLayout {
+    /// The single bitmask a generated combo carries for this layout: the legacy all-ones sentinel
+    /// vs. the profiled zero. Previously threaded in as a redundant argument beside `layout`.
+    fn bitmask(self) -> u32 {
+        match self {
+            InputLayout::Legacy => 65_535,
+            InputLayout::Profiled => 0,
+        }
+    }
 }
 
 /// Rejects two malformed capture shapes before any combo is ingested: an empty combo group

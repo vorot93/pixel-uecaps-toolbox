@@ -9,9 +9,8 @@ use crate::{
 };
 
 /// Per-component radio kind for a raw NR combo payload.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SubBlockKind {
-    #[default]
     Lte,
     Nr,
 }
@@ -375,7 +374,6 @@ fn is_placeholder(bytes: &[u8]) -> bool {
 fn resolve_or_placeholder<T: Copy>(
     resolved: Option<Vec<T>>,
     raw: Option<&[u8]>,
-    kind: SubBlockKind,
     direction: Direction,
     band: i32,
 ) -> anyhow::Result<Option<PerCc<T>>> {
@@ -390,7 +388,7 @@ fn resolve_or_placeholder<T: Copy>(
             anyhow::ensure!(
                 is_placeholder(bytes),
                 "component {} {direction} selector {bytes:?} resolves to no feature and is not the all-zero placeholder",
-                kind.band_label(band),
+                SubBlockKind::Nr.band_label(band),
             );
             Ok(Some(PerCc::Selector(bytes.to_vec())))
         }
@@ -492,7 +490,6 @@ impl RawSubBlock {
     fn nr_from_proto_sub_block(
         component: &ProtoSubBlock,
         band: i32,
-        kind: SubBlockKind,
         dl_list: &[ShannonFeatureSetDlPerCcNr],
         ul_list: &[ShannonFeatureSetUlPerCcNr],
     ) -> anyhow::Result<Self> {
@@ -505,7 +502,6 @@ impl RawSubBlock {
                 features: resolve_or_placeholder(
                     dl,
                     component.dl_feature_per_cc_ids.as_deref(),
-                    kind,
                     Direction::Dl,
                     band,
                 )?,
@@ -515,7 +511,6 @@ impl RawSubBlock {
                 features: resolve_or_placeholder(
                     ul,
                     component.ul_feature_per_cc_ids.as_deref(),
-                    kind,
                     Direction::Ul,
                     band,
                 )?,
@@ -553,9 +548,7 @@ impl RawSubBlock {
         );
         let (kind, band) = SubBlockKind::split_raw_band(component.band);
         match kind {
-            SubBlockKind::Nr => {
-                Self::nr_from_proto_sub_block(component, band, kind, dl_list, ul_list)
-            }
+            SubBlockKind::Nr => Self::nr_from_proto_sub_block(component, band, dl_list, ul_list),
             SubBlockKind::Lte => Ok(Self::lte_from_proto_sub_block(component, band)),
         }
     }
