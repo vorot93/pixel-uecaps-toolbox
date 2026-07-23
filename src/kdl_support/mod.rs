@@ -95,7 +95,7 @@ impl<'a> NodeReader<'a> {
         }
     }
 
-    pub(crate) fn positional(&self) -> Vec<&'a KdlValue> {
+    fn positional(&self) -> Vec<&'a KdlValue> {
         self.node
             .entries()
             .iter()
@@ -138,7 +138,7 @@ impl<'a> NodeReader<'a> {
     }
 
     /// All remaining positional args as strings (consumes them). For list nodes.
-    pub(crate) fn rest_strings(&mut self) -> Result<Vec<String>> {
+    fn rest_strings(&mut self) -> Result<Vec<String>> {
         let args = self.positional();
         let mut out = Vec::new();
         for v in &args[self.args_used..] {

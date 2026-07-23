@@ -30,6 +30,17 @@ compiles a complete offline `uecapconfig` folder into a flashable Magisk replace
 The crate is a **library + binary**: `src/lib.rs` exposes the `pub` modules that do the
 work; `src/main.rs` is a thin `clap` CLI over them.
 
+**The library API is intentionally minimal.** It is the 7 CLI entry points —
+`compiler::{decompose, provision}` and `report::{inspect, check_folder, matrix, self_test,
+compare}` — plus exactly what they need to be callable and testable from outside the crate:
+the `outcome::Outcome` / `report::{Common, Detail}` types those entry points take or return,
+the `compiler::{load_sources, provision_from_sources}` parse-once pair (the corpus test's
+perf optimization; see CONTRIBUTING § Performance), `model::PHONE_MODELS` (+
+`CapabilityLayout`/`PhoneModel`) for enumerating registered targets, and `proto` for building
+test fixtures. Everything else defaults to `pub(crate)` or private. An earlier plan sketched
+a broader library API (a WASM-facing "Plan 2") on top of this crate; it was never built and
+was dropped — do not reintroduce a speculative `pub` surface in anticipation of it.
+
 **The mental model.** There are two modem-selected layouts. Older Tensor Pixels use one
 unnumbered `<CARRIER>.binarypb` file per carrier and select combos through an in-file
 bitmask. Exynos 5400 Pixels use `<CARRIER>_<NUMBER>.binarypb`, where

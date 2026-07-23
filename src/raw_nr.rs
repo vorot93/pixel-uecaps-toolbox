@@ -110,7 +110,7 @@ pub(crate) struct NrDirection<T> {
 
 impl<T: Copy> NrDirection<T> {
     /// One resolved feature set per CC, or `&[]` when this direction resolved to nothing.
-    pub(crate) fn resolved(&self) -> &[T] {
+    fn resolved(&self) -> &[T] {
         match &self.features {
             Some(PerCc::Resolved(features)) => features,
             Some(PerCc::Selector(_)) | None => &[],
@@ -118,7 +118,7 @@ impl<T: Copy> NrDirection<T> {
     }
 
     /// The raw selector bytes, or `None` once resolved (or when absent).
-    pub(crate) fn selector(&self) -> Option<&[u8]> {
+    fn selector(&self) -> Option<&[u8]> {
         match &self.features {
             Some(PerCc::Selector(bytes)) => Some(bytes),
             Some(PerCc::Resolved(_)) | None => None,
@@ -126,14 +126,14 @@ impl<T: Copy> NrDirection<T> {
     }
 
     /// CC0's resolved feature set, or `None` when unresolved/absent.
-    pub(crate) fn first(&self) -> Option<T> {
+    fn first(&self) -> Option<T> {
         self.resolved().first().copied()
     }
 
     /// How many CCs this direction describes — one per resolved feature set or per selector
     /// byte — or `None` when it carries no per-CC data at all. This is the length
     /// [`RawSubBlock::validate_cc_count`] checks against `cc_count(kind, bw_class)`.
-    pub(crate) fn per_cc_len(&self) -> Option<usize> {
+    fn per_cc_len(&self) -> Option<usize> {
         self.features.as_ref().map(|per_cc| match per_cc {
             PerCc::Selector(bytes) => bytes.len(),
             PerCc::Resolved(features) => features.len(),
@@ -316,19 +316,19 @@ impl RawSubBlock {
 /// Corpus-verified over 1.72M NR components — see
 /// DESIGN.md.
 /// LTE feature indexes are a different encoding (parseLteFeatureIndex) and are never derived.
-pub(crate) fn derive_nr_dl_index(scs: Option<i32>) -> i32 {
+fn derive_nr_dl_index(scs: Option<i32>) -> i32 {
     scs.map_or(0, |scs| if scs >= 4 { 2 } else { 1 })
 }
 
 /// Derive an NR component's `ul_feature_index` from its resolved UL per-CC feature set:
 /// 0 = no feature set, 1 = no MIMO (`max_mimo_cb != 2`), 2 = MIMO (`max_mimo_cb == 2`).
-pub(crate) fn derive_nr_ul_index(max_mimo_cb: Option<i32>) -> i32 {
+fn derive_nr_ul_index(max_mimo_cb: Option<i32>) -> i32 {
     max_mimo_cb.map_or(0, |cb| if cb == 2 { 2 } else { 1 })
 }
 
 /// Observed Samsung Shannon `bw_class` → aggregated CC count for NR sub-blocks.
 /// Exception-free across 3.46M corpus sub-blocks (DL and UL share this table).
-pub(crate) const NR_CC_COUNTS: &[(i32, usize)] = &[
+const NR_CC_COUNTS: &[(i32, usize)] = &[
     (1, 1),
     (2, 2),
     (3, 2),
@@ -342,7 +342,7 @@ pub(crate) const NR_CC_COUNTS: &[(i32, usize)] = &[
 ];
 
 /// Observed `bw_class` → CC count for E-UTRA (LTE) sub-blocks. Distinct from NR.
-pub(crate) const LTE_CC_COUNTS: &[(i32, usize)] = &[(1, 1), (2, 2), (3, 2), (4, 3), (5, 4)];
+const LTE_CC_COUNTS: &[(i32, usize)] = &[(1, 1), (2, 2), (3, 2), (4, 3), (5, 4)];
 
 /// Number of component carriers a sub-block of this kind and bandwidth class carries.
 /// Fail-closed: an unobserved class errors rather than mis-deriving a per-CC list length.
@@ -420,12 +420,12 @@ impl RawNrSubBlock {
     }
 
     /// Derived DL feature index for this component's resolved DL feature set (0 if none).
-    pub(crate) fn derived_dl_feature_index(&self) -> i32 {
+    fn derived_dl_feature_index(&self) -> i32 {
         derive_nr_dl_index(self.dl.first().map(|fs| fs.max_scs.unwrap_or(0)))
     }
 
     /// Derived UL feature index for this component's resolved UL feature set (0 if none).
-    pub(crate) fn derived_ul_feature_index(&self) -> i32 {
+    fn derived_ul_feature_index(&self) -> i32 {
         derive_nr_ul_index(self.ul.first().map(|fs| fs.max_mimo_cb.unwrap_or(0)))
     }
 
@@ -438,9 +438,9 @@ impl RawNrSubBlock {
 /// (see [`RawNrSubBlock`]); this exists only so the decode boundary can compare what a file
 /// stored against what the feature sets derive.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct FeatureIndexes {
-    pub(crate) dl: Option<i32>,
-    pub(crate) ul: Option<i32>,
+struct FeatureIndexes {
+    dl: Option<i32>,
+    ul: Option<i32>,
 }
 
 impl RawSubBlock {
@@ -537,7 +537,7 @@ impl RawSubBlock {
     /// of silently normalizing to `0` on data that has never actually shown that shape. Kind
     /// dispatch is [`lte_from_proto_sub_block`](Self::lte_from_proto_sub_block) /
     /// [`nr_from_proto_sub_block`](Self::nr_from_proto_sub_block).
-    pub(crate) fn from_proto_sub_block(
+    fn from_proto_sub_block(
         component: &ProtoSubBlock,
         dl_list: &[ShannonFeatureSetDlPerCcNr],
         ul_list: &[ShannonFeatureSetUlPerCcNr],

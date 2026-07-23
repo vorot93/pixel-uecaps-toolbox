@@ -141,7 +141,7 @@ pub(crate) static PROFILES: &[Profile] = &[
 /// it lacks these two (P15/P16). Documented in README/AGENTS ("14 (no 2912407/3539)").
 /// This gives the Alt-tier subset a code representation so the expected count is derived,
 /// not a `14` literal that would drift silently if `PROFILES` changed.
-pub const MAIN_ONLY_ANCHORS: &[u64] = &[2_912_407, 3539];
+pub(crate) const MAIN_ONLY_ANCHORS: &[u64] = &[2_912_407, 3539];
 
 /// Expected profile-file count for a tier: `PROFILES.len()` for Main (16), minus the
 /// Main-only anchors for Alt (14).

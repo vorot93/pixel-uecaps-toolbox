@@ -43,7 +43,7 @@ pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 /// Canonical band label for a combo component, inferring the kind from the raw protobuf band:
 /// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA). The kind-known counterpart —
 /// the single source of the `n`/`B` prefix convention — is [`SubBlockKind::band_label`].
-pub(crate) fn band_label(band: i32) -> String {
+fn band_label(band: i32) -> String {
     let (kind, plain) = SubBlockKind::split_raw_band(band);
     kind.band_label(plain)
 }
@@ -72,7 +72,7 @@ pub(crate) fn combo_key(combo: &Combo) -> String {
 
 /// NR subcarrier-spacing code -> kHz. Unknown -> None.
 /// Decode tables cross-checked against the pixel-pb decoder: https://nxij.github.io/pixel-pb
-pub(crate) const fn scs_khz(v: i32) -> Option<u32> {
+const fn scs_khz(v: i32) -> Option<u32> {
     match v {
         1 => Some(15),
         2 => Some(30),
@@ -84,7 +84,7 @@ pub(crate) const fn scs_khz(v: i32) -> Option<u32> {
 }
 
 /// DL MIMO code -> label. 0 = not supported; unknown -> "(N)".
-pub(crate) fn dl_mimo_label(v: i32) -> String {
+fn dl_mimo_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "2x2".to_string(),
@@ -95,7 +95,7 @@ pub(crate) fn dl_mimo_label(v: i32) -> String {
 }
 
 /// UL codebook-MIMO support code -> label. 0 = not supported; unknown -> "(N)".
-pub(crate) fn ul_mimo_cb_label(v: i32) -> String {
+fn ul_mimo_cb_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "No".to_string(),
@@ -105,7 +105,7 @@ pub(crate) fn ul_mimo_cb_label(v: i32) -> String {
 }
 
 /// Modulation-order code -> label. 0 = not supported; unknown -> "(N)".
-pub(crate) fn mod_order_label(v: i32) -> String {
+fn mod_order_label(v: i32) -> String {
     match v {
         0 => NONE_MARK.to_string(),
         1 => "QAM64".to_string(),

@@ -18,19 +18,19 @@ use std::{
 /// Two combos with the same key have equal caps iff their signatures are equal.
 type Signature = Vec<(String, String)>;
 
-pub(crate) struct ComboDiff {
-    pub(crate) only_in_a: Vec<String>,
-    pub(crate) only_in_b: Vec<String>,
-    pub(crate) changed: Vec<ChangedCombo>,
-    pub(crate) common: Vec<String>,
+struct ComboDiff {
+    only_in_a: Vec<String>,
+    only_in_b: Vec<String>,
+    changed: Vec<ChangedCombo>,
+    common: Vec<String>,
 }
 
-pub(crate) struct ChangedCombo {
-    pub(crate) key: String,
-    pub(crate) change: CapsChange,
+struct ChangedCombo {
+    key: String,
+    change: CapsChange,
 }
 
-pub(crate) enum CapsChange {
+enum CapsChange {
     /// One signature per side, unique component labels: per differing component,
     /// `(component_label, a_caps_line, b_caps_line)`.
     PerComponent(Vec<(String, String, String)>),
@@ -42,7 +42,7 @@ pub(crate) enum CapsChange {
 }
 
 impl ComboDiff {
-    pub(crate) const fn has_differences(&self) -> bool {
+    const fn has_differences(&self) -> bool {
         !self.only_in_a.is_empty() || !self.only_in_b.is_empty() || !self.changed.is_empty()
     }
 }
@@ -133,7 +133,7 @@ fn changed_combo(key: &str, sa: &BTreeSet<Signature>, sb: &BTreeSet<Signature>) 
 }
 
 /// Diff two files' combos. Keys come out sorted (BTreeMap iteration order).
-pub(crate) fn diff_combos(a: &[Combo], b: &[Combo]) -> ComboDiff {
+fn diff_combos(a: &[Combo], b: &[Combo]) -> ComboDiff {
     let ia = index(a);
     let ib = index(b);
     let only_in_a: Vec<String> = ia

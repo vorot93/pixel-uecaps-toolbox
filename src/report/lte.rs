@@ -58,7 +58,7 @@ fn combo_bands(combo: &LteCombo) -> String {
 }
 
 /// `--full` per-CC detail, e.g. `DL A 2x2  UL —`.
-pub(crate) fn cc_detail(c: &LteComponent) -> String {
+fn cc_detail(c: &LteComponent) -> String {
     let (dl_idx, dl_mimo) = lte_class(c.dl_bw_class_mimo);
     let dl = if c.dl_bw_class_mimo == 0 {
         // DL disabled: render "—", mirroring the UL twin below. (Observed DL is never 0;

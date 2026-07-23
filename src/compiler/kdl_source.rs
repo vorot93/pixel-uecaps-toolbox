@@ -69,7 +69,7 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
 ///     CC-count value). LTE never carries a per-CC list, so the un-suffixed name is free.
 ///     `ul-feature` is always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted
 ///     (Task 8 omit-when-0) and the reader re-defaults it. LTE has no `srs-tx-switch`.
-pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
+fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     let mut node = KdlNode::new(cckind_to_str(cc.kind()));
     // `band` is the node's sole leading positional argument (`nr 78 …`), pushed before
     // any property so the autoformatter keeps it leading.
@@ -107,7 +107,7 @@ pub(crate) fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     node
 }
 
-pub(crate) fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
+fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
     let mut node = KdlNode::new("subblock");
     node.push(KdlEntry::new(i128::from(comp.band)));
     node.push(KdlEntry::new_prop(

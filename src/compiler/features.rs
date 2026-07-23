@@ -176,8 +176,8 @@ pub(crate) struct FeatureCatalogs {
 
 #[derive(Debug)]
 pub(crate) struct LocalFeaturePlan {
-    pub(crate) dl_source: Vec<DlFeatureSource>,
-    pub(crate) ul_source: Vec<UlFeatureSource>,
+    dl_source: Vec<DlFeatureSource>,
+    ul_source: Vec<UlFeatureSource>,
     pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }

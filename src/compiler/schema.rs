@@ -188,7 +188,7 @@ pub(crate) struct ValidatedCarrier {
     pub(crate) bitmask_id: Option<i32>,
     pub(crate) profiled_id: Option<i32>,
     /// The carrier's PLMN-legend entry, present iff it has one.
-    pub(crate) legend: Option<LegendEntry>,
+    legend: Option<LegendEntry>,
     /// The carrier's profiled role, present iff it ships profile files.
     pub(crate) profiled: Option<ProfiledRole>,
 }
@@ -196,9 +196,9 @@ pub(crate) struct ValidatedCarrier {
 /// A carrier's entry in the PLMN legend. `mapping_id` and `plmns` are validated to imply each
 /// other, so they are never separately absent.
 #[derive(Clone, Debug)]
-pub(crate) struct LegendEntry {
-    pub(crate) mapping_id: u64,
-    pub(crate) plmns: Vec<Plmn>,
+struct LegendEntry {
+    mapping_id: u64,
+    plmns: Vec<Plmn>,
 }
 
 /// A carrier's profiled role. Signature, tier, and a non-empty profile table are validated to

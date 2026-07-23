@@ -35,7 +35,7 @@ pub fn factor_display(n: u64) -> String {
 
 /// Render a factorisation like `5^3 · 43 · 277603`. The empty map renders as `"1"`, so a
 /// caller whose number can be 0 must use [`factor_display`] instead of `factorize` + this.
-pub fn format_factors(factors: &BTreeMap<u64, usize>) -> String {
+fn format_factors(factors: &BTreeMap<u64, usize>) -> String {
     if factors.is_empty() {
         return "1".into();
     }

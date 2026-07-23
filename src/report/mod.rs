@@ -4,9 +4,9 @@
 mod check;
 pub(crate) mod combos;
 mod compare;
-pub(crate) mod detail;
+mod detail;
 mod inspect;
-pub(crate) mod lte;
+mod lte;
 mod matrix;
 mod selftest;
 
@@ -45,11 +45,11 @@ fn binarypb_names(dir: &Path) -> anyhow::Result<Vec<String>> {
 }
 
 #[derive(Debug)]
-pub(crate) struct CarrierCombos {
-    pub(crate) combos: Vec<Combo>,
-    pub(crate) number: Option<u64>,
-    pub(crate) version: u64,
-    pub(crate) filename: String,
+struct CarrierCombos {
+    combos: Vec<Combo>,
+    number: Option<u64>,
+    version: u64,
+    filename: String,
 }
 
 /// Validate a filename as a `<CARRIER>_<NUMBER>` capability file, decode it, and
@@ -60,7 +60,7 @@ pub(crate) struct CarrierCombos {
 /// if it carries unmodeled fields. The compiler's write paths never come through here — they
 /// get fail-closed decoding from `wire::{decode_uecaps, decode_lte_caps, decode_plmn_map}`
 /// directly.
-pub(crate) fn load_carrier_combos(path: &Path) -> anyhow::Result<CarrierCombos> {
+fn load_carrier_combos(path: &Path) -> anyhow::Result<CarrierCombos> {
     let filename = path
         .file_name()
         .and_then(|s| s.to_str())
