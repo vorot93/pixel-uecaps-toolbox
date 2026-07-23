@@ -260,8 +260,6 @@ pub enum CapabilityLayout {
 pub struct PhoneModel {
     /// CLI token (Google 5-char model code), e.g. `"GUL82"`.
     pub code: &'static str,
-    /// Human label, e.g. `"Pixel 9 (mmWave, US)"`.
-    pub display: &'static str,
     pub layout: CapabilityLayout,
 }
 
@@ -269,21 +267,6 @@ impl PhoneModel {
     /// Whether this model uses the legacy unnumbered bitmask layout.
     pub const fn is_bitmask(self) -> bool {
         matches!(self.layout, CapabilityLayout::Bitmask)
-    }
-
-    /// This model's provisioning selectors, or `None` for a legacy bitmask model (which has
-    /// neither an NR anchor nor an LTE id). The single place that flattens a `PhoneModel` +
-    /// [`CapabilityLayout::Profiled`] pair into a [`ModelInfo`].
-    pub const fn model_info(&self) -> Option<ModelInfo> {
-        match self.layout {
-            CapabilityLayout::Bitmask => None,
-            CapabilityLayout::Profiled { nr_anchor, lte_id } => Some(ModelInfo {
-                code: self.code,
-                display: self.display,
-                lte_id,
-                nr_anchor,
-            }),
-        }
     }
 }
 
@@ -294,177 +277,142 @@ impl PhoneModel {
 pub static PHONE_MODELS: &[PhoneModel] = &[
     PhoneModel {
         code: "G0DZQ",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G1AZG",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G1MNW",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G3Y12",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G576D",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G82U8",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G8HHN",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G8V0U",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G9BQD",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G9FPL",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G9S9B",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GB17L",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GB62Z",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GB7N6",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GC3VE",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GE2AE",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GE9DP",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GF5KQ",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GFE4J",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GHL1X",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GKWS6",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GLU0G",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GO3Z5",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GOB96",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GP4BC",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GPJ41",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GQML3",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GR1YH",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GTF7P",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GVU6C",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GWKK3",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GX7AS",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GXQ96",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "GZPFO",
-        display: "Tensor Pixel (legacy bitmask)",
         layout: CapabilityLayout::Bitmask,
     },
     PhoneModel {
         code: "G2YBB",
-        display: "Pixel 9 (mmWave, US)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 66_813_533,
             lte_id: 400_907_661,
@@ -472,7 +420,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GUR25",
-        display: "Pixel 9 (sub-6, intl)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1_334_093,
             lte_id: 2_160_127_815,
@@ -480,7 +427,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GKV4X",
-        display: "Pixel 9 (sub-6, NA)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1_334_093,
             lte_id: 2_160_127_815,
@@ -488,7 +434,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "G6GPR",
-        display: "Pixel 9 (sub-6, RoW)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1_334_093,
             lte_id: 2_160_127_815,
@@ -496,7 +441,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "G1B60",
-        display: "Pixel 9 (sub-6, JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1_334_093,
             lte_id: 2_160_127_815,
@@ -504,7 +448,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GR83Y",
-        display: "Pixel 9 Pro (mmWave, US)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1_176_929_627,
             lte_id: 400_907_661,
@@ -512,7 +455,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GEC77",
-        display: "Pixel 9 Pro (sub-6, RoW)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1847,
             lte_id: 2_160_127_815,
@@ -520,7 +462,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GWVK6",
-        display: "Pixel 9 Pro (sub-6, JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 1847,
             lte_id: 2_160_127_815,
@@ -528,7 +469,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GGX8B",
-        display: "Pixel 9 Pro XL (mmWave, US)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 154_921_957,
             lte_id: 400_907_661,
@@ -536,7 +476,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GZC4K",
-        display: "Pixel 9 Pro XL (sub-6, RoW)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 224_309,
             lte_id: 2_160_127_815,
@@ -544,7 +483,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GQ57S",
-        display: "Pixel 9 Pro XL (sub-6, JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 224_309,
             lte_id: 2_160_127_815,
@@ -552,7 +490,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GGH2X",
-        display: "Pixel 9 Pro Fold (RoW)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 6791,
             lte_id: 4_210_990_300,
@@ -560,7 +497,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GC15S",
-        display: "Pixel 9 Pro Fold (JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 6791,
             lte_id: 4_210_990_300,
@@ -568,7 +504,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GU0NP",
-        display: "Pixel 10 Pro Fold (Global)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 167,
             lte_id: 2_306_930_561,
@@ -576,7 +511,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GM66V",
-        display: "Pixel 10 Pro Fold (JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 167,
             lte_id: 2_306_930_561,
@@ -585,7 +519,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     // Pixel 10 Pro XL: US (mmWave) and RoW/JP (sub-6) share one NR profile (anchor 3616442437) but differ in lte_id.
     PhoneModel {
         code: "GUL82",
-        display: "Pixel 10 Pro XL (mmWave, US)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 3_616_442_437,
             lte_id: 1_254_026_417,
@@ -593,7 +526,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "G45RY",
-        display: "Pixel 10 Pro XL (sub-6, RoW)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 3_616_442_437,
             lte_id: 4_017_061_044,
@@ -601,7 +533,6 @@ pub static PHONE_MODELS: &[PhoneModel] = &[
     },
     PhoneModel {
         code: "GYPW4",
-        display: "Pixel 10 Pro XL (sub-6, JP)",
         layout: CapabilityLayout::Profiled {
             nr_anchor: 3_616_442_437,
             lte_id: 4_017_061_044,
@@ -646,46 +577,6 @@ pub fn lte_model_codes(id: u64) -> Vec<&'static str> {
 /// Every registered model code, in lexical order.
 pub fn known_model_codes() -> Vec<&'static str> {
     sorted_model_codes(|_| true)
-}
-
-/// A device model resolved from its hardware SKU — the fields a caller needs to
-/// select and provision its capability files. Owned + `'static` so it crosses the
-/// wasm-bindgen boundary cleanly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModelInfo {
-    pub code: &'static str,
-    pub display: &'static str,
-    pub lte_id: u64,
-    pub nr_anchor: u64,
-}
-
-impl TryFrom<&PhoneModel> for ModelInfo {
-    type Error = NotProfiled;
-
-    /// A bitmask model has no LTE ID or NR anchor, so the conversion is fallible — use
-    /// [`PhoneModel::model_info`] or [`device_model_layout`] when the caller may receive
-    /// either layout.
-    fn try_from(m: &PhoneModel) -> Result<Self, Self::Error> {
-        m.model_info().ok_or(NotProfiled)
-    }
-}
-
-/// The model uses the legacy unnumbered bitmask layout, so it has no profiled selectors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("model uses the legacy bitmask layout, which has no NR anchor or LTE id")]
-pub struct NotProfiled;
-
-/// Resolve a `ro.boot.product.hardware.sku` value (e.g. `"GUL82"`) to a known
-/// profiled Pixel model. The legacy bitmask layout has no LTE ID or NR anchor, so
-/// callers can distinguish it with [`device_model_layout`] instead of receiving
-/// invented sentinel values. `None` if unknown or if the model uses bitmasks.
-pub fn device_model(sku: &str) -> Option<ModelInfo> {
-    phone_model(sku)?.model_info()
-}
-
-/// Resolve a hardware SKU to its capability layout without requiring profiled IDs.
-pub fn device_model_layout(sku: &str) -> Option<CapabilityLayout> {
-    phone_model(sku).map(|m| m.layout)
 }
 
 /// Every known in-file capability fingerprint (protobuf field 1) with its (family, tier).
@@ -1012,16 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_bitmask_layout_has_a_separate_device_accessor() {
-        assert_eq!(
-            device_model_layout(" g0dzq\n"),
-            Some(CapabilityLayout::Bitmask)
-        );
-        assert!(device_model("G0DZQ").is_none());
-        assert!(device_model_layout("ZZ999").is_none());
-    }
-
-    #[test]
     fn profiles_are_complete_and_unique() {
         assert_eq!(PROFILES.len(), 16);
         let anchors: std::collections::BTreeSet<u64> = PROFILES.iter().map(|p| p.anchor).collect();
@@ -1212,24 +1093,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn device_model_resolves_known_sku() {
-        let m = device_model("GUL82").expect("GUL82 is a known SKU");
-        assert_eq!(m.code, "GUL82");
-        assert_eq!(m.lte_id, 1_254_026_417);
-        assert_eq!(m.nr_anchor, 3_616_442_437);
-    }
-
-    #[test]
-    fn device_model_normalizes_case_and_whitespace() {
-        // getprop output may arrive lower-cased or with a trailing newline.
-        assert_eq!(device_model(" gul82\n").map(|m| m.code), Some("GUL82"));
-    }
-
-    #[test]
-    fn device_model_unknown_is_none() {
-        assert!(device_model("ZZ999").is_none());
     }
 }
