@@ -1,6 +1,9 @@
 //! LTE-only fallback (`lte_*.binarypb`) decoding + rendering for `inspect`.
 
-use super::combos::{bw_letter, render_component};
+use super::{
+    combos::{bw_letter, render_component},
+    detail::Detail,
+};
 use crate::proto::{LteCaps, LteCombo, LteComponent};
 
 /// A Shannon class/MIMO value -> (carrier class index `A=1..F=6`, MIMO branches 2/4).
@@ -106,11 +109,11 @@ pub(crate) fn config_block(id: u64) -> Vec<String> {
 }
 
 /// Print every LTE combo in the carrier house style (no trimming).
-pub(crate) fn print_lte_combos(caps: &LteCaps, full: bool) {
+pub(crate) fn print_lte_combos(caps: &LteCaps, detail: Detail) {
     println!("LTE band combinations ({})", caps.combos.len());
     for (i, combo) in caps.combos.iter().enumerate() {
         println!("  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
-        if full {
+        if detail.is_full() {
             for c in &combo.components {
                 println!("       {:<5} {}", format!("B{}", c.band), cc_detail(c));
             }

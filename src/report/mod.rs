@@ -3,6 +3,7 @@
 mod check;
 pub(crate) mod combos;
 mod compare;
+pub(crate) mod detail;
 mod inspect;
 pub(crate) mod lte;
 mod matrix;
@@ -10,6 +11,7 @@ mod selftest;
 
 pub use check::check_folder;
 pub use compare::compare;
+pub use detail::{Common, Detail};
 pub use inspect::inspect;
 pub use matrix::matrix;
 pub use selftest::self_test;

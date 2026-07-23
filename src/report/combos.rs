@@ -3,6 +3,7 @@
 use crate::{
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
     raw_nr::SubBlockKind,
+    report::detail::Detail,
 };
 use std::collections::BTreeMap;
 
@@ -464,7 +465,7 @@ pub(crate) fn fmt_cc_features(cc: &SubBlock) -> String {
 
 /// Print the band-combinations section: one compact `g<grp> <bands>` line per
 /// combo, plus indented per-component detail when `full`.
-pub(crate) fn print_combos(combos: &[Combo], full: bool) {
+pub(crate) fn print_combos(combos: &[Combo], detail: Detail) {
     if combos.is_empty() {
         println!("Band combinations: none (reference stub)");
         return;
@@ -481,7 +482,7 @@ pub(crate) fn print_combos(combos: &[Combo], full: bool) {
             format!("g{}", c.group)
         };
         println!("  {:<6} {}", label, c.bands);
-        if full {
+        if detail.is_full() {
             for x in &c.sub_blocks {
                 println!("       {:<5} {}", x.band, fmt_cc_features(x));
             }

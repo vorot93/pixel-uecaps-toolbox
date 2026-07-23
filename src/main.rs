@@ -103,7 +103,7 @@ impl Cmd {
                 out,
                 name,
             } => compiler::provision(&model, &source, &out, name.as_deref()),
-            Self::Inspect { file, full } => report::inspect(&file, full),
+            Self::Inspect { file, full } => report::inspect(&file, full.into()),
             Self::Check { dir } => report::check_folder(&dir),
             Self::Matrix { dir, out } => report::matrix(&dir, out.as_deref()),
             Self::SelfTest => report::self_test(),
@@ -112,7 +112,7 @@ impl Cmd {
                 file_b,
                 full,
                 common,
-            } => report::compare(&file_a, &file_b, full, common),
+            } => report::compare(&file_a, &file_b, full.into(), common.into()),
         }
     }
 }

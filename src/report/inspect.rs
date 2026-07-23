@@ -6,7 +6,10 @@ use crate::{
     mapping::load_mapping,
     model::*,
     outcome::Outcome,
-    report::combos::{build_combos, print_combos},
+    report::{
+        combos::{build_combos, print_combos},
+        detail::Detail,
+    },
 };
 use prost::Message;
 use std::{
@@ -64,7 +67,7 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> (u64, usize) {
 // --------------------------------------------------------------------------- //
 //  Single-file analysis                                                        //
 // --------------------------------------------------------------------------- //
-pub fn inspect(path: &Path, full: bool) -> anyhow::Result<Outcome> {
+pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Outcome> {
     let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     let dir: PathBuf = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
@@ -77,10 +80,12 @@ pub fn inspect(path: &Path, full: bool) -> anyhow::Result<Outcome> {
             Outcome::Clean
         }
         Parsed::Lte(number) => {
-            inspect_lte(path, number, full);
+            inspect_lte(path, number, detail);
             Outcome::Clean
         }
-        Parsed::Carrier { carrier, number } => inspect_carrier(path, &dir, &carrier, number, full),
+        Parsed::Carrier { carrier, number } => {
+            inspect_carrier(path, &dir, &carrier, number, detail)
+        }
         Parsed::Other => {
             eprintln!("Not a recognised uecaps filename: {base}");
             Outcome::Rejected
@@ -88,7 +93,7 @@ pub fn inspect(path: &Path, full: bool) -> anyhow::Result<Outcome> {
     })
 }
 
-fn inspect_lte(path: &Path, number: u64, full: bool) {
+fn inspect_lte(path: &Path, number: u64, detail: Detail) {
     println!("LTE-only fallback config\n");
 
     let caps = std::fs::read(path)
@@ -114,7 +119,7 @@ fn inspect_lte(path: &Path, number: u64, full: bool) {
         println!("{line}");
     }
 
-    if full {
+    if detail.is_full() {
         println!();
         println!("Number       : {number}");
         println!("  factored   : {}", factor_display(number));
@@ -125,7 +130,7 @@ fn inspect_lte(path: &Path, number: u64, full: bool) {
     println!();
 
     match &caps {
-        Some(c) => super::lte::print_lte_combos(c, full),
+        Some(c) => super::lte::print_lte_combos(c, detail),
         None => println!("LTE band combinations: (file not readable)"),
     }
 }
@@ -143,13 +148,13 @@ fn is_regional_default(carrier: &str) -> bool {
     REGIONAL_DEFAULT_CARRIERS.contains(&carrier)
 }
 
-fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bool) -> Outcome {
+fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: Detail) -> Outcome {
     println!("Carrier UE-capability profile\n");
 
     let mapping = load_mapping(dir);
     println!("Carrier      : {carrier}");
     if let Some(entry) = mapping.get(carrier) {
-        if full {
+        if detail.is_full() {
             let idx = idx_str(entry.index);
             println!("  mapping idx: {idx}");
         }
@@ -175,7 +180,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
     }
     println!();
 
-    if full {
+    if detail.is_full() {
         println!("Trailing number");
         println!("  value      : {number}");
         println!("  factored   : {}", factor_display(number));
@@ -231,7 +236,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
             ),
         };
         println!("SKU profile  : {}", sku_profile_summary(profile, tier_opt));
-        if full {
+        if detail.is_full() {
             println!(
                 "  anchor prime: {}  ({number} mod {} == 0  OK)",
                 profile.anchor, profile.anchor
@@ -240,7 +245,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
             println!("  full tag   : {}", core.join(" · "));
         }
         println!("{fp_line}");
-        if full {
+        if detail.is_full() {
             println!();
             println!("Selection rule");
             println!(
@@ -256,7 +261,7 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, full: bo
     println!();
 
     match &caps {
-        Some(c) => print_combos(&build_combos(c), full),
+        Some(c) => print_combos(&build_combos(c), detail),
         None => println!("Band combinations: (file not readable)"),
     }
     outcome

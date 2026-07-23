@@ -1,6 +1,9 @@
 //! `compare`: diff the band combinations of two capability files.
 
-use super::combos::{Combo, cc_component_label, combo_key, fmt_cc_features};
+use super::{
+    combos::{Combo, cc_component_label, combo_key, fmt_cc_features},
+    detail::{Common, Detail},
+};
 use crate::{
     model::{family_short, fp_info, identify_profile, tier_short},
     outcome::Outcome,
@@ -182,11 +185,11 @@ fn render_common_section(diff: &ComboDiff) -> String {
 }
 
 /// Render the summary + set diff (+ caps detail when `full`). Header is separate.
-fn render_diff_body(diff: &ComboDiff, full: bool, show_common: bool) -> String {
+fn render_diff_body(diff: &ComboDiff, detail: Detail, common: Common) -> String {
     let mut out = String::new();
     if !diff.has_differences() {
         let _ = writeln!(out, "  {} common · no differences", diff.common.len());
-        if show_common {
+        if common.is_shown() {
             out.push_str(&render_common_section(diff));
         }
         return out;
@@ -211,10 +214,10 @@ fn render_diff_body(diff: &ComboDiff, full: bool, show_common: bool) -> String {
             let _ = writeln!(out, "  + {k}");
         }
     }
-    if show_common {
+    if common.is_shown() {
         out.push_str(&render_common_section(diff));
     }
-    if full && !diff.changed.is_empty() {
+    if detail.is_full() && !diff.changed.is_empty() {
         let _ = writeln!(out, "\ncaps changed ({}):", diff.changed.len());
         for ch in &diff.changed {
             match &ch.change {
@@ -255,13 +258,13 @@ fn load(path: &Path, label: char) -> anyhow::Result<(Vec<Combo>, String)> {
 }
 
 /// `compare`: diff the band combinations of two capability files (stdin not used).
-pub fn compare(a: &Path, b: &Path, full: bool, show_common: bool) -> anyhow::Result<Outcome> {
+pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Result<Outcome> {
     let (combos_a, header_a) = load(a, 'A')?;
     let (combos_b, header_b) = load(b, 'B')?;
     let diff = diff_combos(&combos_a, &combos_b);
     println!("{header_a}");
     println!("{header_b}");
-    print!("{}", render_diff_body(&diff, full, show_common));
+    print!("{}", render_diff_body(&diff, detail, common));
     Ok(diff.has_differences().into())
 }
 
@@ -380,7 +383,7 @@ mod tests {
         let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
         let d = diff_combos(&a, &a);
         assert_eq!(
-            render_diff_body(&d, false, false),
+            render_diff_body(&d, Detail::Summary, Common::Hide),
             "  1 common · no differences\n"
         );
     }
@@ -395,7 +398,7 @@ mod tests {
             combo(vec![nr_cc(78, 1, "4x4")]),
             combo(vec![nr_cc(1, 1, "4x4")]),
         ];
-        let out = render_diff_body(&diff_combos(&a, &b), false, false);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(
             out.starts_with("  1 common (0 caps-changed) · 1 only in A · 1 only in B\n"),
             "{out}"
@@ -408,7 +411,7 @@ mod tests {
     fn body_full_shows_caps_change() {
         let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
         let b = vec![combo(vec![nr_cc(78, 1, "8x8")])];
-        let out = render_diff_body(&diff_combos(&a, &b), true, false);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Full, Common::Hide);
         assert!(out.contains("caps changed (1):\n"), "{out}");
         assert!(out.contains("~ n78A\n"), "{out}");
         assert!(out.contains("A: DL 100MHz 4x4"), "{out}");
@@ -419,7 +422,7 @@ mod tests {
     fn body_omits_caps_detail_without_full() {
         let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
         let b = vec![combo(vec![nr_cc(78, 1, "8x8")])];
-        let out = render_diff_body(&diff_combos(&a, &b), false, false);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(out.contains("1 common (1 caps-changed)"), "{out}");
         assert!(!out.contains("caps changed (1):"), "{out}");
     }
@@ -437,7 +440,7 @@ mod tests {
             combo(vec![nr_cc(78, 1, "8x8")]),
             combo(vec![nr_cc(1, 1, "4x4")]),
         ];
-        let out = render_diff_body(&diff_combos(&a, &b), false, true);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
         assert!(out.contains("\ncommon (2):\n"), "{out}");
         assert!(out.contains("  = n41A\n"), "{out}");
         assert!(out.contains("  ~ n78A\n"), "{out}");
@@ -458,7 +461,7 @@ mod tests {
             combo(vec![nr_cc(78, 1, "4x4")]),
             combo(vec![nr_cc(1, 1, "4x4")]),
         ];
-        let out = render_diff_body(&diff_combos(&a, &b), false, false);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
         assert!(!out.contains("\ncommon ("), "{out}");
         assert!(out.starts_with("  1 common (0 caps-changed)"), "{out}");
     }
@@ -469,7 +472,7 @@ mod tests {
             combo(vec![nr_cc(78, 1, "4x4")]),
             combo(vec![nr_cc(41, 1, "4x4")]),
         ];
-        let out = render_diff_body(&diff_combos(&a, &a), false, true);
+        let out = render_diff_body(&diff_combos(&a, &a), Detail::Summary, Common::Show);
         assert!(out.starts_with("  2 common · no differences\n"), "{out}");
         assert!(out.contains("\ncommon (2):\n"), "{out}");
         assert!(out.contains("  = n41A\n"), "{out}");
@@ -481,7 +484,7 @@ mod tests {
     fn common_empty_omits_section() {
         let a = vec![combo(vec![nr_cc(78, 1, "4x4")])];
         let b = vec![combo(vec![nr_cc(1, 1, "4x4")])];
-        let out = render_diff_body(&diff_combos(&a, &b), false, true);
+        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
         assert!(!out.contains("\ncommon ("), "{out}");
         assert!(
             out.starts_with("  0 common (0 caps-changed) · 1 only in A · 1 only in B\n"),
@@ -502,7 +505,7 @@ mod tests {
         let b = vec![combo(vec![nr_cc(78, 1, "4x4")])];
         let d = diff_combos(&a, &b);
         assert!(matches!(d.changed[0].change, CapsChange::Variants { .. }));
-        let out = render_diff_body(&d, false, true);
+        let out = render_diff_body(&d, Detail::Summary, Common::Show);
         assert!(out.contains("\ncommon (1):\n"), "{out}");
         assert!(out.contains("  ~ n78A\n"), "{out}");
         assert!(!out.contains("  = n78A\n"), "{out}");
