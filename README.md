@@ -35,8 +35,8 @@ cargo build --release
 # binary at target/release/pixel-uecaps-toolbox
 ```
 
-No system `protoc` is needed — protobuf codegen is pure Rust: `build.rs` compiles
-`proto/ue_caps.proto` via protox at build time.
+There is no build step or codegen: the protobuf message types are hand-written in
+`src/proto.rs` with `#[derive(prost::Message)]`, and no external protobuf toolchain is needed.
 
 Prebuilt binaries aren't published yet; build from source for now.
 

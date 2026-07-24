@@ -16,8 +16,8 @@ Where each kind of knowledge lives:
 - **Public usage and editable-file syntax** → [README.md](README.md).
 - **Architecture, wire formats, invariants, design rationale** → [DESIGN.md](DESIGN.md).
 - **Build/test workflow, conventions, gotchas, performance** → this file.
-- **A fact local to one wire field** → a comment in `proto/ue_caps.proto` or the code that
-  enforces it.
+- **A fact local to one wire field** → a doc comment on the field in `src/proto.rs` or the
+  code that enforces it.
 
 **Assume commit history may be squashed and transient plans removed.** Preserve
 non-reconstructible evidence, rejected inferences, and the *reason* for a constraint in
@@ -31,12 +31,12 @@ commit-level state — including any local commits not yet on `origin` — run
 `git log --oneline origin/master..master` (empty = in sync); pushing is at the user's
 discretion. Don't pin a baseline SHA in the docs; it self-stales on the next commit.
 
-## Build & codegen
+## Build
 
 - **Rust edition 2024**, stable toolchain (uses `let`-chains — see [Gotchas](#gotchas)).
-- **Codegen is pure Rust, at build time.** `build.rs` runs `protox::compile(["proto/ue_caps.proto"], ["proto"])` to a `FileDescriptorSet`, then `prost_build::Config::new().compile_fds(...)` emits Rust into `OUT_DIR`, surfaced through `src/proto.rs`. No system `protoc` is needed. `build.rs` emits `cargo:rerun-if-changed=proto/ue_caps.proto`, so **editing the proto requires a rebuild before the new types exist** — a stale `cargo check` against not-yet-generated fields will mislead you.
+- **No codegen — the protobuf types are hand-written.** `src/proto.rs` defines every message as a `#[derive(prost::Message)]` struct with `#[prost(...)]` field attributes. To add or change a field, edit the struct directly — the attribute states the wire behavior (a bare scalar is proto3 default-skip; `optional` keeps explicit presence; `packed = "false"` keeps a repeated field unpacked). Field tags must match the observed wire layout; the in-file `#[cfg(test)]` byte tests and the opt-in corpus tests guard that.
 - **`pixel-bands` is pinned by an explicit `rev` in `Cargo.toml`** (`{ git = "https://github.com/vorot93/pixel-bands", rev = "…" }`). The `rev` alone fixes the exact upstream commit, so a fresh clone or CI run builds identical `PIXEL_BANDS` data and a regression is bisectable; bumping the dependency is editing the `rev`. **`Cargo.lock` is gitignored**, so other crates.io deps resolve to the latest semver-compatible versions per build. A first build needs network access unless that revision is cached. It provides `PIXEL_BANDS: phf::Map<&str, Bands>` — compile-time band data keyed by Google 5-char model code — consumed by `PHONE_MODELS` and by `report/selftest.rs`.
-- **Direct deps:** `thiserror`, `prost`, `num-prime`, `num-integer`, `clap` (derive), `csv`, `anyhow`, `zip` (`default-features=false`, `deflate`), `pixel-bands`, `tempfile`, `compact_str`, `kdl` (`default-features=false`, `span` feature only — the crate's `serde` feature is deliberately unused; see [Source format: KDL, hand-mapped](DESIGN.md#source-format-kdl-hand-mapped-not-serde)). **Build deps:** `prost-build`, `protox`. No `[lib]`/`[[bin]]`/`[features]` sections — targets are auto-detected. **`serde`/`serde_derive` and `toml` are deliberately absent**: every persisted/emitted format is hand-mapped KDL, so there is no serde consumer left. Don't reintroduce them.
+- **Direct deps:** `thiserror`, `prost`, `num-prime`, `num-integer`, `clap` (derive), `csv`, `anyhow`, `zip` (`default-features=false`, `deflate`), `pixel-bands`, `tempfile`, `compact_str`, `kdl` (`default-features=false`, `span` feature only — the crate's `serde` feature is deliberately unused; see [Source format: KDL, hand-mapped](DESIGN.md#source-format-kdl-hand-mapped-not-serde)). There are no `[build-dependencies]`, and no `[lib]`/`[[bin]]`/`[features]` sections — targets are auto-detected. **`serde`/`serde_derive` and `toml` are deliberately absent**: every persisted/emitted format is hand-mapped KDL, so there is no serde consumer left. Don't reintroduce them.
 - **Pure-Rust build is a stated value.** Do not add a C-toolchain dependency (a C-compiled allocator like mimalloc/jemalloc, a native protobuf compiler, etc.) without surfacing the tradeoff first — a measured allocator win was deliberately reverted to keep the no-C-compiler build (see [Performance](#performance-readability-first-then-re-optimize)).
 
 ## Tests & CI gates
