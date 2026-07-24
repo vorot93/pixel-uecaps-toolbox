@@ -1,12 +1,11 @@
 //! Band-combination model and rendering shared by `inspect`.
 
-use compact_str::CompactString;
-
 use crate::{
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group},
     raw_nr::SubBlockKind,
     report::detail::Detail,
 };
+use compact_str::CompactString;
 use std::collections::BTreeMap;
 
 /// Marker rendered for an absent / not-applicable capability value.
