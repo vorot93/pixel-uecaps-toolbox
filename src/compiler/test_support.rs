@@ -7,8 +7,8 @@ use std::{
 use prost::Message;
 
 use crate::proto::{
-    Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, UeCaps,
-    combo_group::{Combo, ComboHeader, combo::SubBlock},
+    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap, SubBlock,
+    UeCaps,
 };
 
 pub(crate) const REGISTERED_ANCHOR: u64 = 66_813_533;

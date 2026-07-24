@@ -536,8 +536,8 @@ mod tests {
         },
         outcome::Outcome,
         proto::{
-            Carrier, ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
-            combo_group::ComboHeader,
+            Carrier, ComboGroup, ComboHeader, ShannonFeatureSetDlPerCcNr,
+            ShannonFeatureSetUlPerCcNr,
         },
     };
 

@@ -1,7 +1,7 @@
 //! Band-combination model and rendering shared by `inspect`.
 
 use crate::{
-    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group},
+    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps},
     raw_nr::SubBlockKind,
     report::detail::Detail,
 };
@@ -185,7 +185,7 @@ pub(crate) struct Combo {
 /// must be in range for the whole array to resolve; E-UTRA components carry id 0 in the
 /// data, so they resolve to nothing without an explicit `nr` gate), and label the band with
 /// the kind [`SubBlockKind::split_raw_band`] asserts, rather than the inferring [`band_label`].
-fn build_sub_block(raw: &combo_group::combo::SubBlock, caps: &UeCaps) -> SubBlock {
+fn build_sub_block(raw: &ProtoSubBlock, caps: &UeCaps) -> SubBlock {
     let (kind, plain_band) = SubBlockKind::split_raw_band(raw.band);
     SubBlock {
         band: kind.band_label(plain_band),
@@ -559,7 +559,8 @@ mod tests {
     #[test]
     fn build_combos_resolves_feature_sets() {
         use crate::proto::{
-            ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group,
+            Combo as ProtoCombo, ComboGroup, ShannonFeatureSetDlPerCcNr,
+            ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps,
         };
         let caps = UeCaps {
             dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr {
@@ -579,16 +580,16 @@ mod tests {
             }],
             combo_groups: vec![ComboGroup {
                 combo_header: None,
-                combo: vec![combo_group::Combo {
+                combo: vec![ProtoCombo {
                     bitmask: Some(0),
                     sub_blocks: vec![
-                        combo_group::combo::SubBlock {
+                        ProtoSubBlock {
                             band: 10078,
                             dl_feature_per_cc_ids: Some(vec![1]),
                             ul_feature_per_cc_ids: Some(vec![1]),
                             ..Default::default()
                         },
-                        combo_group::combo::SubBlock {
+                        ProtoSubBlock {
                             band: 1,
                             dl_feature_per_cc_ids: Some(vec![0]),
                             ul_feature_per_cc_ids: Some(vec![0]),

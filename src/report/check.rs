@@ -504,7 +504,7 @@ mod tests {
         // doesn't distinguish the new "mixes tier fingerprints" anomaly from the existing
         // "incomplete profile set" anomaly (both fire here); the new anomaly is verified by
         // reading `check_folder`'s explicit `tier_votes.len() > 1` branch above.
-        use crate::proto::{ComboGroup, UeCaps, combo_group};
+        use crate::proto::{Combo, ComboGroup, UeCaps};
         use prost::Message;
         let dir =
             std::env::temp_dir().join(format!("uecaps-check-mixedtier-{}", std::process::id()));
@@ -520,7 +520,7 @@ mod tests {
             version,
             combo_groups: vec![ComboGroup {
                 combo_header: None,
-                combo: vec![combo_group::Combo {
+                combo: vec![Combo {
                     bitmask: Some(0),
                     sub_blocks: vec![],
                 }],

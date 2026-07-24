@@ -247,9 +247,8 @@ mod tests {
         RootMessage, decode_lte_caps, decode_plmn_map, decode_uecaps, ensure_modeled, modeled_field,
     };
     use crate::proto::{
-        Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr,
-        ShannonFeatureSetUlPerCcNr, UeCaps,
-        combo_group::{Combo, ComboHeader, combo::SubBlock as ProtoSubBlock},
+        Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
+        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps,
     };
     use prost::Message;
 

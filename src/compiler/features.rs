@@ -4,8 +4,7 @@ use anyhow::{Context, ensure};
 
 use crate::{
     proto::{
-        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
-        combo_group::combo::SubBlock as ProtoSubBlock,
+        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock,
     },
     raw_nr::{
         Direction, LteDirection, NrDirection, PerCc, RawLteSubBlock, RawNrPayload, RawNrSubBlock,

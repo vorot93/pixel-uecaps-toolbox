@@ -22,9 +22,5 @@ pixel-bands = { git = "https://github.com/vorot93/pixel-bands", rev = "4e5408ce8
 tempfile = "3"
 kdl = { version = "6", default-features = false, features = ["span"] }
 
-[build-dependencies]
-prost-build = "0.14"
-protox = "0.9"
-
 [dev-dependencies]
 rayon = "1.12.0"

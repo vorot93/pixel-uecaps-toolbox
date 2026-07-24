@@ -6,9 +6,8 @@ use std::{
 };
 
 use pixel_uecaps_toolbox::proto::{
-    Carrier, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr,
-    UeCaps,
-    combo_group::{Combo, ComboHeader, combo::SubBlock},
+    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
+    ShannonFeatureSetDlPerCcNr, SubBlock, UeCaps,
 };
 use prost::Message;
 use tempfile::TempDir;

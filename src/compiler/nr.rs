@@ -17,10 +17,7 @@ use crate::{
     factor::gcd,
     mapping::{MappingRoot, Plmn, map_to_root, root_to_map},
     model::{PROFILES, Profile, fp_info, matching_anchors, profile_model_codes},
-    proto::{
-        ComboGroup, UeCaps,
-        combo_group::{Combo, ComboHeader, combo::SubBlock as ProtoSubBlock},
-    },
+    proto::{Combo, ComboGroup, ComboHeader, SubBlock as ProtoSubBlock, UeCaps},
     raw_nr::{Direction, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
     report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
 };
@@ -854,8 +851,8 @@ mod tests {
         },
         mapping::{MappingEntry, MappingRoot},
         proto::{
-            ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps,
-            combo_group::{Combo, ComboHeader, combo::SubBlock},
+            Combo, ComboGroup, ComboHeader, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
+            SubBlock, UeCaps,
         },
         raw_nr::{NrDirection, RawNrPayload, RawNrSubBlock, RawSubBlock, RawSubBlockKey},
         report::combos::build_combos,

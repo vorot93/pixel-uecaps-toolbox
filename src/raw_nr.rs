@@ -2,8 +2,8 @@
 
 use crate::{
     proto::{
-        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
-        combo_group::{Combo as ProtoCombo, ComboHeader, combo::SubBlock as ProtoSubBlock},
+        Combo as ProtoCombo, ComboHeader, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
+        SubBlock as ProtoSubBlock,
     },
     report::combos::{NR_BAND_OFFSET, resolve_all},
 };
