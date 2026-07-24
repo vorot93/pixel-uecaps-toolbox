@@ -254,7 +254,10 @@ fn verify_compact_feature_list<T>(
         // all-zero placeholder, which never passes the `feature_index` gate above (per-CC
         // selectors that resolve against a compact list are NR-only, corpus-verified — see
         // DESIGN.md), so this branch only ever runs for `Nr` on real data.
-        let expected = cc_count(kind, bw_class)?;
+        let cc = u8::try_from(bw_class).with_context(|| {
+            format!("generated {basename} {direction} bw_class {bw_class} is out of range")
+        })?;
+        let expected = cc_count(kind, cc)?;
         ensure!(
             ids.len() == expected,
             "generated {basename} resolved {direction} selector has {} byte(s), expected {expected} for {kind:?} bw_class {bw_class}",
@@ -1625,7 +1628,7 @@ mod tests {
         );
     }
 
-    fn feature_payload(values: std::ops::RangeInclusive<i32>, direction: &str) -> RawNrPayload {
+    fn feature_payload(values: std::ops::RangeInclusive<u16>, direction: &str) -> RawNrPayload {
         RawNrPayload {
             // See `generation_compacts_real_features`'s `payload` above:
             // `verify_generated_file`'s self-check needs these four fields.
@@ -1644,7 +1647,7 @@ mod tests {
                             1,
                             (direction == "DL")
                                 .then_some(ShannonFeatureSetDlPerCcNr {
-                                    max_bw: Some(value),
+                                    max_bw: Some(i32::from(value)),
                                     ..Default::default()
                                 })
                                 .into_iter()
@@ -1654,7 +1657,7 @@ mod tests {
                             1,
                             (direction == "UL")
                                 .then_some(ShannonFeatureSetUlPerCcNr {
-                                    max_bw: Some(value),
+                                    max_bw: Some(i32::from(value)),
                                     ..Default::default()
                                 })
                                 .into_iter()

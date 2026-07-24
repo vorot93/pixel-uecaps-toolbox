@@ -78,8 +78,8 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
 
     let (dl_features, ul_features, srs_tx_switch): (Vec<i128>, Vec<i128>, Option<i32>) = match cc {
         NrSourceSubBlock::Lte(cc) => (
-            cc.dl_feature_index.map(i128::from).into_iter().collect(),
-            cc.ul_feature_index
+            cc.dl_feature.map(i128::from).into_iter().collect(),
+            cc.ul_feature
                 .filter(|&v| v != 0)
                 .map(i128::from)
                 .into_iter()
@@ -438,11 +438,11 @@ fn read_selection(node: &KdlNode) -> Result<SelectionRect> {
 fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     let kind = str_to_cckind(node.name().value(), "NR/EN-DC component kind")?;
     let mut r = NodeReader::new(node);
-    let band = r.key_int::<i32>()?;
-    let dl_bw_class = r.opt_int::<i32>("dl-bw-class")?;
+    let band = r.key_int()?;
+    let dl_bw_class = r.opt_int("dl-bw-class")?;
     // Corpus-verified always-`Some`: an absent `ul-bw-class` property is the writer's
     // omitted-zero (Task 8), not a genuine `None` — default it back to `Some(0)`.
-    let ul_bw_class = r.opt_int::<i32>("ul-bw-class")?.or(Some(0));
+    let ul_bw_class = r.opt_int("ul-bw-class")?.or(Some(0));
     // Kind-aware inverse of `cc_to_node`'s feature emit. On `lte`, `dl-feature`/`ul-feature`
     // are the single scalar proto-4/5 index and there is no per-CC list; an absent `ul-feature`
     // re-defaults to `Some(0)` (Task 8 omit-when-0, LTE-only). On `nr` the index is not
@@ -453,17 +453,17 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
             band,
             dl_bw_class,
             ul_bw_class,
-            dl_feature_index: r.opt_int::<i32>("dl-feature")?,
-            ul_feature_index: r.opt_int::<i32>("ul-feature")?.or(Some(0)),
+            dl_feature: r.opt_int("dl-feature")?,
+            ul_feature: r.opt_int("ul-feature")?.or(Some(0)),
         }
         .into(),
         SubBlockKind::Nr => SourceNrSubBlock {
             band,
             dl_bw_class,
             ul_bw_class,
-            dl_feature: r.repeated_int::<usize>("dl-feature")?,
-            ul_feature: r.repeated_int::<usize>("ul-feature")?,
-            srs_tx_switch: r.opt_int::<i32>("srs-tx-switch")?,
+            dl_feature: r.repeated_int("dl-feature")?,
+            ul_feature: r.repeated_int("ul-feature")?,
+            srs_tx_switch: r.opt_int("srs-tx-switch")?,
         }
         .into(),
     };
@@ -869,11 +869,11 @@ mod nr_tests {
         let [NrSourceSubBlock::Lte(first), NrSourceSubBlock::Lte(second)] = &cc[..] else {
             panic!("both sub-blocks are `lte` nodes, got {cc:?}")
         };
-        assert_eq!(first.dl_feature_index, Some(1));
-        assert_eq!(first.ul_feature_index, Some(2));
-        assert_eq!(second.dl_feature_index, Some(3));
+        assert_eq!(first.dl_feature, Some(1));
+        assert_eq!(first.ul_feature, Some(2));
+        assert_eq!(second.dl_feature, Some(3));
         assert_eq!(
-            second.ul_feature_index,
+            second.ul_feature,
             Some(0),
             "absent ul-feature on an lte node defaults to Some(0)"
         );

@@ -1,5 +1,7 @@
 //! Band-combination model and rendering shared by `inspect`.
 
+use compact_str::CompactString;
+
 use crate::{
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps, combo_group},
     raw_nr::SubBlockKind,
@@ -43,7 +45,7 @@ pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
 /// Canonical band label for a combo component, inferring the kind from the raw protobuf band:
 /// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA). The kind-known counterpart —
 /// the single source of the `n`/`B` prefix convention — is [`SubBlockKind::band_label`].
-fn band_label(band: i32) -> String {
+fn band_label(band: i32) -> CompactString {
     let (kind, plain) = SubBlockKind::split_raw_band(band);
     kind.band_label(plain)
 }
@@ -152,7 +154,7 @@ pub(crate) fn resolve_all<T: Copy>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec
 /// them in agreement.
 #[derive(Clone, Default, Debug)]
 pub(crate) struct SubBlock {
-    pub(crate) band: String,
+    pub(crate) band: CompactString,
     pub(crate) dl_bw_class: Option<i32>,
     pub(crate) ul_bw_class: Option<i32>,
     /// One entry per resolved CC (empty when unresolved / absent). Text reports render one

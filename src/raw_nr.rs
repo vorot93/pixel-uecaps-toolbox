@@ -7,6 +7,7 @@ use crate::{
     },
     report::combos::{NR_BAND_OFFSET, resolve_all},
 };
+use compact_str::{CompactString, format_compact};
 
 /// Per-component radio kind for a raw NR combo payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -18,7 +19,8 @@ pub(crate) enum SubBlockKind {
 impl SubBlockKind {
     /// The protobuf band value for a plain band number of this kind (NR bands are stored
     /// offset by [`NR_BAND_OFFSET`]).
-    const fn raw_band(self, band: i32) -> i32 {
+    const fn raw_band(self, band: u16) -> i32 {
+        let band = band as i32;
         match self {
             Self::Lte => band,
             Self::Nr => NR_BAND_OFFSET + band,
@@ -43,10 +45,10 @@ impl SubBlockKind {
     /// *infers* the kind from a raw band instead. Statically single-kind display code
     /// (`report::lte`, LTE-only) formats `B` inline rather than calling this — correct there,
     /// since no NR component can reach it.
-    pub(crate) fn band_label(self, band: i32) -> String {
+    pub(crate) fn band_label(self, band: i32) -> CompactString {
         match self {
-            Self::Nr => format!("n{band}"),
-            Self::Lte => format!("B{band}"),
+            Self::Nr => format_compact!("n{band}"),
+            Self::Lte => format_compact!("B{band}"),
         }
     }
 }
@@ -104,7 +106,7 @@ pub(crate) enum PerCc<T> {
 /// length must equal.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NrDirection<T> {
-    pub(crate) bw_class: Option<i32>,
+    pub(crate) bw_class: Option<u8>,
     pub(crate) features: Option<PerCc<T>>,
 }
 
@@ -147,7 +149,7 @@ impl<T: Copy> NrDirection<T> {
 #[cfg(test)]
 impl<T: Copy> NrDirection<T> {
     /// A direction with one resolved feature set per CC.
-    pub(crate) fn with_features(bw_class: i32, features: Vec<T>) -> Self {
+    pub(crate) fn with_features(bw_class: u8, features: Vec<T>) -> Self {
         Self {
             bw_class: Some(bw_class),
             features: (!features.is_empty()).then_some(PerCc::Resolved(features)),
@@ -155,7 +157,7 @@ impl<T: Copy> NrDirection<T> {
     }
 
     /// A direction carrying raw selector bytes that resolved to nothing.
-    pub(crate) fn with_selector(bw_class: i32, bytes: Vec<u8>) -> Self {
+    pub(crate) fn with_selector(bw_class: u8, bytes: Vec<u8>) -> Self {
         Self {
             bw_class: Some(bw_class),
             features: Some(PerCc::Selector(bytes)),
@@ -163,7 +165,7 @@ impl<T: Copy> NrDirection<T> {
     }
 
     /// A direction with a bandwidth class but no per-CC data at all.
-    pub(crate) const fn bare(bw_class: Option<i32>) -> Self {
+    pub(crate) const fn bare(bw_class: Option<u8>) -> Self {
         Self {
             bw_class,
             features: None,
@@ -179,8 +181,8 @@ impl<T: Copy> NrDirection<T> {
 /// arrived with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LteDirection {
-    pub(crate) bw_class: Option<i32>,
-    pub(crate) feature_index: Option<i32>,
+    pub(crate) bw_class: Option<u8>,
+    pub(crate) feature_index: Option<u16>,
     pub(crate) selector: Option<Vec<u8>>,
 }
 
@@ -189,7 +191,7 @@ pub(crate) struct LteDirection {
 /// (`has_nr_only_fields`) rather than by the type.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RawLteSubBlock {
-    pub(crate) band: i32,
+    pub(crate) band: u16,
     pub(crate) dl: LteDirection,
     pub(crate) ul: LteDirection,
 }
@@ -200,7 +202,7 @@ pub(crate) struct RawLteSubBlock {
 /// disagrees is rejected at the boundary ([`ensure_feature_index_derivable`](RawNrSubBlock::ensure_feature_index_derivable)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RawNrSubBlock {
-    pub(crate) band: i32,
+    pub(crate) band: u16,
     pub(crate) dl: NrDirection<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul: NrDirection<ShannonFeatureSetUlPerCcNr>,
     pub(crate) srs_tx_switch: Option<i32>,
@@ -238,14 +240,14 @@ impl From<RawNrSubBlock> for RawSubBlock {
 }
 
 impl RawSubBlock {
-    pub(crate) const fn kind(&self) -> SubBlockKind {
+    const fn kind(&self) -> SubBlockKind {
         match self {
             Self::Lte(_) => SubBlockKind::Lte,
             Self::Nr(_) => SubBlockKind::Nr,
         }
     }
 
-    pub(crate) const fn band(&self) -> i32 {
+    const fn band(&self) -> u16 {
         match self {
             Self::Lte(component) => component.band,
             Self::Nr(component) => component.band,
@@ -256,14 +258,14 @@ impl RawSubBlock {
         self.kind().raw_band(self.band())
     }
 
-    pub(crate) const fn dl_bw_class(&self) -> Option<i32> {
+    pub(crate) const fn dl_bw_class(&self) -> Option<u8> {
         match self {
             Self::Lte(component) => component.dl.bw_class,
             Self::Nr(component) => component.dl.bw_class,
         }
     }
 
-    pub(crate) const fn ul_bw_class(&self) -> Option<i32> {
+    pub(crate) const fn ul_bw_class(&self) -> Option<u8> {
         match self {
             Self::Lte(component) => component.ul.bw_class,
             Self::Nr(component) => component.ul.bw_class,
@@ -328,7 +330,7 @@ fn derive_nr_ul_index(max_mimo_cb: Option<i32>) -> i32 {
 
 /// Observed Samsung Shannon `bw_class` → aggregated CC count for NR sub-blocks.
 /// Exception-free across 3.46M corpus sub-blocks (DL and UL share this table).
-const NR_CC_COUNTS: &[(i32, usize)] = &[
+const NR_CC_COUNTS: &[(u8, usize)] = &[
     (1, 1),
     (2, 2),
     (3, 2),
@@ -342,12 +344,12 @@ const NR_CC_COUNTS: &[(i32, usize)] = &[
 ];
 
 /// Observed `bw_class` → CC count for E-UTRA (LTE) sub-blocks. Distinct from NR.
-const LTE_CC_COUNTS: &[(i32, usize)] = &[(1, 1), (2, 2), (3, 2), (4, 3), (5, 4)];
+const LTE_CC_COUNTS: &[(u8, usize)] = &[(1, 1), (2, 2), (3, 2), (4, 3), (5, 4)];
 
 /// Number of component carriers a sub-block of this kind and bandwidth class carries.
 /// Fail-closed: an unobserved class errors rather than mis-deriving a per-CC list length.
 /// `bw_class == 0` (UL disabled) is not a valid input here — callers gate on it first.
-pub(crate) fn cc_count(kind: SubBlockKind, bw_class: i32) -> anyhow::Result<usize> {
+pub(crate) fn cc_count(kind: SubBlockKind, bw_class: u8) -> anyhow::Result<usize> {
     let table = match kind {
         SubBlockKind::Nr => NR_CC_COUNTS,
         SubBlockKind::Lte => LTE_CC_COUNTS,
@@ -375,7 +377,7 @@ fn resolve_or_placeholder<T: Copy>(
     resolved: Option<Vec<T>>,
     raw: Option<&[u8]>,
     direction: Direction,
-    band: i32,
+    band: u16,
 ) -> anyhow::Result<Option<PerCc<T>>> {
     match resolved {
         // `resolve_all` never yields an empty vec (it returns `None` for an empty selector),
@@ -388,7 +390,7 @@ fn resolve_or_placeholder<T: Copy>(
             anyhow::ensure!(
                 is_placeholder(bytes),
                 "component {} {direction} selector {bytes:?} resolves to no feature and is not the all-zero placeholder",
-                SubBlockKind::Nr.band_label(band),
+                SubBlockKind::Nr.band_label(i32::from(band)),
             );
             Ok(Some(PerCc::Selector(bytes.to_vec())))
         }
@@ -429,8 +431,8 @@ impl RawNrSubBlock {
         derive_nr_ul_index(self.ul.first().map(|fs| fs.max_mimo_cb.unwrap_or(0)))
     }
 
-    fn band_label(&self) -> String {
-        SubBlockKind::Nr.band_label(self.band)
+    fn band_label(&self) -> CompactString {
+        SubBlockKind::Nr.band_label(i32::from(self.band))
     }
 }
 
@@ -443,12 +445,26 @@ struct FeatureIndexes {
     ul: Option<i32>,
 }
 
+/// Narrow a protobuf `i32` capability field to the raw model's tighter observed width, failing
+/// closed on an out-of-range value rather than silently truncating — the same stance as the
+/// `ul_bw_class` presence check in [`from_proto_sub_block`](RawSubBlock::from_proto_sub_block).
+/// Proto carries these as `i32`; the raw model uses the true widths (band `u16`, class `u8`).
+fn narrow_field<T: TryFrom<i32>>(value: i32, field: &str) -> anyhow::Result<T> {
+    T::try_from(value)
+        .map_err(|_| anyhow::anyhow!("{field} value {value} is out of range for the raw model"))
+}
+
+/// The [`Option`] form of [`narrow_field`]: an absent proto field stays absent.
+fn narrow_opt_field<T: TryFrom<i32>>(value: Option<i32>, field: &str) -> anyhow::Result<Option<T>> {
+    value.map(|v| narrow_field(v, field)).transpose()
+}
+
 impl RawSubBlock {
     /// The `dl_feature_index` to write into the binary: the stored `parseLteFeatureIndex`
     /// value for LTE, the value derived from the per-CC feature set for NR.
     pub(crate) fn dl_feature_index(&self) -> Option<i32> {
         match self {
-            Self::Lte(component) => component.dl.feature_index,
+            Self::Lte(component) => component.dl.feature_index.map(i32::from),
             Self::Nr(component) => Some(component.derived_dl_feature_index()),
         }
     }
@@ -456,7 +472,7 @@ impl RawSubBlock {
     /// The `ul_feature_index` to write into the binary; see [`dl_feature_index`](Self::dl_feature_index).
     pub(crate) fn ul_feature_index(&self) -> Option<i32> {
         match self {
-            Self::Lte(component) => component.ul.feature_index,
+            Self::Lte(component) => component.ul.feature_index.map(i32::from),
             Self::Nr(component) => Some(component.derived_ul_feature_index()),
         }
     }
@@ -464,21 +480,21 @@ impl RawSubBlock {
     /// The LTE half of [`from_proto_sub_block`](Self::from_proto_sub_block): an E-UTRA
     /// component's fields carry over verbatim — no per-CC feature-set resolution, no
     /// NR-only `srs_tx_switch`.
-    fn lte_from_proto_sub_block(component: &ProtoSubBlock, band: i32) -> Self {
-        RawLteSubBlock {
+    fn lte_from_proto_sub_block(component: &ProtoSubBlock, band: u16) -> anyhow::Result<Self> {
+        Ok(RawLteSubBlock {
             band,
             dl: LteDirection {
-                bw_class: component.dl_bw_class,
-                feature_index: component.dl_feature_index,
+                bw_class: narrow_opt_field(component.dl_bw_class, "dl_bw_class")?,
+                feature_index: narrow_opt_field(component.dl_feature_index, "dl_feature_index")?,
                 selector: component.dl_feature_per_cc_ids.clone(),
             },
             ul: LteDirection {
-                bw_class: component.ul_bw_class,
-                feature_index: component.ul_feature_index,
+                bw_class: narrow_opt_field(component.ul_bw_class, "ul_bw_class")?,
+                feature_index: narrow_opt_field(component.ul_feature_index, "ul_feature_index")?,
                 selector: component.ul_feature_per_cc_ids.clone(),
             },
         }
-        .into()
+        .into())
     }
 
     /// The NR half of [`from_proto_sub_block`](Self::from_proto_sub_block): resolve both
@@ -489,7 +505,7 @@ impl RawSubBlock {
     /// NR keeps no source index (see [`dl_feature_index`](Self::dl_feature_index)).
     fn nr_from_proto_sub_block(
         component: &ProtoSubBlock,
-        band: i32,
+        band: u16,
         dl_list: &[ShannonFeatureSetDlPerCcNr],
         ul_list: &[ShannonFeatureSetUlPerCcNr],
     ) -> anyhow::Result<Self> {
@@ -498,7 +514,7 @@ impl RawSubBlock {
         let raw = RawNrSubBlock {
             band,
             dl: NrDirection {
-                bw_class: component.dl_bw_class,
+                bw_class: narrow_opt_field(component.dl_bw_class, "dl_bw_class")?,
                 features: resolve_or_placeholder(
                     dl,
                     component.dl_feature_per_cc_ids.as_deref(),
@@ -507,7 +523,7 @@ impl RawSubBlock {
                 )?,
             },
             ul: NrDirection {
-                bw_class: component.ul_bw_class,
+                bw_class: narrow_opt_field(component.ul_bw_class, "ul_bw_class")?,
                 features: resolve_or_placeholder(
                     ul,
                     component.ul_feature_per_cc_ids.as_deref(),
@@ -546,10 +562,11 @@ impl RawSubBlock {
             component.ul_bw_class.is_some(),
             "sub-block omits ul_bw_class (never observed; refusing to normalize to 0)"
         );
-        let (kind, band) = SubBlockKind::split_raw_band(component.band);
+        let (kind, plain_band) = SubBlockKind::split_raw_band(component.band);
+        let band = narrow_field(plain_band, "band")?;
         match kind {
             SubBlockKind::Nr => Self::nr_from_proto_sub_block(component, band, dl_list, ul_list),
-            SubBlockKind::Lte => Ok(Self::lte_from_proto_sub_block(component, band)),
+            SubBlockKind::Lte => Self::lte_from_proto_sub_block(component, band),
         }
     }
 
@@ -558,7 +575,7 @@ impl RawSubBlock {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.band() > 0, "component band must be positive");
         anyhow::ensure!(
-            self.band() < NR_BAND_OFFSET,
+            i32::from(self.band()) < NR_BAND_OFFSET,
             "component band must be the plain band number, not raw protobuf encoding"
         );
         self.validate_cc_count(Direction::Dl)?;
@@ -617,8 +634,8 @@ impl RawSubBlock {
         }
     }
 
-    pub(crate) fn band_label(&self) -> String {
-        self.kind().band_label(self.band())
+    pub(crate) fn band_label(&self) -> CompactString {
+        self.kind().band_label(i32::from(self.band()))
     }
 }
 
@@ -814,9 +831,9 @@ const fn ul_feature_key(f: &ShannonFeatureSetUlPerCcNr) -> UlFeatureKey {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RawSubBlockKey {
     kind: SubBlockKind,
-    band: i32,
-    dl_bw_class: Option<i32>,
-    ul_bw_class: Option<i32>,
+    band: u16,
+    dl_bw_class: Option<u8>,
+    ul_bw_class: Option<u8>,
     dl_feature_index: Option<i32>,
     ul_feature_index: Option<i32>,
     dl_cc_ids: Option<Vec<u8>>,
@@ -904,7 +921,7 @@ mod tests {
 
     /// Returns the NR *variant struct*, not the enum, so tests can keep using functional
     /// update (`RawNrSubBlock { dl: …, ..nr_cc(78) }`) and `.into()` at the use site.
-    fn nr_cc(band: i32) -> RawNrSubBlock {
+    fn nr_cc(band: u16) -> RawNrSubBlock {
         RawNrSubBlock {
             band,
             dl: NrDirection::bare(Some(1)),

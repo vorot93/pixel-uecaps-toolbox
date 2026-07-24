@@ -9,18 +9,18 @@ categories = ["command-line-utilities"]
 keywords = ["pixel", "android", "protobuf", "uecaps", "modem"]
 
 [dependencies]
-thiserror = "2"
-prost = "0.14"
-num-prime = "0.5"
-num-integer = "0.1"
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
-anyhow = "1"
+compact_str = "0.10"
+num-prime = "0.5"
+num-integer = "0.1"
+prost = "0.14"
+thiserror = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 pixel-bands = { git = "https://github.com/vorot93/pixel-bands", rev = "4e5408ce8aca2cdc9c1986530a5400f496eceea4" }
-tempfile = "3.27.0"
-compact_str = "0.10.0"
-kdl = { version = "6.7.1", default-features = false, features = ["span"] }
+tempfile = "3"
+kdl = { version = "6", default-features = false, features = ["span"] }
 
 [build-dependencies]
 prost-build = "0.14"

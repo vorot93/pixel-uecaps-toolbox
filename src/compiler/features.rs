@@ -106,19 +106,19 @@ pub(crate) enum NrSourceSubBlock {
 /// The `lte` half of [`NrSourceSubBlock`] — an E-UTRA component inside an EN-DC combo.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceLteSubBlock {
-    pub(crate) band: i32,
-    pub(crate) dl_bw_class: Option<i32>,
-    pub(crate) ul_bw_class: Option<i32>,
-    pub(crate) dl_feature_index: Option<i32>,
-    pub(crate) ul_feature_index: Option<i32>,
+    pub(crate) band: u16,
+    pub(crate) dl_bw_class: Option<u8>,
+    pub(crate) ul_bw_class: Option<u8>,
+    pub(crate) dl_feature: Option<u16>,
+    pub(crate) ul_feature: Option<u16>,
 }
 
 /// The `nr` half of [`NrSourceSubBlock`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceNrSubBlock {
-    pub(crate) band: i32,
-    pub(crate) dl_bw_class: Option<i32>,
-    pub(crate) ul_bw_class: Option<i32>,
+    pub(crate) band: u16,
+    pub(crate) dl_bw_class: Option<u8>,
+    pub(crate) ul_bw_class: Option<u8>,
     pub(crate) dl_feature: Vec<usize>,
     pub(crate) ul_feature: Vec<usize>,
     pub(crate) srs_tx_switch: Option<i32>,
@@ -146,21 +146,21 @@ impl NrSourceSubBlock {
         }
     }
 
-    pub(crate) const fn band(&self) -> i32 {
+    pub(crate) const fn band(&self) -> u16 {
         match self {
             Self::Lte(cc) => cc.band,
             Self::Nr(cc) => cc.band,
         }
     }
 
-    pub(crate) const fn dl_bw_class(&self) -> Option<i32> {
+    pub(crate) const fn dl_bw_class(&self) -> Option<u8> {
         match self {
             Self::Lte(cc) => cc.dl_bw_class,
             Self::Nr(cc) => cc.dl_bw_class,
         }
     }
 
-    pub(crate) const fn ul_bw_class(&self) -> Option<i32> {
+    pub(crate) const fn ul_bw_class(&self) -> Option<u8> {
         match self {
             Self::Lte(cc) => cc.ul_bw_class,
             Self::Nr(cc) => cc.ul_bw_class,
@@ -333,8 +333,8 @@ impl LocalFeaturePlan {
         };
         Ok(ProtoSubBlock {
             band: component.raw_band(),
-            dl_bw_class: component.dl_bw_class(),
-            ul_bw_class: component.ul_bw_class(),
+            dl_bw_class: component.dl_bw_class().map(i32::from),
+            ul_bw_class: component.ul_bw_class().map(i32::from),
             dl_feature_index: component.dl_feature_index(),
             ul_feature_index: component.ul_feature_index(),
             dl_feature_per_cc_ids,
@@ -371,8 +371,8 @@ impl FeatureCatalogs {
                 band: cc.band,
                 dl_bw_class: cc.dl.bw_class,
                 ul_bw_class: cc.ul.bw_class,
-                dl_feature_index: cc.dl.feature_index,
-                ul_feature_index: cc.ul.feature_index,
+                dl_feature: cc.dl.feature_index,
+                ul_feature: cc.ul.feature_index,
             }
             .into(),
             RawSubBlock::Nr(cc) => SourceNrSubBlock {
@@ -418,7 +418,7 @@ fn resolve_index<T: Clone>(index: usize, records: &[T], direction: Direction) ->
 /// storing them on [`NrSourceSubBlock`]. `None` when there is no bandwidth class to derive a
 /// count from — an absent DL class, or UL disabled (the caller filters `ul_bw_class == 0`),
 /// both of which mean the direction carries no proto field 6/7 at all.
-fn placeholder_ids(kind: SubBlockKind, bw_class: Option<i32>) -> anyhow::Result<Option<Vec<u8>>> {
+fn placeholder_ids(kind: SubBlockKind, bw_class: Option<u8>) -> anyhow::Result<Option<Vec<u8>>> {
     match bw_class {
         Some(bw) => Ok(Some(vec![0u8; cc_count(kind, bw)?])),
         None => Ok(None),
@@ -428,17 +428,17 @@ fn placeholder_ids(kind: SubBlockKind, bw_class: Option<i32>) -> anyhow::Result<
 /// Builds the `lte`-kind resolved component. An `lte` node has no catalog references and no
 /// SRS-TX-switch to carry, so the old "LTE component carries NR-only fields" check is gone:
 /// [`SourceLteSubBlock`] has no field to put them in.
-fn resolve_lte(cc: &SourceLteSubBlock, ul_bw_class: Option<i32>) -> anyhow::Result<RawSubBlock> {
+fn resolve_lte(cc: &SourceLteSubBlock, ul_bw_class: Option<u8>) -> anyhow::Result<RawSubBlock> {
     Ok(RawLteSubBlock {
         band: cc.band,
         dl: LteDirection {
             bw_class: cc.dl_bw_class,
-            feature_index: cc.dl_feature_index,
+            feature_index: cc.dl_feature,
             selector: placeholder_ids(SubBlockKind::Lte, cc.dl_bw_class)?,
         },
         ul: LteDirection {
             bw_class: cc.ul_bw_class,
-            feature_index: cc.ul_feature_index,
+            feature_index: cc.ul_feature,
             // The stored `bw_class` field above keeps the raw value; only the placeholder
             // derivation needs the disabled-aware `ul_bw_class` (`Some(0)` -> `None`).
             selector: placeholder_ids(SubBlockKind::Lte, ul_bw_class)?,
@@ -454,7 +454,7 @@ fn resolve_nr(
     cc: &SourceNrSubBlock,
     dl: Vec<ShannonFeatureSetDlPerCcNr>,
     ul: Vec<ShannonFeatureSetUlPerCcNr>,
-    ul_bw_class: Option<i32>,
+    ul_bw_class: Option<u8>,
 ) -> anyhow::Result<RawSubBlock> {
     Ok(RawNrSubBlock {
         band: cc.band,
@@ -507,7 +507,7 @@ impl NrSourceSubBlock {
 
 /// Resolved catalog references become values; a direction that references nothing
 /// re-materializes the placeholder the source omitted (see [`placeholder_ids`]).
-fn nr_per_cc<T: Copy>(features: Vec<T>, bw_class: Option<i32>) -> anyhow::Result<Option<PerCc<T>>> {
+fn nr_per_cc<T: Copy>(features: Vec<T>, bw_class: Option<u8>) -> anyhow::Result<Option<PerCc<T>>> {
     if features.is_empty() {
         Ok(placeholder_ids(SubBlockKind::Nr, bw_class)?.map(PerCc::Selector))
     } else {
@@ -864,7 +864,7 @@ mod tests {
         let lte = NrSourceSubBlock::from(SourceLteSubBlock {
             band: 66,
             dl_bw_class: Some(1),
-            dl_feature_index: Some(3),
+            dl_feature: Some(3),
             ..Default::default()
         })
         .resolve(&catalogs)

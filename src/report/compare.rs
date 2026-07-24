@@ -323,7 +323,7 @@ mod tests {
     /// `mimo` is the raw DL MIMO code: 2 renders as `4x4`, 3 as `8x8`.
     fn nr_cc(band_n: i32, class: i32, mimo: i32) -> SubBlock {
         SubBlock {
-            band: format!("n{band_n}"),
+            band: format!("n{band_n}").into(),
             dl_bw_class: Some(class),
             ul_bw_class: Some(class),
             dl_features: vec![crate::proto::ShannonFeatureSetDlPerCcNr {

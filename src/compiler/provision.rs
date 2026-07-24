@@ -260,7 +260,7 @@ mod tests {
         }])
     }
 
-    fn nr_combo(band: i32, carriers: &[&str], skus: &[&str]) -> NrSourceCombo {
+    fn nr_combo(band: u16, carriers: &[&str], skus: &[&str]) -> NrSourceCombo {
         NrSourceCombo {
             selection: selection(carriers, skus),
             // The four corpus-verified always-`Some` header fields (all but

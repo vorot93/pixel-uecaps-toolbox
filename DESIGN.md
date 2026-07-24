@@ -752,6 +752,16 @@ features are alternatives, and a flat struct let all three sit side by side:
 - **Reading.** Code that treats both kinds alike uses the accessors (`band()`, `dl_bw_class()`,
   `dl_features()`, `dl_selector()`, `dl_feature_index()`). Code that *builds* a component matches
   on the variant, so it can only fill fields that kind actually has.
+- **The raw model's ints are its true widths; `i32` is only the wire's.** `band` is `u16`,
+  `bw_class` `u8`, and the LTE `feature_index` `u16` — those are the real domains (a plain band
+  stays `< NR_BAND_OFFSET`, classes are single-digit). Protobuf carries all three as `i32`, so the
+  single decode boundary (`RawSubBlock::from_proto_sub_block`) narrows via `narrow_field`, failing
+  closed on an out-of-range value rather than truncating (the same stance as the `ul_bw_class`
+  presence check); encode widens back to `i32` for the wire. The narrowing **stops at the model on
+  purpose**: `report::combos::SubBlock` and the shared `band_label`/`cc_class` formatters stay
+  `i32` (they only ever format a value, and the `inspect` render path is not `Result`). Don't
+  narrow the display DTO to `u8`/`u16` — it only adds a second fail-closed-or-truncate boundary in
+  non-`Result` display code, with nothing to gain.
 - **The source model is a sum too.** `compiler::features::NrSourceSubBlock` — how `nr.kdl` spells a
   sub-block — is `enum { Lte(SourceLteSubBlock), Nr(SourceNrSubBlock) }` for the same reason. An
   `lte` node has the scalar proto-4/5 index and no catalog list; an `nr` node has the per-CC list,
