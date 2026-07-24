@@ -3,9 +3,7 @@ use std::collections::BTreeSet;
 use anyhow::{Context, ensure};
 
 use crate::{
-    proto::{
-        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock,
-    },
+    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock},
     raw_nr::{
         Direction, LteDirection, NrDirection, PerCc, RawLteSubBlock, RawNrPayload, RawNrSubBlock,
         RawSubBlock, SubBlockKind, cc_count,

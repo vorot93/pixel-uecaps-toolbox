@@ -1,7 +1,9 @@
 //! Band-combination model and rendering shared by `inspect`.
 
 use crate::{
-    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps},
+    proto::{
+        ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps,
+    },
     raw_nr::SubBlockKind,
     report::detail::Detail,
 };
