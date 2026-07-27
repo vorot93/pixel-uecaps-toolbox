@@ -631,11 +631,22 @@ mod tests {
         );
     }
 
+    /// The byte-identity self-check's *residual* job. `wire::scan` now rejects every other
+    /// non-canonical encoding (unknown field, wrong wire type, out-of-range varint, duplicate
+    /// singular field, descending tag order, overlong varint), which leaves exactly one form it
+    /// cannot reject: an explicit zero for a bare, non-`optional` scalar. prost drops that on
+    /// re-encode — see `src/proto.rs`'s note on the bit-identity messages — so only a byte
+    /// comparison catches it. Reordered fields are covered by `wire`'s own tests now.
     #[test]
     fn decode_self_verification_rejects_noncanonical_original_bytes() {
-        let caps = caps(1, 2, Vec::new());
-        let original = vec![0x18, 0x02, 0x08, 0x01];
+        let caps = caps(1, 0, Vec::new());
+        // field 1 (fingerprint) = 1, then field 3 (bitmask) = an explicit 0 that the
+        // canonical encoding omits. Ascending order, no duplicates, in range: wire-legal.
+        let original = vec![0x08, 0x01, 0x18, 0x00];
         assert_eq!(LteCaps::decode(original.as_slice()).unwrap(), caps);
+        assert_eq!(caps.encode_to_vec(), vec![0x08, 0x01]);
+        crate::wire::ensure_modeled(&original, crate::wire::RootMessage::LteCaps)
+            .expect("the strict scanner cannot reject an explicit zero");
 
         let error = ingest_lte(vec![DecodedLteFile {
             id: 91,

@@ -276,21 +276,19 @@ pub(crate) fn replace_lte(file: &mut FixtureFile, caps: &LteCaps) {
     file.bytes = caps.encode_to_vec();
 }
 
+/// Rewrite `file` into a non-canonical encoding of the *same* value, so the LTE byte-identity
+/// self-check is what rejects it.
+///
+/// This deliberately uses an explicit zero for the bare `bitmask` scalar rather than the
+/// reordered-fields trick it used before: `wire::scan` now rejects descending tag order (and
+/// duplicates, and overlong varints), so a reordered encoding never reaches the byte comparison.
+/// An explicit zero for a non-`optional` scalar is the one non-canonical form the scanner cannot
+/// reject — prost drops it on re-encode — which makes it the right probe here.
 pub(crate) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
-    let caps = decode_lte(file);
-    let mut bytes = LteCaps {
-        bitmask: caps.bitmask,
-        ..Default::default()
-    }
-    .encode_to_vec();
-    bytes.extend(
-        LteCaps {
-            fingerprint: caps.fingerprint,
-            combos: caps.combos.clone(),
-            ..Default::default()
-        }
-        .encode_to_vec(),
-    );
+    let mut caps = decode_lte(file);
+    caps.bitmask = 0;
+    let mut bytes = caps.encode_to_vec();
+    bytes.extend([0x18, 0x00]); // field 3 (bitmask), explicit zero, keeping ascending order
     assert_eq!(LteCaps::decode(bytes.as_slice()).unwrap(), caps);
     assert_ne!(bytes, caps.encode_to_vec());
     file.bytes = bytes;
