@@ -154,6 +154,11 @@ fn nr_caps(
                     band,
                     dl_bw_class: Some(1),
                     ul_bw_class: Some(1),
+                    // Per-CC presence and `bw_class` imply each other — the invariant
+                    // `RawSubBlock::validate` enforces, and the shape every real file has.
+                    // `cc_count == 1` for class 1, so one all-zero placeholder byte each.
+                    dl_feature_per_cc_ids: Some(vec![0]),
+                    ul_feature_per_cc_ids: Some(vec![0]),
                     ..Default::default()
                 }],
                 bitmask,

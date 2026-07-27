@@ -175,10 +175,16 @@ impl<T: Copy> NrDirection<T> {
 
 /// One direction of an E-UTRA component: its CA bandwidth class, the stored
 /// `parseLteFeatureIndex` value (proto 4/5 — a MIMO × CC-count code, not a catalog
-/// reference), and proto field 6/7. The selector is always the all-zero placeholder in the
-/// corpus (LTE references no per-CC feature catalog) and so is fully derivable from
-/// `bw_class`; it is kept only so a decoded component re-encodes with the field presence it
-/// arrived with.
+/// reference), and proto field 6/7.
+///
+/// The selector is always the all-zero placeholder in the corpus (LTE references no per-CC
+/// feature catalog), so its *contents* are fully derivable from `bw_class` — and since
+/// [`RawSubBlock::validate`] now requires presence and `bw_class >= 1` to imply each other, so
+/// is its presence. It is kept as a field because the length is what
+/// [`validate_cc_count`](RawSubBlock::validate_cc_count) checks against `cc_count`, which is
+/// how a wrong-length list is caught. (It previously claimed to exist "only so a decoded
+/// component re-encodes with the field presence it arrived with" — that was never true:
+/// regeneration re-derives presence from the class and never consulted this field.)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LteDirection {
     pub(crate) bw_class: Option<u8>,
@@ -272,6 +278,12 @@ impl RawSubBlock {
         }
     }
 
+    /// `None` for E-UTRA is true *by construction*, not by convention:
+    /// [`lte_from_proto_sub_block`](Self::lte_from_proto_sub_block) rejects proto field 8 on an
+    /// E-UTRA band and the KDL reader rejects `srs-tx-switch` on an `lte` node, so no E-UTRA
+    /// component carrying one can be built. That matters because [`RawSubBlockKey`] reads this
+    /// method for combo identity — while the field was silently discarded instead, two combos
+    /// differing only in field 8 produced identical keys.
     pub(crate) const fn srs_tx_switch(&self) -> Option<i32> {
         match self {
             Self::Lte(_) => None,
@@ -480,7 +492,22 @@ impl RawSubBlock {
     /// The LTE half of [`from_proto_sub_block`](Self::from_proto_sub_block): an E-UTRA
     /// component's fields carry over verbatim — no per-CC feature-set resolution, no
     /// NR-only `srs_tx_switch`.
+    ///
+    /// Field 8 is *rejected* rather than ignored. [`RawLteSubBlock`] has nowhere to put it, so
+    /// reading six of the seven optional fields and dropping the seventh lost data silently —
+    /// and because [`RawSubBlockKey`] takes `srs_tx_switch` from
+    /// [`RawSubBlock::srs_tx_switch`], which is unconditionally `None` for E-UTRA, two combos
+    /// differing only in field 8 collapsed to one key and the legacy branch dropped one of them
+    /// outright. `wire`'s scanner cannot catch this: field 8 is modeled on `SubBlock` and is
+    /// legitimate for NR, so only the band tells the two apart. The source direction was
+    /// already fail-closed here (`read_sub_block`'s `finish()` rejects `srs-tx-switch` on an
+    /// `lte` node); this makes proto ingest agree with it.
     fn lte_from_proto_sub_block(component: &ProtoSubBlock, band: u16) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            component.srstxswitch.is_none(),
+            "component B{band} is an E-UTRA sub-block carrying srstxswitch (proto field 8), \
+             which is NR-only and has no place in the E-UTRA model"
+        );
         Ok(RawLteSubBlock {
             band,
             dl: LteDirection {
@@ -586,36 +613,52 @@ impl RawSubBlock {
         Ok(())
     }
 
-    /// A direction's per-CC list length (resolved feature sets, else the raw selector bytes)
-    /// must equal `cc_count(kind, bw_class)`. `ul_bw_class == 0` means UL is disabled (no UL
-    /// data expected, and `cc_count` must never be called with `0`); DL has no such
-    /// "disabled" class, so any per-CC DL data requires a class to check against.
+    /// Per-CC data and `bw_class` must imply each other, and when both are present the list
+    /// length must equal `cc_count(kind, bw_class)`.
+    ///
+    /// The biconditional is the load-bearing part. Regeneration does not preserve field 6/7
+    /// presence — `resolve` re-derives it from the class via `placeholder_ids` — so a component
+    /// that breaks the correspondence cannot survive a round trip in either direction: per-CC
+    /// data under a `0`/absent class is silently **dropped**, and a class with no per-CC data
+    /// has an all-zero selector **invented** for it. Both used to validate `Ok`.
+    ///
+    /// This is corpus-verified rather than assumed: across 3.46M real sub-blocks the
+    /// correspondence is exact — `class >= 1` always carries a selector (LTE DL 1 741 849,
+    /// LTE UL 709 707, NR DL 1 715 899, NR UL 1 028 461) and `class == 0` never does
+    /// (LTE UL 1 032 142, NR UL 687 438), with no absent classes and no zero-length selectors.
+    /// So enforcing it rejects nothing real while making the data loss unrepresentable.
     fn validate_cc_count(&self, direction: Direction) -> anyhow::Result<()> {
         let (len, bw_class) = match direction {
             Direction::Dl => (self.dl_per_cc_len(), self.dl_bw_class()),
             Direction::Ul => (self.ul_per_cc_len(), self.ul_bw_class()),
         };
-        let Some(len) = len else {
-            return Ok(());
-        };
-        let bw_class = bw_class.ok_or_else(|| {
-            anyhow::anyhow!(
-                "component {} carries per-CC {direction} data without a {}_bw_class",
+        let lower = direction.lowercase();
+        match (len, bw_class) {
+            // Direction off: the explicit "disabled" class 0 (or none at all), and no data.
+            (None, None | Some(0)) => Ok(()),
+            (Some(len), Some(bw_class @ 1..)) => {
+                let expected = cc_count(self.kind(), bw_class)?;
+                anyhow::ensure!(
+                    len == expected,
+                    "component {} {direction} per-CC list length {len} does not match cc_count \
+                     {expected} for {lower}_bw_class {bw_class}",
+                    self.band_label(),
+                );
+                Ok(())
+            }
+            (Some(len), class) => anyhow::bail!(
+                "component {} carries {len} per-CC {direction} value(s) but its {lower}_bw_class \
+                 is {}; regeneration derives per-CC presence from the class, so this data would \
+                 be dropped",
                 self.band_label(),
-                direction.lowercase()
-            )
-        })?;
-        if direction == Direction::Ul && bw_class == 0 {
-            return Ok(());
+                class.map_or_else(|| "absent".to_string(), |c| c.to_string()),
+            ),
+            (None, Some(bw_class)) => anyhow::bail!(
+                "component {} has {lower}_bw_class {bw_class} but carries no per-CC {direction} \
+                 data; regeneration would invent an all-zero selector for it",
+                self.band_label(),
+            ),
         }
-        let expected = cc_count(self.kind(), bw_class)?;
-        anyhow::ensure!(
-            len == expected,
-            "component {} {direction} per-CC list length {len} does not match cc_count {expected} for {}_bw_class {bw_class}",
-            self.band_label(),
-            direction.lowercase()
-        );
-        Ok(())
     }
 
     /// The DL per-CC list length, or `None` when the direction carries no per-CC data at all.
@@ -917,6 +960,107 @@ mod tests {
             srs_tx_switch: None,
         }
         .into()
+    }
+
+    /// Selector presence and `bw_class` imply each other, so a direction that carries per-CC
+    /// data while its class says the direction is off cannot round-trip: `resolve` derives
+    /// presence from the class and would silently drop the data. Corpus-verified over 3.46M
+    /// sub-blocks — `class >= 1` always has a selector, `class == 0` never does — so this
+    /// rejects nothing real.
+    #[test]
+    fn ul_data_with_a_disabled_ul_class_is_rejected() {
+        let component: RawSubBlock = RawLteSubBlock {
+            band: 3,
+            dl: LteDirection {
+                bw_class: Some(1),
+                feature_index: None,
+                selector: Some(vec![0]),
+            },
+            ul: LteDirection {
+                bw_class: Some(0),
+                feature_index: None,
+                selector: Some(vec![0, 0]),
+            },
+        }
+        .into();
+
+        let error = format!("{:#}", component.validate().unwrap_err());
+
+        assert!(error.contains("ul_bw_class"), "{error}");
+        assert!(error.contains("B3"), "{error}");
+    }
+
+    /// The additive half: a class with no selector would have one *invented* on regeneration
+    /// (`placeholder_ids` writes an all-zero list unconditionally), so the file that comes back
+    /// out differs from the one that went in.
+    #[test]
+    fn a_bw_class_without_its_selector_is_rejected() {
+        let component: RawSubBlock = RawLteSubBlock {
+            band: 3,
+            dl: LteDirection {
+                bw_class: Some(4),
+                feature_index: None,
+                selector: None,
+            },
+            ul: LteDirection {
+                bw_class: Some(0),
+                feature_index: None,
+                selector: None,
+            },
+        }
+        .into();
+
+        let error = format!("{:#}", component.validate().unwrap_err());
+
+        assert!(error.contains("dl_bw_class"), "{error}");
+        assert!(error.contains("B3"), "{error}");
+    }
+
+    /// The shape real files actually have: presence on both sides of the biconditional.
+    #[test]
+    fn matching_class_and_selector_validate() {
+        let component: RawSubBlock = RawLteSubBlock {
+            band: 3,
+            dl: LteDirection {
+                bw_class: Some(4),
+                feature_index: None,
+                selector: Some(vec![0, 0, 0]), // cc_count(Lte, 4) == 3
+            },
+            ul: LteDirection {
+                bw_class: Some(2),
+                feature_index: None,
+                selector: Some(vec![0, 0]), // cc_count(Lte, 2) == 2
+            },
+        }
+        .into();
+
+        component.validate().expect("the corpus-verified shape");
+    }
+
+    /// Proto field 8 was read for NR and silently dropped for E-UTRA. Worse, the identity key
+    /// inherited that `None`, so two combos differing only in field 8 produced byte-identical
+    /// keys and the legacy branch dropped one of them outright. The E-UTRA model has no field
+    /// to hold it, so ingest must refuse rather than discard. (Field 8 appears zero times in
+    /// the corpus — on NR sub-blocks too — so this is hardening, not a live-data fix.)
+    #[test]
+    fn field_eight_on_an_eutra_sub_block_is_rejected() {
+        let component = ProtoSubBlock {
+            band: 3,
+            dl_bw_class: Some(1),
+            ul_bw_class: Some(1),
+            dl_feature_per_cc_ids: Some(vec![0]),
+            ul_feature_per_cc_ids: Some(vec![0]),
+            srstxswitch: Some(7),
+            ..Default::default()
+        };
+
+        let error = format!(
+            "{:#}",
+            RawSubBlock::from_proto_sub_block(&component, &[], &[]).unwrap_err()
+        );
+
+        assert!(error.contains("srstxswitch"), "{error}");
+        assert!(error.contains("B3"), "{error}");
     }
 
     /// Returns the NR *variant struct*, not the enum, so tests can keep using functional

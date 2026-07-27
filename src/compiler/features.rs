@@ -763,7 +763,9 @@ mod tests {
             },
             ul: LteDirection {
                 bw_class: Some(1),
-                ..Default::default()
+                feature_index: None,
+                // A class implies its per-CC list; cc_count(Lte, 1) == 1.
+                selector: Some(vec![0]),
             },
         }
         .into();
@@ -786,15 +788,21 @@ mod tests {
             "the all-zero placeholder must survive generation byte-for-byte"
         );
 
-        // The other half of the claim above: a UL-disabled NR sub-block carries the same
-        // all-zero placeholder on the UL side (`validate_ul_cc_count` skips the length check
-        // entirely when `ul_bw_class == 0`), and it must survive generation identically.
+        // The NR half. This used to assert that a *UL-disabled* NR sub-block carries an
+        // all-zero placeholder on the UL side and that it "must survive generation
+        // byte-for-byte" — a guarantee that was only ever true on a path `provision` never
+        // takes, because the fixture was built directly instead of through `resolve`.
+        // `resolve` filters `ul_bw_class` to `>= 1` before deriving presence, so it yields
+        // `None` there, and the sibling test below (`resolve_derives_the_omitted_placeholder`)
+        // asserted exactly the opposite. The corpus settles which is right: `ul_bw_class == 0`
+        // never carries field 7, in any of 687 438 occurrences. So the placeholder is tested
+        // where it actually lives — under a real class — and the UL-disabled direction carries
+        // nothing, which is now also what `validate` enforces.
         let nr_sb: RawSubBlock = RawNrSubBlock {
             band: 78,
-            // valid NR class; DL is not exercised by this assertion
-            dl: NrDirection::bare(Some(1)),
-            // UL disabled, but still carrying the placeholder
-            ul: NrDirection::with_selector(0, vec![0]),
+            // cc_count(Nr, 1) == 1: a one-byte all-zero placeholder under a live class.
+            dl: NrDirection::with_selector(1, vec![0]),
+            ul: NrDirection::bare(Some(0)),
             ..Default::default()
         }
         .into();
@@ -813,9 +821,13 @@ mod tests {
         let nr_out = nr_plan.reconstruct_sub_block(&nr_sb).unwrap();
 
         assert_eq!(
-            nr_out.ul_feature_per_cc_ids,
+            nr_out.dl_feature_per_cc_ids,
             Some(vec![0]),
-            "the UL-disabled NR placeholder must survive generation byte-for-byte"
+            "an all-zero NR placeholder under a live class survives generation byte-for-byte"
+        );
+        assert_eq!(
+            nr_out.ul_feature_per_cc_ids, None,
+            "a UL-disabled direction carries no per-CC list — matching what `resolve` derives"
         );
     }
 

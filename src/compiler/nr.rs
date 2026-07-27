@@ -254,6 +254,16 @@ fn verify_compact_feature_list<T>(
         let cc = u8::try_from(bw_class).with_context(|| {
             format!("generated {basename} {direction} bw_class {bw_class} is out of range")
         })?;
+        // `cc_count`'s contract excludes 0 ("callers gate on it first"), and this caller did
+        // not — a class-0 direction reached it and produced a bare "unknown Nr bw_class 0"
+        // naming neither the file nor the band. Reaching here with 0 also means the generated
+        // file broke the selector-presence biconditional `RawSubBlock::validate` enforces, so
+        // say that rather than bottoming out in a CC-count lookup.
+        ensure!(
+            cc >= 1,
+            "generated {basename} band {raw_band} carries a resolved {direction} selector but \
+             its bw_class is 0; per-CC data and a live bandwidth class imply each other"
+        );
         let expected = cc_count(kind, cc)?;
         ensure!(
             ids.len() == expected,
@@ -866,6 +876,10 @@ mod tests {
             band,
             dl_bw_class: Some(1),
             ul_bw_class: Some(1),
+            // A class-1 direction always carries a one-byte per-CC list; the biconditional in
+            // `RawSubBlock::validate` requires it, and every real file has it.
+            dl_feature_per_cc_ids: Some(vec![0]),
+            ul_feature_per_cc_ids: Some(vec![0]),
             srstxswitch: Some(srs_tx_switch),
             ..Default::default()
         }
@@ -1083,8 +1097,12 @@ mod tests {
                 combo: vec![Combo {
                     sub_blocks: vec![SubBlock {
                         band: 10_078,
-                        dl_bw_class: Some(0),
-                        ul_bw_class: Some(0),
+                        // Both classes are 1, not 0: per-CC presence and `bw_class` imply each
+                        // other, so a direction carrying a selector must have a real class.
+                        // The resolution behaviour under test is unaffected — it depends on the
+                        // selector bytes, not on which class they sit under.
+                        dl_bw_class: Some(1),
+                        ul_bw_class: Some(1),
                         // A single in-range byte, so all-or-nothing resolution still
                         // resolves (the out-of-range multi-byte case is covered by
                         // `raw_conversion_preserves_every_selector_only_presence_shape`
@@ -1113,7 +1131,10 @@ mod tests {
         assert_eq!(payload.bcs_nr, Some(0));
         assert_eq!(payload.power_class, Some(0));
         let component = &payload.sub_blocks[0];
-        assert_eq!(component.dl_bw_class(), Some(0));
+        // The explicit-zero *class* case moved to `ul_bw_class_zero_is_preserved_as_explicit`
+        // below: NR DL is never class 0 in any real file, and a class-0 direction may not carry
+        // a selector, so the old `dl_bw_class: Some(0)` + DL selector fixture was a shape the
+        // corpus does not contain. The remaining explicit zeros here are all realistic.
         assert_eq!(component.srs_tx_switch(), Some(0));
         assert_eq!(component.dl_features().len(), 1);
         assert_eq!(component.dl_features()[0].max_scs, Some(0));
@@ -1124,6 +1145,35 @@ mod tests {
             "resolved raw values must suppress the source selector"
         );
         assert_eq!(component.ul_selector(), Some([0].as_slice()));
+    }
+
+    /// The realistic explicit-zero class: UL disabled. `ul_bw_class = 0` occurs 687 438 times
+    /// in the corpus and always with field 7 absent, so this is the shape that must survive
+    /// ingest as `Some(0)` rather than being normalized to `None`.
+    #[test]
+    fn ul_bw_class_zero_is_preserved_as_explicit() {
+        let caps = UeCaps {
+            combo_groups: vec![ComboGroup {
+                combo_header: full_header(),
+                combo: vec![Combo {
+                    sub_blocks: vec![SubBlock {
+                        band: 10_078,
+                        dl_bw_class: Some(1),
+                        dl_feature_per_cc_ids: Some(vec![0]),
+                        ul_bw_class: Some(0),
+                        ..Default::default()
+                    }],
+                    bitmask: Some(0),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let payload = raw_payloads(&caps).pop().unwrap();
+        let component = &payload.sub_blocks[0];
+
+        assert_eq!(component.ul_bw_class(), Some(0));
+        assert_eq!(component.ul_selector(), None);
     }
 
     // The former `raw_conversion_preserves_every_selector_only_presence_shape` lived here. It
@@ -1143,6 +1193,9 @@ mod tests {
                 combo: vec![Combo {
                     sub_blocks: vec![SubBlock {
                         band: 10_078,
+                        // A DL selector requires a DL class to sit under — the biconditional
+                        // `validate` now enforces, and the shape every real file has.
+                        dl_bw_class: Some(1),
                         ul_bw_class: Some(0),
                         // A single in-range byte: all-or-nothing resolution needs every
                         // byte in range to resolve, unlike the old first-byte rule.
@@ -1638,28 +1691,35 @@ mod tests {
                 .map(|value| {
                     // Single-CC (bw_class 1) so the generated compact-list selector
                     // stays a single byte for `verify_compact_feature_list`'s cc_count check.
+                    // The direction *not* under test still has class 1, so it must carry a
+                    // per-CC list: the all-zero placeholder, which is what a real file holds
+                    // for a CC with no feature. `with_features(1, vec![])` would collapse to
+                    // `features: None`, a class-without-a-list shape the corpus never contains
+                    // and `RawSubBlock::validate` now rejects.
                     RawNrSubBlock {
                         band: value,
-                        dl: NrDirection::with_features(
-                            1,
-                            (direction == "DL")
-                                .then_some(ShannonFeatureSetDlPerCcNr {
+                        dl: if direction == "DL" {
+                            NrDirection::with_features(
+                                1,
+                                vec![ShannonFeatureSetDlPerCcNr {
                                     max_bw: Some(i32::from(value)),
                                     ..Default::default()
-                                })
-                                .into_iter()
-                                .collect(),
-                        ),
-                        ul: NrDirection::with_features(
-                            1,
-                            (direction == "UL")
-                                .then_some(ShannonFeatureSetUlPerCcNr {
+                                }],
+                            )
+                        } else {
+                            NrDirection::with_selector(1, vec![0])
+                        },
+                        ul: if direction == "UL" {
+                            NrDirection::with_features(
+                                1,
+                                vec![ShannonFeatureSetUlPerCcNr {
                                     max_bw: Some(i32::from(value)),
                                     ..Default::default()
-                                })
-                                .into_iter()
-                                .collect(),
-                        ),
+                                }],
+                            )
+                        } else {
+                            NrDirection::with_selector(1, vec![0])
+                        },
                         srs_tx_switch: None,
                     }
                     .into()

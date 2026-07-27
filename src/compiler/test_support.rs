@@ -396,6 +396,13 @@ fn nr_caps(
                     band,
                     dl_bw_class: Some(1),
                     ul_bw_class: Some(1),
+                    // Per-CC presence tracks `bw_class` in every real file, and
+                    // `RawSubBlock::validate` now enforces that biconditional, so a class-1
+                    // direction carries a one-byte all-zero placeholder (`cc_count == 1` for
+                    // class 1 in both kinds). Omitting these made the fixture a shape the
+                    // corpus never contains, and one regeneration would have silently added.
+                    dl_feature_per_cc_ids: Some(vec![0]),
+                    ul_feature_per_cc_ids: Some(vec![0]),
                     ..Default::default()
                 }],
                 bitmask,
