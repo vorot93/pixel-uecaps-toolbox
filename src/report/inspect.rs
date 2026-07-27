@@ -15,7 +15,7 @@ use crate::{
         detail::Detail,
     },
 };
-use prost::Message;
+use anyhow::Context;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -25,8 +25,12 @@ use std::{
 /// nibble as `*`, which reads well as plain text but is not `mapping::Plmn`'s canonical
 /// hex form (e.g. the ANY-MNC wildcard is `"**"` here, `"ff"` in `Plmn::Display`).
 fn plmn_label(v: u64) -> String {
-    let (mcc, mnc) = decode_plmn(v);
-    format!("{mcc}-{mnc}")
+    // An out-of-range value is named as corrupt rather than silently truncated into a
+    // different-but-plausible carrier — see `model::decode_plmn`.
+    decode_plmn(v).map_or_else(
+        || format!("<invalid PLMN {v}>"),
+        |(mcc, mnc)| format!("{mcc}-{mnc}"),
+    )
 }
 
 /// Distinct countries covered by a PLMN list, in first-seen order.
@@ -34,8 +38,10 @@ fn country_summary(plmns: &[u64]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut ordered = Vec::new();
     for &v in plmns {
-        let (mcc, _) = decode_plmn(v);
-        let name = mcc_country(&mcc).map_or_else(|| format!("MCC{mcc}"), str::to_string);
+        let name = match decode_plmn(v) {
+            Some((mcc, _)) => mcc_country(&mcc).map_or_else(|| format!("MCC{mcc}"), str::to_string),
+            None => "(invalid PLMN)".to_string(),
+        };
         if seen.insert(name.clone()) {
             ordered.push(name);
         }
@@ -96,11 +102,11 @@ fn inspect_lte(path: &Path, number: u64, detail: Detail) {
     println!("LTE-only fallback config\n");
 
     let caps = std::fs::read(path)
-        .ok()
-        .and_then(|d| crate::proto::LteCaps::decode(&d[..]).ok());
+        .with_context(|| format!("cannot read {}", path.display()))
+        .and_then(|d| crate::wire::decode_lte_caps(&d, "LTE fallback config"));
 
     let fp_line = match &caps {
-        Some(c) => {
+        Ok(c) => {
             let fp_suffix = match fp_info(c.fingerprint) {
                 Some((fam, tier)) => format!(
                     "  [family {}, {} tier]",
@@ -111,7 +117,9 @@ fn inspect_lte(path: &Path, number: u64, detail: Detail) {
             };
             format!("in-file fp : {}{fp_suffix}", c.fingerprint)
         }
-        None => "in-file fp : (file not readable; filename-only analysis)".to_string(),
+        Err(error) => {
+            format!("in-file fp : (unavailable — {error:#}; filename-only analysis)")
+        }
     };
     println!("{fp_line}");
     for line in super::lte::config_block(number) {
@@ -122,15 +130,15 @@ fn inspect_lte(path: &Path, number: u64, detail: Detail) {
         println!();
         println!("Number       : {number}");
         println!("  factored   : {}", factor_display(number));
-        if let Some(c) = &caps {
+        if let Ok(c) = &caps {
             println!("bitmask      : {}", c.bitmask);
         }
     }
     println!();
 
     match &caps {
-        Some(c) => super::lte::print_lte_combos(c, detail),
-        None => println!("LTE band combinations: (file not readable)"),
+        Ok(c) => super::lte::print_lte_combos(c, detail),
+        Err(error) => println!("LTE band combinations: (unavailable — {error:#})"),
     }
 }
 
@@ -269,11 +277,13 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: 
         print_number_analysis(dir, carrier, number);
     }
     let caps = read_ue_caps(path);
-    let outcome = print_sku_profile(caps.as_ref(), carrier, number, detail);
+    let outcome = print_sku_profile(caps.as_ref().ok(), carrier, number, detail);
     println!();
     match &caps {
-        Some(c) => print_combos(&build_combos(c), detail),
-        None => println!("Band combinations: (file not readable)"),
+        Ok(c) => print_combos(&build_combos(c), detail),
+        // Naming the reason matters: strict validation now rejects wire-level corruption that
+        // used to decode, and "not readable" would hide both that and a permissions problem.
+        Err(error) => println!("Band combinations: (unavailable — {error:#})"),
     }
     outcome
 }

@@ -698,8 +698,14 @@ pub(crate) fn parse_name(filename: &str) -> Parsed {
 /// Decode a 3GPP packed-BCD PLMN integer into (MCC, MNC). Filler/hex nibbles
 /// (0xA-0xF) render as `*` (wildcard, or the 2-digit-MNC marker for MNC digit 3).
 /// Shares the packed-BCD layout with the canonical `mapping::Plmn`.
-pub(crate) fn decode_plmn(v: u64) -> (String, String) {
-    let plmn = crate::mapping::Plmn::from_encoded(v & 0xFF_FFFF).expect("masked to 24 bits");
+///
+/// `None` for a value that does not fit a PLMN's 24 bits. `Carrier.plmns` is `uint64` on the
+/// wire, so those extra bits are real data: masking them away (as this once did) renders a
+/// corrupt entry as a different but entirely plausible carrier, which is the opposite of what
+/// an audit surface should do. The compiler path rejects the same input via
+/// `Error::PlmnOutOfRange`, and this now agrees with it.
+pub(crate) fn decode_plmn(v: u64) -> Option<(String, String)> {
+    let plmn = crate::mapping::Plmn::from_encoded(v).ok()?;
     let (mcc_n, mnc_n, mnc3) = plmn.nibbles();
     let d = |x: u8| if x < 10 { (b'0' + x) as char } else { '*' };
     let mcc: String = mcc_n.iter().map(|&x| d(x)).collect();
@@ -707,7 +713,7 @@ pub(crate) fn decode_plmn(v: u64) -> (String, String) {
     if mnc3 != 0xf {
         mnc.push(d(mnc3));
     }
-    (mcc, mnc)
+    Some((mcc, mnc))
 }
 
 /// MCC -> country/territory for the regions present in the dataset.
@@ -1002,11 +1008,12 @@ mod tests {
         // rendering layer (`decode_plmn`), independently of `mapping::Plmn::Display`. If the
         // 2-digit-MNC vs 3-digit-MNC rendering is ever refactored away from `mapping::Plmn`,
         // these assertions catch a regression at the documented values.
-        assert_eq!(decode_plmn(197_154), ("302".into(), "220".into())); // 3-digit MNC
-        assert_eq!(decode_plmn(5_435_408), ("250".into(), "01".into())); // 2-digit MNC (N3 = F filler)
-        assert_eq!(decode_plmn(5_566_544), ("450".into(), "05".into())); // SKT, Korea
-        assert_eq!(decode_plmn(10_090_905), ("999".into(), "99".into())); // 2-digit MNC
-        assert_eq!(decode_plmn(1_245_572), ("311".into(), "480".into())); // Verizon, US
+        let d = |v| decode_plmn(v).expect("documented vectors are all in range");
+        assert_eq!(d(197_154), ("302".into(), "220".into())); // 3-digit MNC
+        assert_eq!(d(5_435_408), ("250".into(), "01".into())); // 2-digit MNC (N3 = F filler)
+        assert_eq!(d(5_566_544), ("450".into(), "05".into())); // SKT, Korea
+        assert_eq!(d(10_090_905), ("999".into(), "99".into())); // 2-digit MNC
+        assert_eq!(d(1_245_572), ("311".into(), "480".into())); // Verizon, US
     }
 
     #[test]
@@ -1014,8 +1021,20 @@ mod tests {
         // 228-ff: both MNC nibbles are hex F -> "**"; the filler third nibble is dropped.
         assert_eq!(
             decode_plmn(2_291_967),
-            ("228".to_string(), "**".to_string())
+            Some(("228".to_string(), "**".to_string()))
         );
+    }
+
+    /// `Carrier.plmns` is `uint64` on the wire, so a legend can carry more than the 24 bits a
+    /// PLMN has. Masking those bits away turned corruption into a *plausible* carrier: the
+    /// value below differs from Verizon's 311-480 only above bit 24, and used to render as
+    /// Verizon with no warning. The compiler path has always rejected it
+    /// (`Error::PlmnOutOfRange`); the audit path must not disagree.
+    #[test]
+    fn decode_plmn_rejects_a_value_wider_than_24_bits() {
+        assert_eq!(decode_plmn(1_245_572), Some(("311".into(), "480".into())));
+        assert_eq!(decode_plmn(0x100_0000 | 1_245_572), None);
+        assert!(crate::mapping::Plmn::from_encoded(0x100_0000 | 1_245_572).is_err());
     }
 
     #[test]

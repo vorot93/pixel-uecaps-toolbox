@@ -7,10 +7,8 @@ use crate::{
         identify_profile, known_model_codes,
     },
     outcome::Outcome,
-    proto::UeCaps,
 };
 use pixel_bands::PIXEL_BANDS;
-use prost::Message;
 
 pub fn self_test() -> anyhow::Result<Outcome> {
     let mut ok = true;
@@ -47,11 +45,15 @@ pub fn self_test() -> anyhow::Result<Outcome> {
     println!("PLMN decode:");
     check(
         "5566544 -> 450-05",
-        decode_plmn(5_566_544) == ("450".into(), "05".into()),
+        decode_plmn(5_566_544) == Some(("450".into(), "05".into())),
     );
     check(
         "1245572 -> 311-480",
-        decode_plmn(1_245_572) == ("311".into(), "480".into()),
+        decode_plmn(1_245_572) == Some(("311".into(), "480".into())),
+    );
+    check(
+        "out-of-range PLMN rejected, not masked",
+        decode_plmn(0x100_0000 | 1_245_572).is_none(),
     );
 
     println!("fingerprint tiers:");
@@ -90,10 +92,13 @@ pub fn self_test() -> anyhow::Result<Outcome> {
     );
 
     println!("protobuf decode:");
-    let caps = UeCaps::decode(&[0x08u8, 0xAC, 0x02, 0x48, 0x07][..]).unwrap();
+    // Strict decode, and no `unwrap`: a tag renumber must fail this check rather than abort
+    // `self-test` for the user.
+    let caps = crate::wire::decode_uecaps(&[0x08u8, 0xAC, 0x02, 0x48, 0x07], "self-test vector");
     check(
         "decode fingerprint=300, stub",
-        caps.version == 300 && caps.unknown == 7 && caps.combo_groups.is_empty(),
+        caps.as_ref()
+            .is_ok_and(|c| c.version == 300 && c.unknown == 7 && c.combo_groups.is_empty()),
     );
 
     println!(

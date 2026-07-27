@@ -138,7 +138,14 @@ fn analyse_file(dir: &Path, name: &str, number: u64) -> FileFinding {
     };
 
     let caps = read_ue_caps(&dir.join(name));
-    let fp = caps.as_ref().map(|c| c.version);
+    // A file that could not be read or strictly validated is reported as exactly that, rather
+    // than as an "unknown fingerprint <none>" that blames its contents — and the folder scan
+    // continues, since `check` audits every file.
+    if let Err(error) = &caps {
+        finding.anomaly = Some((name.to_string(), format!("{error:#}")));
+        return finding;
+    }
+    let fp = caps.as_ref().ok().map(|c| c.version);
     match fp.and_then(fp_info) {
         None => {
             finding.anomaly = Some((
@@ -164,7 +171,7 @@ fn analyse_file(dir: &Path, name: &str, number: u64) -> FileFinding {
             }
         }
     }
-    if let Some(c) = &caps
+    if let Ok(c) = &caps
         && is_stub(c)
     {
         finding.is_stub = true;
@@ -270,6 +277,20 @@ fn legend_anomalies(legend: &LegendReport) -> Vec<(String, String)> {
                 "{} legend carrier(s) with an empty name (dropped on read; the write path rejects this)",
                 legend.empty_named
             ),
+        ));
+    }
+    for index in &legend.duplicate_indices {
+        anomalies.push((
+            "ap_plmn_mapping.binarypb".to_string(),
+            format!(
+                "duplicate legend carrier index {index} (the write path rejects this as DuplicateId)"
+            ),
+        ));
+    }
+    if let Some(error) = &legend.decode_error {
+        anomalies.push((
+            "ap_plmn_mapping.binarypb".to_string(),
+            format!("legend could not be read or strictly validated: {error}"),
         ));
     }
     anomalies
