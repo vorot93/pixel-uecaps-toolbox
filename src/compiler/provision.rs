@@ -387,7 +387,7 @@ mod tests {
                 unknown2: Some(0),
                 components: vec![LteComponent {
                     band: 1,
-                    dl_bw_class_mimo: 32_768,
+                    dl_bw_class_mimo: 32_769,
                     ul_bw_class_mimo: Some(0),
                 }],
             }],

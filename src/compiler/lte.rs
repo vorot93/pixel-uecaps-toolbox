@@ -367,7 +367,9 @@ mod tests {
     fn component(band: i32) -> LteComponent {
         LteComponent {
             band,
-            dl_bw_class_mimo: 32_768 + band,
+            // A real corpus bitfield (class A, 4x4). `32_768 + band` was only valid for band 0
+            // or 1; components are already distinguished by `band`.
+            dl_bw_class_mimo: 32_769,
             ul_bw_class_mimo: Some(0),
         }
     }

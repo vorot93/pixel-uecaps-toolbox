@@ -79,12 +79,11 @@ pub(crate) mod selection {
     pub(crate) const SKUS: &str = "skus";
 }
 
-/// Properties of an `nr.kdl` sub-block.
+/// Properties of an `nr.kdl` sub-block. `DL`/`UL` each carry the bandwidth-class letter and the
+/// per-CC index list in one value — see `compiler::kdl_direction`.
 pub(crate) mod sub_block {
-    pub(crate) const DL_BW_CLASS: &str = "dl-bw-class";
-    pub(crate) const UL_BW_CLASS: &str = "ul-bw-class";
-    pub(crate) const DL_FEATURE: &str = "dl-feature";
-    pub(crate) const UL_FEATURE: &str = "ul-feature";
+    pub(crate) const DL: &str = "dl";
+    pub(crate) const UL: &str = "ul";
     pub(crate) const SRS_TX_SWITCH: &str = "srs-tx-switch";
 }
 
@@ -132,9 +131,10 @@ pub(crate) mod lte_combo {
 }
 
 /// Properties of an `lte.kdl` sub-block.
+/// Properties of an `lte.kdl` sub-block: the class+MIMO bitfield as `<letter><mimo>`.
 pub(crate) mod lte_sub_block {
-    pub(crate) const DL_BW_CLASS_MIMO: &str = "dl-bw-class-mimo";
-    pub(crate) const UL_BW_CLASS_MIMO: &str = "ul-bw-class-mimo";
+    pub(crate) const DL_MIMO: &str = "dl-mimo";
+    pub(crate) const UL_MIMO: &str = "ul-mimo";
 }
 
 #[cfg(test)]
@@ -192,13 +192,7 @@ mod tests {
             ("selection", vec![selection::CARRIERS, selection::SKUS]),
             (
                 "sub_block",
-                vec![
-                    sub_block::DL_BW_CLASS,
-                    sub_block::UL_BW_CLASS,
-                    sub_block::DL_FEATURE,
-                    sub_block::UL_FEATURE,
-                    sub_block::SRS_TX_SWITCH,
-                ],
+                vec![sub_block::DL, sub_block::UL, sub_block::SRS_TX_SWITCH],
             ),
             (
                 "dl_catalog",
@@ -238,10 +232,7 @@ mod tests {
             ),
             (
                 "lte_sub_block",
-                vec![
-                    lte_sub_block::DL_BW_CLASS_MIMO,
-                    lte_sub_block::UL_BW_CLASS_MIMO,
-                ],
+                vec![lte_sub_block::DL_MIMO, lte_sub_block::UL_MIMO],
             ),
         ]
     }

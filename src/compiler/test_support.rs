@@ -39,21 +39,21 @@ combo {
     selection {
         skus prime:8969
     }
-    nr3 dl-bw-class=1 ul-bw-class=1
+    nr3 dl=A ul=A
 }
 combo {
     selection {
         carriers BETA
         skus legacy G2YBB
     }
-    nr41 dl-bw-class=1 ul-bw-class=1
+    nr41 dl=A ul=A
 }
 combo {
     selection {
         carriers ALPHA
         skus legacy G2YBB
     }
-    nr78 dl-bw-class=1 ul-bw-class=1
+    nr78 dl=A ul=A
 }
 "#;
 
@@ -64,16 +64,16 @@ combo bcs=0 unknown1=0 unknown2=0 {
     selection {
         skus G2YBB GGX8B GR83Y
     }
-    subblock1 dl-bw-class-mimo=32769 ul-bw-class-mimo=0
+    subblock1 dl-mimo=A4 ul-mimo=off
 }
 combo bcs=0 unknown1=0 unknown2=0 {
-    subblock3 dl-bw-class-mimo=32771 ul-bw-class-mimo=0
+    subblock3 dl-mimo=A4 ul-mimo=off
 }
 combo bcs=0 unknown1=0 unknown2=0 {
     selection {
         skus lte:92
     }
-    subblock5 dl-bw-class-mimo=32773 ul-bw-class-mimo=0
+    subblock5 dl-mimo=A4 ul-mimo=off
 }
 "#;
 
@@ -441,7 +441,10 @@ fn lte_combo(band: i32) -> LteCombo {
     LteCombo {
         components: vec![LteComponent {
             band,
-            dl_bw_class_mimo: 32_768 + band,
+            // A real corpus bitfield (class A, 4x4). This was `32_768 + band`, which is only a
+            // valid class+MIMO value for band 0 or 1 — the payloads are already distinguished by
+            // `band`, so they do not need distinct classes too.
+            dl_bw_class_mimo: 32_769,
             ul_bw_class_mimo: Some(0),
         }],
         bcs: Some(0),

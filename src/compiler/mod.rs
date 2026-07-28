@@ -1,5 +1,6 @@
 mod decompose;
 pub(crate) mod features;
+pub(crate) mod kdl_direction;
 pub(crate) mod kdl_keys;
 mod kdl_source;
 pub(crate) mod lte;

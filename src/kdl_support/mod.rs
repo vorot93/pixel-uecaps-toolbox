@@ -26,13 +26,6 @@ pub(crate) fn opt_bool_prop(node: &mut KdlNode, key: &str, v: Option<bool>) {
         node.push(KdlEntry::new_prop(key, v));
     }
 }
-/// Push one `key=value` property entry per value, preserving order (intentionally
-/// multi-valued — the `NodeReader::repeated_int` counterpart reads them back in order).
-pub(crate) fn push_repeated_int_prop(node: &mut KdlNode, key: &str, values: &[i128]) {
-    for &v in values {
-        node.push(KdlEntry::new_prop(key, v));
-    }
-}
 pub(crate) fn str_list_node(name: &str, items: &[String]) -> KdlNode {
     let mut n = KdlNode::new(name);
     for it in items {
@@ -65,9 +58,6 @@ pub(crate) struct NodeReader<'a> {
     args_used: usize,
     props_used: BTreeSet<String>,
     children_used: BTreeSet<&'static str>,
-    /// Keys read through [`repeated_int`](Self::repeated_int), which are legitimately
-    /// multi-valued. Every other repeat is rejected by [`finish`](Self::finish).
-    repeatable: BTreeSet<String>,
     /// Predicates that claimed children, with a human label for diagnostics. The parallel of
     /// `children_used` for child names that are computed rather than fixed.
     child_predicates: Vec<ChildPredicate>,
@@ -80,7 +70,6 @@ impl<'a> NodeReader<'a> {
             args_used: 0,
             props_used: BTreeSet::new(),
             children_used: BTreeSet::new(),
-            repeatable: BTreeSet::new(),
             child_predicates: Vec::new(),
         }
     }
@@ -178,28 +167,6 @@ impl<'a> NodeReader<'a> {
         })
     }
 
-    /// Collect every property entry named `key`, in document order, converting each to `T`.
-    /// Marks `key` consumed *and* repeatable, so `finish()` accepts the repeats. These props are
-    /// intentionally multi-valued (see DESIGN.md); a repeat of any other property is an error.
-    pub(crate) fn repeated_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Vec<T>> {
-        self.props_used.insert(key.to_string());
-        self.repeatable.insert(key.to_string());
-        let mut out = Vec::new();
-        for entry in self.node.entries() {
-            if entry.name().map(kdl::KdlIdentifier::value) == Some(key) {
-                let i = entry
-                    .value()
-                    .as_integer()
-                    .ok_or_else(|| anyhow!("property `{key}` must be an integer"))?;
-                out.push(
-                    T::try_from(i)
-                        .map_err(|_| anyhow!("property `{key}` value {i} out of range"))?,
-                );
-            }
-        }
-        Ok(out)
-    }
-
     pub(crate) fn opt_bool(&mut self, key: &str) -> Result<Option<bool>> {
         self.props_used.insert(key.to_string());
         self.node
@@ -266,6 +233,11 @@ impl<'a> NodeReader<'a> {
     /// object to — and the shadowed entry was never even type-checked, so `mcc="oops" mcc=310`
     /// parsed clean. Since `nr.kdl`/`lte.kdl` are the only editing surface in the tool, that
     /// turned a duplicated line into silent data loss.
+    ///
+    /// The check is unconditional: no property in either document is multi-valued. It once
+    /// exempted keys read through a `repeated_int` reader — the per-CC feature list, spelled as
+    /// repeated `dl-feature=` entries — but that list is now one comma-separated value, so both
+    /// the reader and the exemption are gone.
     pub(crate) fn finish(self) -> Result<()> {
         let total = self.positional().len();
         if self.args_used < total {
@@ -285,8 +257,7 @@ impl<'a> NodeReader<'a> {
                         name.value()
                     );
                 }
-                if !seen.insert(name.value().to_string()) && !self.repeatable.contains(name.value())
-                {
+                if !seen.insert(name.value().to_string()) {
                     bail!(
                         "`{}` sets property `{}` more than once; only the last value would be \
                          read, silently discarding the others",
@@ -398,40 +369,6 @@ pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
 
 #[cfg(test)]
 mod reader_tests {
-    use super::*;
-
-    #[test]
-    fn repeated_int_collects_all_entries_in_order_and_finishes_clean() {
-        let doc: kdl::KdlDocument = "node dl-feature=5 dl-feature=8 dl-feature=2\n"
-            .parse()
-            .unwrap();
-        let node = doc.nodes().first().unwrap();
-        let mut r = NodeReader::new(node);
-        let got: Vec<i32> = r.repeated_int("dl-feature").unwrap();
-        assert_eq!(got, vec![5, 8, 2]);
-        r.finish().unwrap(); // all consumed
-    }
-
-    #[test]
-    fn autoformat_preserves_repeated_properties_bytewise() {
-        // The nr.kdl format relies on this under the pinned kdl 6.7.1.
-        let src = "node dl-feature=5 dl-feature=8\n";
-        let mut doc: kdl::KdlDocument = src.parse().unwrap();
-        doc.autoformat();
-        let once = doc.to_string();
-        let mut doc2: kdl::KdlDocument = once.parse().unwrap();
-        doc2.autoformat();
-        assert_eq!(
-            once,
-            doc2.to_string(),
-            "autoformat must be idempotent on repeated props"
-        );
-        assert_eq!(
-            once.matches("dl-feature").count(),
-            2,
-            "both entries survive: {once}"
-        );
-    }
 
     #[test]
     fn autoformat_keeps_leading_positional_arg() {
@@ -445,7 +382,7 @@ mod reader_tests {
         let once = doc.to_string();
         assert!(
             once.contains("carrier ALPHA"),
-            "positional band stays leading: {once}"
+            "the leading positional arg stays leading: {once}"
         );
         let mut doc2: kdl::KdlDocument = once.parse().unwrap();
         doc2.autoformat();
