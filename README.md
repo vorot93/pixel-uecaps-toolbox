@@ -415,15 +415,32 @@ carrier,1002739,196911437,2912407,3347,3539,688679,8969,Pixel 10 Pro Fold,Pixel 
 profiles each carrier provides and the exact selector numbers. Scans the same files
 as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 
+## A note on what the tools will refuse
+
+The reader is deliberately fail-closed, and the report commands use the same one the compiler
+does. A capability file is rejected — with the reason named — if it carries a field the schema
+does not model, a wrong wire type, a packed PLMN list, a value too wide for its declared type,
+a repeated singular field, fields out of tag order, or a non-minimally encoded integer. Each of
+those decodes "fine" with an ordinary protobuf library and yields either different values or
+different bytes, which is exactly what a tool that regenerates flashable modem configuration
+must not do quietly. None of it rejects any real Pixel file: the whole 1487-file reference
+corpus is clean on every one of those properties.
+
+Two smaller consequences you may notice. A PLMN value that does not fit the 24 bits a PLMN has
+renders as `<invalid PLMN N>` rather than being masked into a different, plausible-looking
+carrier. And `provision` refuses to build a module from an empty file set, because the
+`.replace` marker would tell Magisk to wipe the device's `uecapconfig` directory and put
+nothing back.
+
 ## Command reference
 
 | Command | What it does |
 | --- | --- |
 | `decompose --bitmask DIR --profiled DIR -o SOURCE` | Decompose both complete folder layouts into canonical `SOURCE/nr.kdl` and `SOURCE/lte.kdl`. Both directories and `-o` are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |
 | `provision <CODE> <SOURCE> -o ZIP [--name N]` | Strictly load both compiler documents and build a complete, deterministic `.replace` Magisk ZIP for a registered real model code. The destination is fixed at `/vendor/firmware/uecapconfig`; there is no `--dest`. Exit `0`/`2`. |
-| `inspect <FILE> [--full]` | Inspect one file. Adapts to the file type: a carrier file, the PLMN legend, or an `lte_*` fallback (whose LTE CA combinations it decodes). `--full` reveals the SKU-selection math and per-component capabilities. Exit `2` on an unrecognised filename. |
+| `inspect <FILE> [--full]` | Inspect one file. Adapts to the file type: a carrier file, the PLMN legend, or an `lte_*` fallback (whose LTE CA combinations it decodes). `--full` reveals the SKU-selection math and per-component capabilities. Exit `2` on an unrecognised filename. A file that fails strict wire validation prints the reason instead of its combinations, rather than reporting "not readable" or silently showing normalized data. |
 | `compare <A> <B> [--full] [--common]` | Diff two files' band combinations (set diff by default; `--full` adds per-component diffs; `--common` also lists the combos common to both — `=` identical, `~` caps differ). Exit `0` identical, `1` differ, `2` error. |
-| `check [DIR]` | Scan a folder (default `.`) and report everything that doesn't fit the scheme. Exit `1` on a genuine anomaly. |
+| `check [DIR]` | Scan a folder (default `.`) and report everything that doesn't fit the scheme. Exit `1` on a genuine anomaly. Every file is decoded with the same fail-closed reader the compiler uses, so a file with an unknown field, a wrong wire type or a packed PLMN list is reported rather than accepted; the scan continues past it. Legend anomalies now include duplicate carrier indices, which `provision`/`decompose` reject. |
 | `matrix [DIR] [-o FILE]` | Scan a folder (default `.`) and emit a carrier × profile matrix as CSV to `-o` or stdout. Columns are headed by Pixel model (or the profile's anchor prime when unknown), sorted by header. |
 | `self-test` | Run built-in, data-independent sanity checks. |
 
