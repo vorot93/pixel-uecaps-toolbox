@@ -6,7 +6,10 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use crate::raw_nr::SubBlockKind;
+use crate::{
+    compiler::kdl_keys::{carrier, plmn as plmn_keys},
+    raw_nr::SubBlockKind,
+};
 
 // ---- component radio-kind codec (compiler `cc`) ----
 /// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
@@ -333,14 +336,14 @@ pub(crate) fn plmn_to_node(plmn: &str) -> Result<KdlNode> {
         .ok_or_else(|| anyhow!("PLMN `{plmn}` is not `mcc-mnc`"))?;
     let mcc_val =
         decimal_field(mcc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MCC"))?;
-    let mut node = KdlNode::new("plmn");
-    node.push(KdlEntry::new_prop("mcc", i128::from(mcc_val)));
+    let mut node = KdlNode::new(carrier::PLMN);
+    node.push(KdlEntry::new_prop(plmn_keys::MCC, i128::from(mcc_val)));
     if !mnc.eq_ignore_ascii_case("ff") {
         let mnc_val =
             decimal_field(mnc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MNC"))?;
-        node.push(KdlEntry::new_prop("mnc", i128::from(mnc_val)));
+        node.push(KdlEntry::new_prop(plmn_keys::MNC, i128::from(mnc_val)));
         if mnc.len() == 3 && mnc_val < 100 {
-            node.push(KdlEntry::new_prop("mnc-digits", 3i128));
+            node.push(KdlEntry::new_prop(plmn_keys::MNC_DIGITS, 3i128));
         }
     }
     Ok(node)
@@ -361,9 +364,9 @@ fn mnc_width(v: u32, mnc_digits: Option<u32>) -> Result<usize> {
 /// Read a `plmn` node back to its canonical `Plmn` string, validating via `Plmn::from_str`.
 pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
     let mut r = NodeReader::new(node);
-    let mcc: u32 = r.req_int("mcc")?;
-    let mnc: Option<u32> = r.opt_int("mnc")?;
-    let mnc_digits: Option<u32> = r.opt_int("mnc-digits")?;
+    let mcc: u32 = r.req_int(plmn_keys::MCC)?;
+    let mnc: Option<u32> = r.opt_int(plmn_keys::MNC)?;
+    let mnc_digits: Option<u32> = r.opt_int(plmn_keys::MNC_DIGITS)?;
     r.finish()?;
     let mcc_s = format!("{mcc:03}");
     let mnc_s = match mnc {
