@@ -71,7 +71,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
 | `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's `nr.kdl`/`lte.kdl` (de)serializers. |
 | `src/compiler/kdl_keys.rs` | Every KDL node name and property key, grouped by scope, consumed by both the reader and the writer; a structural test rejects two keys sharing a spelling within one scope. |
-| `src/compiler/kdl_direction.rs` | The composite `d=`/`u=` value (bandwidth-class letter + per-CC index list) and `lte.kdl`'s `dm`/`um` class+MIMO bitfield codec. |
+| `src/compiler/kdl_direction.rs` | The composite `d=`/`u=` value (bandwidth-class letter + per-CC index list) and `lte.kdl`'s class+MIMO bitfield codec, which reuses the same two property names. |
 | `src/wire.rs` | Recursive modeled-field/wire-type validation and strict decoders for `UeCaps`, `LteCaps`, and `PlmnMap`. |
 | `src/compiler/mod.rs` | Public folder-compiler `decompose`/`provision` entry points, generated-file type, and module boundary. |
 | `src/compiler/selection.rs` | Finite NR/LTE eligibility domains, SKU tokens, expanded applicability relations, validation, and canonical rectangle serialization. |
@@ -327,16 +327,23 @@ not.
 | `f` props | `fp` fingerprint, `bm` bitmask |
 | `c` props | `b` bcs, `u1`/`u2` unknown1/2 |
 | `c` children | `s` selection, `B<band>` sub-block |
-| `B` props | `dm`/`um` class+MIMO |
+| `B` props | `d`/`u` class+MIMO |
 
 `c` means combo at document level and carriers inside `s`; `bi` means bitmask-id on a `cr` and
 bcs-intra-endc on a `c`. Both are legal because the pairs are never siblings.
 
 **`version` is deliberately never abbreviated.** The marker announcing the format version cannot
-be renamed by the change it describes: a version-1 document fed to this build would be rejected
-as having an unknown top-level node *before* reaching the version check that exists to diagnose
-exactly that. `schema::SOURCE_FORMAT_VERSION` is the single source of the number, and the
+be renamed by the change it describes: a document written against an older vocabulary would be
+rejected as having an unknown top-level node *before* reaching the version check that exists to
+diagnose exactly that. `schema::SOURCE_FORMAT_VERSION` is the single source of the number, and the
 mismatch error names the remedy.
+
+The number identifies *the* format, not a count of revisions. It is currently **1**, and it was
+reset from 2 rather than advanced to 3 when the short-vocabulary work landed: this repo's history
+is squashable, so a version series accumulated inside unpublished commits is noise a reader at
+HEAD cannot interpret. The check is an inequality, not an ordering, so a reset still rejects a
+tree from any build that emitted a different number — including the 2 that the immediately
+preceding build wrote.
 
 **A key spelling is not a diagnostic.** Error messages say "carrier", "profile", "bitmask" —
 words, not KDL keys. A mechanical rename that rewrites both leaves the suite green while
@@ -366,6 +373,8 @@ are FR2-only: every occurrence is on n257/n258/n260/n261 at 120 kHz with a 100 M
 | `d=A` | class A, no list — the all-zero placeholder, re-derived on read |
 | *(`d` absent)* | no DL class at all |
 | *(`u` absent)* | UL class **0** — disabled |
+| `lte.kdl` `d=A4` | class A, 4x4 MIMO — a class+MIMO bitfield, not a catalog reference |
+| `lte.kdl` *(`u` absent)* | UL class **0** — disabled |
 
 Arity is kind-dependent and checked: on `n` the list length must equal `cc_count(class)`, which
 makes the per-CC invariant syntactic; on `B` the index is a single `parseLteFeatureIndex` value
@@ -373,10 +382,24 @@ regardless of class. A `0` index is invalid as an NR catalog reference (1-based)
 as an E-UTRA MIMO code, so that rule lives in the reader, which knows the kind — not in the
 value codec, which only knows syntax.
 
-`lte.kdl`'s `dm`/`um` are a third encoding: an inverted bitfield where 32768 is A and 1024 is F,
-with the low bit selecting 4x4, rendered `A4`. UL-disabled is `off` — spelled as a word because
-KDL quotes a string `0` and parses a bare `0` as an integer. An unrecognised bitfield fails
-closed rather than guessing a letter.
+`lte.kdl`'s `d`/`u` are a third encoding: an inverted bitfield where 32768 is A and 1024 is F,
+with the low bit selecting 4x4, rendered `A4`. An unrecognised bitfield fails closed rather than
+guessing a letter — and so does 0, because UL-disabled is spelled by **omitting `u`**, not by a
+word. `parse_class_mimo` therefore never returns 0, so every value has exactly one spelling and
+the round trip stays byte-stable without a uniqueness check.
+
+That omission is guarded, not assumed. `validate_lte_combos` rejects a component whose
+`dl_bw_class_mimo` is 0 or whose `ul_bw_class_mimo` is absent, naming the combo and band; neither
+occurs in the corpus (0 of 12 159 sub-blocks), and neither is representable in the source format,
+so a foreign file gets a loud error instead of a quiet re-encode. **The NR sub-block's identical
+omit-when-0 rule for `ul-bw-class` is still assumption-only** — corpus-verified but unguarded.
+That is a known gap, deliberately left for its own change.
+
+The two documents share the `d`/`u` spelling while meaning different things by it: `B66 d=C2` is
+class C with per-CC feature index 2 in `nr.kdl` and class C with 2x2 MIMO in `lte.kdl`. That is
+the rule the node names already follow — the document fixes the interpretation, so the key does
+not repeat it. The Rust constants stay `lte_sub_block::DL_MIMO`/`UL_MIMO` because they are now
+the only place the distinction is written down.
 
 **Do not re-attempt the `kdl`-crate `serde` route** (`kdl`'s own `serde` feature, intentionally
 not enabled here). It was evaluated on a throwaway spike over real schema-shaped structs and
@@ -412,8 +435,8 @@ The naming rule is uniform across every KDL surface: NR-carrier/EN-DC combos (co
 spell the kind as the node name; uniformly-LTE combos (compiler `lte.kdl`) use plain `subblock`
 with no kind tag. A sub-block's band is part of its **node name** (`n257`, `B66`), parsed by
 `parse_sub_block_name` and matched by `NodeReader::children_matching`, not a positional argument.
-**Direction-paired properties lead with the direction** — `d`/`u` on a sub-block, `dm`/`um` on an
-`lte.kdl` one, never a `-dl`/`-ul` suffix — and a sub-block emits DL before UL, with the
+**Direction-paired properties lead with the direction** — `d`/`u` on every sub-block in both
+documents, never a `-dl`/`-ul` suffix — and a sub-block emits DL before UL, with the
 direction-agnostic `st` last. Readers are property-keyed, so this order is an emit convention
 only; re-spelling or reordering is a surface change with no wire effect.
 
