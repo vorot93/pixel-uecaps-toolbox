@@ -1438,7 +1438,7 @@ mod lte_tests {
                     LteComponent {
                         band: 3,
                         dl_bw_class_mimo: 32769,
-                        // Omit-when-0: this renders with no `um` at all.
+                        // Omit-when-0: this renders with no `u` at all.
                         ul_bw_class_mimo: Some(0),
                     },
                 ],
@@ -1453,8 +1453,8 @@ mod lte_tests {
         let back = lte_from_kdl(&text).expect("read back");
         assert_eq!(lte_to_kdl(&back).unwrap(), text, "byte-identity");
         assert!(text.contains("f \"3\" fp=715188856 bm=1"), "{text}");
-        assert!(text.contains("B1 dm=A4 um=A4"), "{text}");
-        assert!(text.contains("B3 dm=A4\n"), "{text}");
+        assert!(text.contains("B1 d=A4 u=A4"), "{text}");
+        assert!(text.contains("B3 d=A4\n"), "{text}");
     }
 
     #[test]
@@ -1464,20 +1464,20 @@ mod lte_tests {
     }
 
     #[test]
-    fn lte_rejects_the_old_mimo_bw_class_spelling() {
-        // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which
-        // covers only the NR combo pair. The lte.kdl mimo pair shares the same strict
-        // `finish()` and must reject the pre-rename suffix spelling just as firmly.
-        for (new, old) in [("dm=", "md="), ("um=", "mu=")] {
-            // Additive: keep the required new-spelling property and append the old one, so
-            // the reader reports the unknown property rather than a missing required one.
+    fn lte_rejects_superseded_direction_property_spellings() {
+        // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which covers only
+        // the NR combo pair. Two generations are dead here: the direction-last `md`/`mu`, and the
+        // `dm`/`um` that carried the class+MIMO encoding in the key.
+        for (current, dead) in [("d=", "md="), ("u=", "mu="), ("d=", "dm="), ("u=", "um=")] {
+            // Additive: keep the required current property and append the dead one, so the reader
+            // reports the unknown property rather than a missing required one.
             let text = lte_to_kdl(&sample())
                 .unwrap()
-                .replace(new, &format!("{old}1 {new}"));
+                .replace(current, &format!("{dead}1 {current}"));
             let err = lte_from_kdl(&text).unwrap_err().to_string();
             assert!(
-                err.contains("unknown property") && err.contains(old.trim_end_matches('=')),
-                "{old} must be rejected, got: {err}"
+                err.contains("unknown property") && err.contains(dead.trim_end_matches('=')),
+                "{dead} must be rejected, got: {err}"
             );
         }
     }
