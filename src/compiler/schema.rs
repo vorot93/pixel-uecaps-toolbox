@@ -555,6 +555,24 @@ fn validate_lte_combos(
                 "LTE combo {} component band must be positive",
                 index + 1
             );
+            // Neither state is representable in `lte.kdl`, and neither occurs in the corpus.
+            // Rejecting here — ahead of `to_kdl` — makes the omit-when-0 rule value-faithful by
+            // construction rather than by assumption, and gives a message naming the component
+            // instead of the codec's "value 0 has no known bandwidth-class letter".
+            ensure!(
+                component.dl_bw_class_mimo != 0,
+                "LTE combo {} band {} has dl_bw_class_mimo 0; the source format cannot represent \
+                 a disabled downlink",
+                index + 1,
+                component.band
+            );
+            ensure!(
+                component.ul_bw_class_mimo.is_some(),
+                "LTE combo {} band {} omits ul_bw_class_mimo; the source format cannot represent \
+                 an absent uplink class (an omitted property means the explicit zero)",
+                index + 1,
+                component.band
+            );
         }
         ensure!(
             seen.insert(RawLteCombo::from(source)),
@@ -859,10 +877,10 @@ mod tests {
 
     use crate::{
         compiler::{lte_from_kdl, nr_from_kdl, selection::Sku},
-        proto::ShannonFeatureSetDlPerCcNr,
+        proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
     };
 
-    use super::{parse_sources, to_kdl};
+    use super::{LteSourceCombo, parse_sources, to_kdl};
 
     const MINIMAL_NR: &str = r#"
 version 2
@@ -1494,15 +1512,60 @@ cr "MAPPING" mi=7 {
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
+        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=0` is `Some(0)`.
+        // It is also what keeps these two combos distinct under `RawLteCombo`, now that their
+        // components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc b=0 {{\n    B1 dm=A4 um=off\n}}\n");
+            format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc b=0 {{\n    B1 dm=A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
         assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
-        assert_eq!(
-            sources.lte.combo[1].source.components[0].ul_bw_class_mimo,
-            Some(0)
+        // An omitted `um` is the explicit zero, not an absent field — in both combos.
+        for combo in &sources.lte.combo {
+            assert_eq!(combo.source.components[0].ul_bw_class_mimo, Some(0));
+        }
+    }
+
+    /// The source format spells UL-disabled by omitting the property, so `None` has no spelling
+    /// left; and with `off` gone, neither does a disabled DL. Both are corpus-absent (0 of 12 159
+    /// sub-blocks), so this rejects rather than silently normalising — a foreign file gets a loud
+    /// error instead of a quiet re-encode.
+    #[test]
+    fn lte_components_reject_a_disabled_dl_and_an_absent_ul_class() {
+        let nr = nr_from_kdl(MINIMAL_NR).unwrap();
+        let base = lte_from_kdl(MINIMAL_LTE).unwrap();
+
+        let bad_combo = |component: LteComponent| LteSourceCombo {
+            selection: None,
+            bcs: None,
+            unknown1: None,
+            unknown2: None,
+            components: vec![component],
+        };
+
+        let mut disabled_dl = base.clone();
+        disabled_dl.combo.push(bad_combo(LteComponent {
+            band: 7,
+            dl_bw_class_mimo: 0,
+            ul_bw_class_mimo: Some(0),
+        }));
+        let error = to_kdl(&nr, &disabled_dl).unwrap_err().to_string();
+        assert!(
+            error.contains("band 7") && error.contains("dl_bw_class_mimo 0"),
+            "{error}"
+        );
+
+        let mut absent_ul = base;
+        absent_ul.combo.push(bad_combo(LteComponent {
+            band: 7,
+            dl_bw_class_mimo: 32_769,
+            ul_bw_class_mimo: None,
+        }));
+        let error = to_kdl(&nr, &absent_ul).unwrap_err().to_string();
+        assert!(
+            error.contains("band 7") && error.contains("omits ul_bw_class_mimo"),
+            "{error}"
         );
     }
 

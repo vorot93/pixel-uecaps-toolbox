@@ -95,13 +95,6 @@ pub(crate) fn parse_direction(raw: &str, key: &str) -> Result<Direction> {
 ///
 /// Note this runs the OPPOSITE way from the sub-block bandwidth class above, where the class is
 /// a small ascending integer. Two encodings of the same 3GPP concept, in one toolbox.
-/// UL-disabled (`Some(0)`), which has no bandwidth class and therefore no letter.
-///
-/// Spelled as a word rather than `0` because KDL would quote a bare `0` written as a string —
-/// and an unquoted `0` parses as an integer, which `opt_str` would not read. A word keeps the
-/// value a bare identifier like the letter forms.
-const DISABLED: &str = "off";
-
 const CLASS_MIMO_BASES: [(i32, char); 6] = [
     (32768, 'A'),
     (16384, 'B'),
@@ -113,15 +106,11 @@ const CLASS_MIMO_BASES: [(i32, char); 6] = [
 
 /// Render the class+MIMO bitfield as `<letter><mimo>`, e.g. 32769 → `A4`.
 ///
-/// Fails closed on an unobserved value rather than inventing a letter.
+/// Fails closed on an unobserved value rather than inventing a letter — including 0, which is
+/// UL-disabled. `lte.kdl` spells that by *omitting* the property, so 0 has no rendering here and
+/// no value has two spellings. A 0 reaching this function is a disabled downlink, which
+/// `validate_lte_combos` rejects first with a message naming the combo and band.
 pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
-    // 0 is UL-disabled, a real corpus value with no bandwidth class and therefore no letter. It
-    // must stay distinct from an absent property, which is why it renders as `0` rather than
-    // being omitted: `Some(0)` and `None` are different on the wire (see `src/proto.rs` on
-    // explicit-presence zeros).
-    if value == 0 {
-        return Ok(DISABLED.to_string());
-    }
     let base = value & !1;
     let (_, letter) = CLASS_MIMO_BASES
         .iter()
@@ -132,10 +121,11 @@ pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
 }
 
 /// The inverse of [`format_class_mimo`]. `key` names the property in diagnostics.
+///
+/// Never returns 0: every result is `base + low` with `base >= 1024`. The only route to a zero UL
+/// class is an omitted property, which the reader defaults — so the source format has exactly one
+/// spelling per value and the round trip stays byte-stable without a uniqueness check.
 pub(crate) fn parse_class_mimo(raw: &str, key: &str) -> Result<i32> {
-    if raw == DISABLED {
-        return Ok(0);
-    }
     let mut chars = raw.chars();
     let letter = chars
         .next()
@@ -249,24 +239,19 @@ mod tests {
             (1025, "F4"),
         ] {
             assert_eq!(format_class_mimo(value).unwrap(), text);
-            assert_eq!(parse_class_mimo(text, "dl-mimo").unwrap(), value);
+            assert_eq!(parse_class_mimo(text, "d").unwrap(), value);
         }
-    }
-
-    /// UL-disabled: a real value with no class, kept distinct from an absent property.
-    #[test]
-    fn class_mimo_round_trips_the_disabled_zero() {
-        assert_eq!(format_class_mimo(0).unwrap(), "off");
-        assert_eq!(parse_class_mimo("off", "ul-mimo").unwrap(), 0);
-        // Not `0`: KDL would quote a string `0`, and a bare 0 is an integer `opt_str` cannot read.
-        assert!(!format_class_mimo(0).unwrap().contains('0'));
     }
 
     #[test]
     fn class_mimo_fails_closed_on_an_unknown_bitfield() {
         assert!(format_class_mimo(999).is_err());
-        assert!(parse_class_mimo("Z2", "dl-mimo").is_err());
-        assert!(parse_class_mimo("A3", "dl-mimo").is_err());
-        assert!(parse_class_mimo("A", "dl-mimo").is_err());
+        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the property.
+        assert!(format_class_mimo(0).is_err());
+        assert!(parse_class_mimo("Z2", "d").is_err());
+        assert!(parse_class_mimo("A3", "d").is_err());
+        assert!(parse_class_mimo("A", "d").is_err());
+        // The superseded `off` spelling is not accepted back.
+        assert!(parse_class_mimo("off", "u").is_err());
     }
 }

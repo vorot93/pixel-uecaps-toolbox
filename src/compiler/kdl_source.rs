@@ -148,7 +148,11 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
         lte_sub_block::DL_MIMO,
         format_class_mimo(comp.dl_bw_class_mimo)?.as_str(),
     ));
-    if let Some(ul) = comp.ul_bw_class_mimo {
+    // UL 0 is the majority value — 8 281 of 12 159 corpus sub-blocks — and carries no
+    // information, so it is omitted and re-defaulted by `read_lte_cc`. Same omit-when-0 rule the
+    // NR sub-block uses for its UL bandwidth class. `validate_lte_combos` rejects a `None`, so an
+    // omitted `u` always means the explicit zero and never a dropped absent field.
+    if let Some(ul) = comp.ul_bw_class_mimo.filter(|&v| v != 0) {
         node.push(KdlEntry::new_prop(
             lte_sub_block::UL_MIMO,
             format_class_mimo(ul)?.as_str(),
@@ -785,10 +789,14 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
         })?,
         lte_sub_block::DL_MIMO,
     )?;
-    let ul_bw_class_mimo = r
-        .opt_str(lte_sub_block::UL_MIMO)?
-        .map(|raw| parse_class_mimo(&raw, lte_sub_block::UL_MIMO))
-        .transpose()?;
+    // Omit-when-0: an absent UL property is UL disabled. `parse_class_mimo` never returns 0, so
+    // this is the sole route to one and the value-to-spelling mapping stays one-to-one.
+    let ul_bw_class_mimo = Some(
+        r.opt_str(lte_sub_block::UL_MIMO)?
+            .map(|raw| parse_class_mimo(&raw, lte_sub_block::UL_MIMO))
+            .transpose()?
+            .unwrap_or(0),
+    );
     r.finish()?;
     Ok(LteComponent {
         band,
@@ -1430,7 +1438,8 @@ mod lte_tests {
                     LteComponent {
                         band: 3,
                         dl_bw_class_mimo: 32769,
-                        ul_bw_class_mimo: None,
+                        // Omit-when-0: this renders with no `um` at all.
+                        ul_bw_class_mimo: Some(0),
                     },
                 ],
             }],
