@@ -715,6 +715,44 @@ mod combinator_tests {
         assert!(r.finish().is_err());
     }
 
+    /// `nr.kdl`/`lte.kdl` are the only editing surface in the tool, and a duplicated property
+    /// was silently last-wins: `node.get(key)` returns the last entry and `props_used` then
+    /// marks the key consumed, so `finish()` could not object either. A hand edit that
+    /// duplicated a line lost a value with no diagnostic.
+    #[test]
+    fn finish_rejects_a_duplicate_property() {
+        let n = node("nr 78 dl-bw-class=1 dl-bw-class=2\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_int::<u16>().unwrap(), 78);
+        assert_eq!(r.opt_int::<u8>("dl-bw-class").unwrap(), Some(2));
+
+        let error = r.finish().unwrap_err().to_string();
+
+        assert!(error.contains("dl-bw-class"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
+    }
+
+    /// The shadowed entry is never type-checked either, so a duplicate could smuggle an
+    /// outright type error past the reader.
+    #[test]
+    fn finish_rejects_a_duplicate_property_whose_shadowed_value_is_ill_typed() {
+        let n = node("plmn mcc=\"oops\" mcc=310\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.opt_int::<u16>("mcc").unwrap(), Some(310));
+
+        assert!(r.finish().is_err());
+    }
+
+    /// `repeated_int` keys are legitimately multi-valued and must stay accepted.
+    #[test]
+    fn repeated_properties_stay_accepted_for_repeated_keys() {
+        let n = node("nr 78 dl-feature=1 dl-feature=2\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_int::<u16>().unwrap(), 78);
+        assert_eq!(r.repeated_int::<u8>("dl-feature").unwrap(), vec![1, 2]);
+        r.finish().unwrap();
+    }
+
     #[test]
     fn finish_rejects_unknown_child() {
         let n = node("carrier VZW {\n    mystery 1\n}\n");
@@ -945,6 +983,20 @@ mod nr_tests {
             .unwrap()
             .replace("nr 78", "nr 78 bogus=9");
         assert!(nr_from_kdl(&text).is_err());
+    }
+
+    /// The sharpest instance of the duplicate-property hole, and the reason it was easy to
+    /// miss: `dl-feature`/`ul-feature` are a per-CC *list* on an `nr` node (`repeated_int`) but
+    /// a single scalar on an `lte` node (`opt_int`). The identical spelling therefore used to
+    /// mean "both values" under `nr` and "silently keep the last" under `lte`.
+    #[test]
+    fn lte_sub_block_rejects_a_repeated_feature_property() {
+        let text = "version 1\nbitmask-carriers ATT\ncombo {\n    lte 66 dl-bw-class=2 dl-feature=3 dl-feature=4\n}\n";
+
+        let error = nr_from_kdl(text).unwrap_err().to_string();
+
+        assert!(error.contains("dl-feature"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
     }
 
     #[test]

@@ -83,6 +83,9 @@ pub(crate) struct NodeReader<'a> {
     args_used: usize,
     props_used: BTreeSet<String>,
     children_used: BTreeSet<&'static str>,
+    /// Keys read through [`repeated_int`](Self::repeated_int), which are legitimately
+    /// multi-valued. Every other repeat is rejected by [`finish`](Self::finish).
+    repeatable: BTreeSet<String>,
 }
 
 impl<'a> NodeReader<'a> {
@@ -92,6 +95,7 @@ impl<'a> NodeReader<'a> {
             args_used: 0,
             props_used: BTreeSet::new(),
             children_used: BTreeSet::new(),
+            repeatable: BTreeSet::new(),
         }
     }
 
@@ -189,10 +193,11 @@ impl<'a> NodeReader<'a> {
     }
 
     /// Collect every property entry named `key`, in document order, converting each to `T`.
-    /// Marks `key` consumed so `finish()` accepts the repeats (these props are intentionally
-    /// multi-valued — see DESIGN.md; every other prop stays last-wins).
+    /// Marks `key` consumed *and* repeatable, so `finish()` accepts the repeats. These props are
+    /// intentionally multi-valued (see DESIGN.md); a repeat of any other property is an error.
     pub(crate) fn repeated_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Vec<T>> {
         self.props_used.insert(key.to_string());
+        self.repeatable.insert(key.to_string());
         let mut out = Vec::new();
         for entry in self.node.entries() {
             if entry.name().map(kdl::KdlIdentifier::value) == Some(key) {
@@ -245,7 +250,15 @@ impl<'a> NodeReader<'a> {
         Ok(kids.pop())
     }
 
-    /// Error on any positional arg, property, or child node not consumed above.
+    /// Error on any positional arg, property, or child node not consumed above, and on any
+    /// property repeated that is not read through [`repeated_int`](Self::repeated_int).
+    ///
+    /// The duplicate check is what makes the reader honest about hand edits. `node.get(key)`
+    /// returns the *last* matching entry, and each `opt_*` reader then marks the key consumed,
+    /// so a duplicated property used to be silently last-wins with nothing left for `finish` to
+    /// object to — and the shadowed entry was never even type-checked, so `mcc="oops" mcc=310`
+    /// parsed clean. Since `nr.kdl`/`lte.kdl` are the only editing surface in the tool, that
+    /// turned a duplicated line into silent data loss.
     pub(crate) fn finish(self) -> Result<()> {
         let total = self.positional().len();
         if self.args_used < total {
@@ -255,15 +268,25 @@ impl<'a> NodeReader<'a> {
                 total - self.args_used
             );
         }
+        let mut seen = BTreeSet::new();
         for entry in self.node.entries() {
-            if let Some(name) = entry.name()
-                && !self.props_used.contains(name.value())
-            {
-                bail!(
-                    "`{}` has unknown property `{}`",
-                    self.node.name().value(),
-                    name.value()
-                );
+            if let Some(name) = entry.name() {
+                if !self.props_used.contains(name.value()) {
+                    bail!(
+                        "`{}` has unknown property `{}`",
+                        self.node.name().value(),
+                        name.value()
+                    );
+                }
+                if !seen.insert(name.value().to_string()) && !self.repeatable.contains(name.value())
+                {
+                    bail!(
+                        "`{}` sets property `{}` more than once; only the last value would be \
+                         read, silently discarding the others",
+                        self.node.name().value(),
+                        name.value()
+                    );
+                }
             }
         }
         if let Some(doc) = self.node.children() {
