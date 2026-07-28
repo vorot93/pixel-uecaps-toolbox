@@ -822,50 +822,6 @@ impl RawNrPayload {
     }
 }
 
-/// A DL per-CC feature set reduced to an `Ord`-able tuple (`ShannonFeatureSetDlPerCcNr`
-/// derives `Eq`/`Hash` but not `Ord`, and pulling in the compiler's `DlFeatureSource`
-/// would create a reverse module dependency — raw_nr must not depend on `compiler`).
-/// Field order matches the proto: scs, mimo, bw, mod_order, 90mhz.
-type DlFeatureKey = (
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<bool>,
-);
-
-/// A UL per-CC feature set reduced to an `Ord`-able tuple. Field order matches the
-/// proto: scs, mimo_cb, bw, mod_order, 90mhz, mimo_non_cb.
-type UlFeatureKey = (
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<i32>,
-    Option<bool>,
-    Option<i32>,
-);
-
-const fn dl_feature_key(f: &ShannonFeatureSetDlPerCcNr) -> DlFeatureKey {
-    (
-        f.max_scs,
-        f.max_mimo,
-        f.max_bw,
-        f.max_mod_order,
-        f.bw_90mhz_supported,
-    )
-}
-
-const fn ul_feature_key(f: &ShannonFeatureSetUlPerCcNr) -> UlFeatureKey {
-    (
-        f.max_scs,
-        f.max_mimo_cb,
-        f.max_bw,
-        f.max_mod_order,
-        f.bw_90mhz_supported,
-        f.max_mimo_non_cb,
-    )
-}
-
 /// Full ordered form of one raw component. Resolved feature values win over
 /// selector bytes; selector-only values retain exact `Option<Vec<u8>>` presence.
 /// An empty `dl_features`/`ul_features` vec IS the "no feature set" identity (mirrors
@@ -882,8 +838,8 @@ pub(crate) struct RawSubBlockKey {
     dl_cc_ids: Option<Vec<u8>>,
     ul_cc_ids: Option<Vec<u8>>,
     srs_tx_switch: Option<i32>,
-    dl_features: Vec<DlFeatureKey>,
-    ul_features: Vec<UlFeatureKey>,
+    dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
+    ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
 impl From<&RawSubBlock> for RawSubBlockKey {
@@ -905,8 +861,8 @@ impl From<&RawSubBlock> for RawSubBlockKey {
             dl_cc_ids: cc.dl_selector().map(<[u8]>::to_vec),
             ul_cc_ids: cc.ul_selector().map(<[u8]>::to_vec),
             srs_tx_switch: cc.srs_tx_switch(),
-            dl_features: cc.dl_features().iter().map(dl_feature_key).collect(),
-            ul_features: cc.ul_features().iter().map(ul_feature_key).collect(),
+            dl_features: cc.dl_features().to_vec(),
+            ul_features: cc.ul_features().to_vec(),
         }
     }
 }

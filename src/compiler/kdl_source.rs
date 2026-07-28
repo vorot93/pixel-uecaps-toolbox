@@ -8,12 +8,10 @@ use kdl::{KdlDocument, KdlEntry, KdlNode};
 
 use crate::{
     compiler::{
-        features::{
-            DlFeatureSource, NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock, UlFeatureSource,
-        },
+        features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
-            LteSourceCombo, LteSourceComponent, NrDocument, NrSourceCombo, ProfileSource,
+            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
         },
         selection::SelectionRect,
     },
@@ -22,6 +20,7 @@ use crate::{
         plmn_to_node, push_repeated_int_prop, read_plmn, read_str_list, str_list_node,
         str_to_cckind,
     },
+    proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::SubBlockKind,
 };
 
@@ -107,7 +106,7 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> KdlNode {
     node
 }
 
-fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
+fn lte_cc_to_node(comp: &LteComponent) -> KdlNode {
     let mut node = KdlNode::new("subblock");
     node.push(KdlEntry::new(i128::from(comp.band)));
     node.push(KdlEntry::new_prop(
@@ -118,7 +117,7 @@ fn lte_cc_to_node(comp: &LteSourceComponent) -> KdlNode {
     node
 }
 
-fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
+fn emit_dl_feature(f: &ShannonFeatureSetDlPerCcNr) -> KdlNode {
     let mut node = KdlNode::new("dl-feature");
     opt_int_prop(&mut node, "max-scs", f.max_scs);
     opt_int_prop(&mut node, "max-mimo", f.max_mimo);
@@ -128,7 +127,7 @@ fn emit_dl_feature(f: &DlFeatureSource) -> KdlNode {
     node
 }
 
-fn emit_ul_feature(f: &UlFeatureSource) -> KdlNode {
+fn emit_ul_feature(f: &ShannonFeatureSetUlPerCcNr) -> KdlNode {
     let mut node = KdlNode::new("ul-feature");
     opt_int_prop(&mut node, "max-scs", f.max_scs);
     opt_int_prop(&mut node, "max-mimo-cb", f.max_mimo_cb);
@@ -394,9 +393,9 @@ fn read_carrier(node: &KdlNode) -> Result<(String, CarrierSource)> {
     ))
 }
 
-fn read_dl_feature(node: &KdlNode) -> Result<DlFeatureSource> {
+fn read_dl_feature(node: &KdlNode) -> Result<ShannonFeatureSetDlPerCcNr> {
     let mut r = NodeReader::new(node);
-    let out = DlFeatureSource {
+    let out = ShannonFeatureSetDlPerCcNr {
         max_scs: r.opt_int::<i32>("max-scs")?,
         max_mimo: r.opt_int::<i32>("max-mimo")?,
         max_bw: r.opt_int::<i32>("max-bw")?,
@@ -407,9 +406,9 @@ fn read_dl_feature(node: &KdlNode) -> Result<DlFeatureSource> {
     Ok(out)
 }
 
-fn read_ul_feature(node: &KdlNode) -> Result<UlFeatureSource> {
+fn read_ul_feature(node: &KdlNode) -> Result<ShannonFeatureSetUlPerCcNr> {
     let mut r = NodeReader::new(node);
-    let out = UlFeatureSource {
+    let out = ShannonFeatureSetUlPerCcNr {
         max_scs: r.opt_int::<i32>("max-scs")?,
         max_mimo_cb: r.opt_int::<i32>("max-mimo-cb")?,
         max_bw: r.opt_int::<i32>("max-bw")?,
@@ -626,13 +625,13 @@ fn read_file(node: &KdlNode) -> Result<(String, LteFileSource)> {
     ))
 }
 
-fn read_lte_cc(node: &KdlNode) -> Result<LteSourceComponent> {
+fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
     let mut r = NodeReader::new(node);
     let band = r.key_int::<i32>()?;
     let dl_bw_class_mimo = r.req_int::<i32>("dl-bw-class-mimo")?;
     let ul_bw_class_mimo = r.opt_int::<i32>("ul-bw-class-mimo")?;
     r.finish()?;
-    Ok(LteSourceComponent {
+    Ok(LteComponent {
         band,
         dl_bw_class_mimo,
         ul_bw_class_mimo,
@@ -773,7 +772,7 @@ mod combinator_tests {
 mod nr_tests {
     use super::*;
     use crate::compiler::{
-        features::{DlFeatureSource, NrSourceSubBlock, SourceNrSubBlock, UlFeatureSource},
+        features::{NrSourceSubBlock, SourceNrSubBlock},
         schema::{
             BitmaskFingerprint, CarrierSource, DecimalU64, NrDocument, NrSourceCombo, ProfileSource,
         },
@@ -807,14 +806,14 @@ mod nr_tests {
                     )]),
                 },
             )]),
-            dl_features: vec![DlFeatureSource {
+            dl_features: vec![ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(3),
                 max_mimo: Some(2),
                 max_bw: Some(100),
                 max_mod_order: Some(2),
                 bw_90mhz_supported: Some(true),
             }],
-            ul_features: vec![UlFeatureSource {
+            ul_features: vec![ShannonFeatureSetUlPerCcNr {
                 max_scs: Some(2),
                 max_mimo_cb: Some(1),
                 max_bw: Some(100),
@@ -1188,7 +1187,7 @@ mod nr_tests {
 mod lte_tests {
     use super::*;
     use crate::compiler::{
-        schema::{LteDocument, LteFileSource, LteSourceCombo, LteSourceComponent},
+        schema::{LteDocument, LteFileSource, LteSourceCombo},
         selection::SelectionRect,
     };
     use std::collections::BTreeMap;
@@ -1212,12 +1211,12 @@ mod lte_tests {
                 unknown1: None,
                 unknown2: None,
                 components: vec![
-                    LteSourceComponent {
+                    LteComponent {
                         band: 1,
                         dl_bw_class_mimo: 1,
                         ul_bw_class_mimo: Some(1),
                     },
-                    LteSourceComponent {
+                    LteComponent {
                         band: 3,
                         dl_bw_class_mimo: 1,
                         ul_bw_class_mimo: None,

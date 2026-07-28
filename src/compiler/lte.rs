@@ -5,10 +5,7 @@ use prost::Message;
 
 use super::{
     GeneratedFile,
-    schema::{
-        LteDocument, LteFileSource, LteSourceCombo, LteSourceComponent, ValidatedLte,
-        ValidatedLteCombo,
-    },
+    schema::{LteDocument, LteFileSource, LteSourceCombo, ValidatedLte, ValidatedLteCombo},
     selection::{LteDomain, LteRelation, SelectionRect, Sku},
 };
 use crate::{
@@ -25,30 +22,16 @@ use crate::{
 /// ingest side and the validate side compare payloads by exactly the same definition.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RawLteCombo {
-    pub(crate) components: Vec<LteSourceComponent>,
+    pub(crate) components: Vec<LteComponent>,
     pub(crate) bcs: Option<u64>,
     pub(crate) unknown1: Option<u64>,
     pub(crate) unknown2: Option<u64>,
 }
 
-impl From<&LteComponent> for LteSourceComponent {
-    fn from(component: &LteComponent) -> Self {
-        Self {
-            band: component.band,
-            dl_bw_class_mimo: component.dl_bw_class_mimo,
-            ul_bw_class_mimo: component.ul_bw_class_mimo,
-        }
-    }
-}
-
 impl From<&LteCombo> for RawLteCombo {
     fn from(combo: &LteCombo) -> Self {
         Self {
-            components: combo
-                .components
-                .iter()
-                .map(LteSourceComponent::from)
-                .collect(),
+            components: combo.components.clone(),
             bcs: combo.bcs,
             unknown1: combo.unknown1,
             unknown2: combo.unknown2,
@@ -56,20 +39,10 @@ impl From<&LteCombo> for RawLteCombo {
     }
 }
 
-impl From<&LteSourceComponent> for LteComponent {
-    fn from(component: &LteSourceComponent) -> Self {
-        Self {
-            band: component.band,
-            dl_bw_class_mimo: component.dl_bw_class_mimo,
-            ul_bw_class_mimo: component.ul_bw_class_mimo,
-        }
-    }
-}
-
 impl From<&LteSourceCombo> for LteCombo {
     fn from(source: &LteSourceCombo) -> Self {
         Self {
-            components: source.components.iter().map(LteComponent::from).collect(),
+            components: source.components.clone(),
             bcs: source.bcs,
             unknown1: source.unknown1,
             unknown2: source.unknown2,

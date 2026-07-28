@@ -231,18 +231,18 @@ mod tests {
         compiler::{
             GeneratedFile,
             decompose::decompose,
-            features::{DlFeatureSource, NrSourceSubBlock, SourceNrSubBlock},
+            features::{NrSourceSubBlock, SourceNrSubBlock},
             schema::{
                 BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
-                LteFileSource, LteSourceCombo, LteSourceComponent, NrDocument, NrSourceCombo,
-                ProfileSource, parse_sources, to_kdl,
+                LteFileSource, LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
+                parse_sources, to_kdl,
             },
             selection::SelectionRect,
             test_support::{MiniCorpus, REGISTERED_ANCHOR},
         },
         model::{known_model_codes, phone_model},
         outcome::Outcome,
-        proto::PlmnMap,
+        proto::{LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr},
         report::combos::build_combos,
         wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
     };
@@ -385,7 +385,7 @@ mod tests {
                 bcs: Some(0),
                 unknown1: Some(0),
                 unknown2: Some(0),
-                components: vec![LteSourceComponent {
+                components: vec![LteComponent {
                     band: 1,
                     dl_bw_class_mimo: 32_768,
                     ul_bw_class_mimo: Some(0),
@@ -1040,7 +1040,7 @@ mod tests {
 
         let (mut too_many_features, lte) = miniature_documents();
         too_many_features.dl_features = (1..=256)
-            .map(|max_scs| DlFeatureSource {
+            .map(|max_scs| ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(max_scs),
                 ..Default::default()
             })

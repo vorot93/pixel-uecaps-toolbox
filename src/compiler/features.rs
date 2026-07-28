@@ -10,75 +10,6 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DlFeatureSource {
-    pub(crate) max_scs: Option<i32>,
-    pub(crate) max_mimo: Option<i32>,
-    pub(crate) max_bw: Option<i32>,
-    pub(crate) max_mod_order: Option<i32>,
-    pub(crate) bw_90mhz_supported: Option<bool>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct UlFeatureSource {
-    pub(crate) max_scs: Option<i32>,
-    pub(crate) max_mimo_cb: Option<i32>,
-    pub(crate) max_bw: Option<i32>,
-    pub(crate) max_mod_order: Option<i32>,
-    pub(crate) bw_90mhz_supported: Option<bool>,
-    pub(crate) max_mimo_non_cb: Option<i32>,
-}
-
-impl From<&ShannonFeatureSetDlPerCcNr> for DlFeatureSource {
-    fn from(value: &ShannonFeatureSetDlPerCcNr) -> Self {
-        Self {
-            max_scs: value.max_scs,
-            max_mimo: value.max_mimo,
-            max_bw: value.max_bw,
-            max_mod_order: value.max_mod_order,
-            bw_90mhz_supported: value.bw_90mhz_supported,
-        }
-    }
-}
-
-impl From<&DlFeatureSource> for ShannonFeatureSetDlPerCcNr {
-    fn from(value: &DlFeatureSource) -> Self {
-        Self {
-            max_scs: value.max_scs,
-            max_mimo: value.max_mimo,
-            max_bw: value.max_bw,
-            max_mod_order: value.max_mod_order,
-            bw_90mhz_supported: value.bw_90mhz_supported,
-        }
-    }
-}
-
-impl From<&ShannonFeatureSetUlPerCcNr> for UlFeatureSource {
-    fn from(value: &ShannonFeatureSetUlPerCcNr) -> Self {
-        Self {
-            max_scs: value.max_scs,
-            max_mimo_cb: value.max_mimo_cb,
-            max_bw: value.max_bw,
-            max_mod_order: value.max_mod_order,
-            bw_90mhz_supported: value.bw_90mhz_supported,
-            max_mimo_non_cb: value.max_mimo_non_cb,
-        }
-    }
-}
-
-impl From<&UlFeatureSource> for ShannonFeatureSetUlPerCcNr {
-    fn from(value: &UlFeatureSource) -> Self {
-        Self {
-            max_scs: value.max_scs,
-            max_mimo_cb: value.max_mimo_cb,
-            max_bw: value.max_bw,
-            max_mod_order: value.max_mod_order,
-            bw_90mhz_supported: value.bw_90mhz_supported,
-            max_mimo_non_cb: value.max_mimo_non_cb,
-        }
-    }
-}
-
 /// One sub-block as the KDL source spells it: proto field 6/7 as 1-based *references* into
 /// `nr.kdl`'s global feature catalogs rather than resolved values, and no raw selector bytes
 /// at all.
@@ -167,14 +98,14 @@ impl NrSourceSubBlock {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FeatureCatalogs {
-    pub(crate) dl: Vec<DlFeatureSource>,
-    pub(crate) ul: Vec<UlFeatureSource>,
+    pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
+    pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
 #[derive(Debug)]
 pub(crate) struct LocalFeaturePlan {
-    dl_source: Vec<DlFeatureSource>,
-    ul_source: Vec<UlFeatureSource>,
+    dl_source: Vec<ShannonFeatureSetDlPerCcNr>,
+    ul_source: Vec<ShannonFeatureSetUlPerCcNr>,
     pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
@@ -187,8 +118,8 @@ pub(crate) struct LocalFeaturePlan {
 /// per-CC1+ record referenced by reconstruct but absent from the plan) or leaves a plan record
 /// unreferenced (present here but never emitted).
 struct UsedFeatures {
-    dl: BTreeSet<DlFeatureSource>,
-    ul: BTreeSet<UlFeatureSource>,
+    dl: BTreeSet<ShannonFeatureSetDlPerCcNr>,
+    ul: BTreeSet<ShannonFeatureSetUlPerCcNr>,
 }
 
 impl UsedFeatures {
@@ -198,10 +129,10 @@ impl UsedFeatures {
         for payload in payloads {
             for component in &payload.sub_blocks {
                 for feature in component.dl_features() {
-                    dl.insert(DlFeatureSource::from(feature));
+                    dl.insert(*feature);
                 }
                 for feature in component.ul_features() {
-                    ul.insert(UlFeatureSource::from(feature));
+                    ul.insert(*feature);
                 }
             }
         }
@@ -214,17 +145,14 @@ impl UsedFeatures {
 /// The `expect` is sound by construction at every call site: a catalog is only ever built by
 /// [`UsedFeatures::scan`] over the very payloads whose records are looked up here, and the
 /// local plan is that scan filtered down. `which` names the catalog in the panic message.
-fn catalog_indices<'a, T, K>(
+fn catalog_indices<'a, T: Ord>(
     features: &'a [T],
-    catalog: &'a [K],
+    catalog: &'a [T],
     which: &'static str,
-) -> impl Iterator<Item = usize> + 'a
-where
-    K: Ord + for<'x> From<&'x T>,
-{
+) -> impl Iterator<Item = usize> + 'a {
     features.iter().map(move |feature| {
         catalog
-            .binary_search(&K::from(feature))
+            .binary_search(feature)
             .unwrap_or_else(|_| panic!("{which} contains every resolved component"))
             + 1
     })
@@ -281,14 +209,8 @@ impl LocalFeaturePlan {
             );
         }
 
-        let dl = dl_source
-            .iter()
-            .map(ShannonFeatureSetDlPerCcNr::from)
-            .collect();
-        let ul = ul_source
-            .iter()
-            .map(ShannonFeatureSetUlPerCcNr::from)
-            .collect();
+        let dl = dl_source.to_vec();
+        let ul = ul_source.to_vec();
         Ok(Self {
             dl_source,
             ul_source,
@@ -342,7 +264,10 @@ impl LocalFeaturePlan {
 }
 
 impl FeatureCatalogs {
-    pub(crate) fn new(dl: Vec<DlFeatureSource>, ul: Vec<UlFeatureSource>) -> Self {
+    pub(crate) fn new(
+        dl: Vec<ShannonFeatureSetDlPerCcNr>,
+        ul: Vec<ShannonFeatureSetUlPerCcNr>,
+    ) -> Self {
         Self { dl, ul }
     }
 
@@ -481,18 +406,12 @@ impl NrSourceSubBlock {
                 let dl = cc
                     .dl_feature
                     .iter()
-                    .map(|&index| {
-                        resolve_index(index, &catalogs.dl, Direction::Dl)
-                            .map(|source| ShannonFeatureSetDlPerCcNr::from(&source))
-                    })
+                    .map(|&index| resolve_index(index, &catalogs.dl, Direction::Dl))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let ul = cc
                     .ul_feature
                     .iter()
-                    .map(|&index| {
-                        resolve_index(index, &catalogs.ul, Direction::Ul)
-                            .map(|source| ShannonFeatureSetUlPerCcNr::from(&source))
-                    })
+                    .map(|&index| resolve_index(index, &catalogs.ul, Direction::Ul))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_nr(cc, dl, ul, ul_bw_class)?
             }
@@ -566,18 +485,18 @@ mod tests {
 
     #[test]
     fn local_plan_filters_dl_global_order_and_rewrites_resolved_selectors() {
-        let low = DlFeatureSource {
+        let low = ShannonFeatureSetDlPerCcNr {
             max_scs: Some(1),
             ..Default::default()
         };
-        let high = DlFeatureSource {
+        let high = ShannonFeatureSetDlPerCcNr {
             max_scs: Some(3),
             ..Default::default()
         };
-        let catalogs = FeatureCatalogs::new(vec![low, high.clone()], vec![]);
+        let catalogs = FeatureCatalogs::new(vec![low, high], vec![]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            dl: NrDirection::with_features(1, vec![ShannonFeatureSetDlPerCcNr::from(&high)]),
+            dl: NrDirection::with_features(1, vec![high]),
             ..Default::default()
         }
         .into();
@@ -602,18 +521,18 @@ mod tests {
 
     #[test]
     fn local_plan_filters_ul_global_order_and_rewrites_resolved_selectors() {
-        let low = UlFeatureSource {
+        let low = ShannonFeatureSetUlPerCcNr {
             max_scs: Some(1),
             ..Default::default()
         };
-        let high = UlFeatureSource {
+        let high = ShannonFeatureSetUlPerCcNr {
             max_scs: Some(3),
             ..Default::default()
         };
-        let catalogs = FeatureCatalogs::new(vec![], vec![low, high.clone()]);
+        let catalogs = FeatureCatalogs::new(vec![], vec![low, high]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
-            ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::from(&high)]),
+            ul: NrDirection::with_features(1, vec![high]),
             ..Default::default()
         }
         .into();
@@ -626,8 +545,8 @@ mod tests {
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
-        assert_eq!(plan.ul_source, vec![high.clone()]);
-        assert_eq!(plan.ul, vec![ShannonFeatureSetUlPerCcNr::from(&high)]);
+        assert_eq!(plan.ul_source, vec![high]);
+        assert_eq!(plan.ul, vec![high]);
         assert!(plan.dl_source.is_empty());
         assert!(plan.dl.is_empty());
         let reconstructed = plan.reconstruct_sub_block(&component).unwrap();
@@ -637,7 +556,7 @@ mod tests {
 
     #[test]
     fn local_plan_emits_a_referenced_all_absent_dl_record() {
-        let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
+        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             dl: NrDirection::with_features(1, vec![ShannonFeatureSetDlPerCcNr::default()]),
@@ -664,7 +583,7 @@ mod tests {
 
     #[test]
     fn local_plan_emits_a_referenced_all_absent_ul_record() {
-        let catalogs = FeatureCatalogs::new(vec![], vec![UlFeatureSource::default()]);
+        let catalogs = FeatureCatalogs::new(vec![], vec![ShannonFeatureSetUlPerCcNr::default()]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::default()]),
@@ -698,17 +617,14 @@ mod tests {
         // 255-record local limit, while UL simultaneously references a feature absent from
         // the global catalog. The original order reports UL-absent; the bundled-per-direction
         // order reports DL-limit first and never reaches the UL check at all.
-        let dl_sources: Vec<DlFeatureSource> = (1..=256)
-            .map(|max_scs| DlFeatureSource {
+        let dl_sources: Vec<ShannonFeatureSetDlPerCcNr> = (1..=256)
+            .map(|max_scs| ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(max_scs),
                 ..Default::default()
             })
             .collect();
-        let dl_features: Vec<ShannonFeatureSetDlPerCcNr> = dl_sources
-            .iter()
-            .map(ShannonFeatureSetDlPerCcNr::from)
-            .collect();
-        let missing_ul = UlFeatureSource {
+        let dl_features: Vec<ShannonFeatureSetDlPerCcNr> = dl_sources.to_vec();
+        let missing_ul = ShannonFeatureSetUlPerCcNr {
             max_scs: Some(1),
             ..Default::default()
         };
@@ -720,7 +636,7 @@ mod tests {
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             dl: NrDirection::with_features(1, dl_features),
-            ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::from(&missing_ul)]),
+            ul: NrDirection::with_features(1, vec![missing_ul]),
             ..Default::default()
         }
         .into();
@@ -836,7 +752,7 @@ mod tests {
         // An all-absent referenced catalog record is genuinely resolved/present: a non-empty
         // `dl_features` vec IS presence, full stop, with no "does the entry have any field
         // set" gate on top. So it must key differently from a component with no DL data.
-        let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
+        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
         let source = NrSourceSubBlock::from(SourceNrSubBlock {
             band: 78,
             dl_bw_class: Some(1),
@@ -867,7 +783,7 @@ mod tests {
         // The source format spells no raw selector bytes at all, so `resolve` is the single
         // place that puts proto field 6/7 back for a direction referencing no catalog
         // record: the all-zero placeholder, `cc_count(kind, bw_class)` bytes wide.
-        let catalogs = FeatureCatalogs::new(vec![DlFeatureSource::default()], vec![]);
+        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
 
         // LTE never carries per-CC references; `cc_count(Lte, 1) == 1`.
         let lte = NrSourceSubBlock::from(SourceLteSubBlock {
@@ -928,8 +844,8 @@ mod tests {
 
     #[test]
     fn dl_feature_identity_orders_absence_before_explicit_zero() {
-        let absent = DlFeatureSource::default();
-        let zero = DlFeatureSource {
+        let absent = ShannonFeatureSetDlPerCcNr::default();
+        let zero = ShannonFeatureSetDlPerCcNr {
             max_scs: Some(0),
             ..Default::default()
         };
@@ -939,8 +855,8 @@ mod tests {
 
     #[test]
     fn ul_feature_identity_orders_absence_before_explicit_false() {
-        let absent = UlFeatureSource::default();
-        let explicit_false = UlFeatureSource {
+        let absent = ShannonFeatureSetUlPerCcNr::default();
+        let explicit_false = ShannonFeatureSetUlPerCcNr {
             bw_90mhz_supported: Some(false),
             ..Default::default()
         };

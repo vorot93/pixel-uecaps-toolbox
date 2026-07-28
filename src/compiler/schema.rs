@@ -4,7 +4,7 @@ use anyhow::{Context, bail, ensure};
 use compact_str::CompactString;
 
 use super::{
-    features::{DlFeatureSource, FeatureCatalogs, NrSourceSubBlock, UlFeatureSource},
+    features::{FeatureCatalogs, NrSourceSubBlock},
     selection::{
         CarrierId, LteDomain, LteRelation, NrDomain, NrRelation, SelectionRect, Sku, SkuId,
     },
@@ -13,6 +13,7 @@ use crate::{
     compiler::lte::RawLteCombo,
     mapping::{MappingEntry, MappingRoot, Plmn, map_to_root, root_to_map},
     model::{Family, PROFILES, Tier, lte_model_codes, matching_anchors, profile_model_codes},
+    proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
 
@@ -86,8 +87,8 @@ pub(crate) struct NrDocument {
     pub(crate) bitmask_carriers: Vec<String>,
     pub(crate) bitmask_fingerprints: Vec<BitmaskFingerprint>,
     pub(crate) carriers: BTreeMap<String, CarrierSource>,
-    pub(crate) dl_features: Vec<DlFeatureSource>,
-    pub(crate) ul_features: Vec<UlFeatureSource>,
+    pub(crate) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
+    pub(crate) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
     pub(crate) combo: Vec<NrSourceCombo>,
 }
 
@@ -97,20 +98,13 @@ pub(crate) struct LteFileSource {
     pub(crate) bitmask: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct LteSourceComponent {
-    pub(crate) band: i32,
-    pub(crate) dl_bw_class_mimo: i32,
-    pub(crate) ul_bw_class_mimo: Option<i32>,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct LteSourceCombo {
     pub(crate) selection: Option<Vec<SelectionRect>>,
     pub(crate) bcs: Option<u64>,
     pub(crate) unknown1: Option<u64>,
     pub(crate) unknown2: Option<u64>,
-    pub(crate) components: Vec<LteSourceComponent>,
+    pub(crate) components: Vec<LteComponent>,
 }
 
 #[derive(Clone, Debug)]
@@ -848,7 +842,10 @@ fn parse_decimal_key(value: &str, description: &str) -> anyhow::Result<u64> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::compiler::{features::DlFeatureSource, lte_from_kdl, nr_from_kdl, selection::Sku};
+    use crate::{
+        compiler::{lte_from_kdl, nr_from_kdl, selection::Sku},
+        proto::ShannonFeatureSetDlPerCcNr,
+    };
 
     use super::{parse_sources, to_kdl};
 
@@ -1035,7 +1032,10 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
-        assert_eq!(parsed.nr.features.dl[0], DlFeatureSource::default());
+        assert_eq!(
+            parsed.nr.features.dl[0],
+            ShannonFeatureSetDlPerCcNr::default()
+        );
         assert_eq!(parsed.nr.features.dl[1].max_scs, Some(0));
     }
 
