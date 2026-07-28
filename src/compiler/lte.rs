@@ -213,7 +213,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
         canonical_lte_combos(order, scan.payload_skus, &domain)?;
 
     let source = LteDocument {
-        version: 1,
+        version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
         files: scan.file_sources,
         combo: source_combos,
     };
@@ -401,7 +401,7 @@ mod tests {
 
     fn minimal_nr() -> NrDocument {
         NrDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["LEGACY".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 1,

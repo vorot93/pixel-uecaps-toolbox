@@ -39,7 +39,7 @@ fn str_to_tier(s: &str) -> Result<CarrierTier> {
     match s {
         "main" => Ok(CarrierTier::Main),
         "alt" => Ok(CarrierTier::Alt),
-        other => bail!("unknown tier `{other}` (expected `main` or `alt`)"),
+        other => bail!("u tier `{other}` (expected `main` or `alt`)"),
     }
 }
 
@@ -221,7 +221,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
         actual if actual == derived_bcs_intra_endc => {} // omit: derivable zeros + every None
         Some(v) => opt_int_prop(&mut node, combo::BCS_INTRA_ENDC, Some(i128::from(v))),
         None => bail!(
-            "bcs_intra_endc=None with intra-band-en-dc-support=1 cannot be represented by \
+            "bcs_intra_endc=None with ie=1 cannot be represented by \
              omission (would re-derive as Some(0)); this combo is unexpected \
              (sub-block bands {:?}) — see \
              DESIGN.md",
@@ -862,7 +862,7 @@ mod combinator_tests {
 
     #[test]
     fn reads_key_props_and_children_then_finishes() {
-        let n = node("carrier VZW bitmask-id=1 tier=main {\n    plmns \"311-480\"\n}\n");
+        let n = node("cr VZW bi=1 t=main {\n    ps \"311-480\"\n}\n");
         let mut r = NodeReader::new(&n);
         assert_eq!(r.key_str().unwrap(), "VZW");
         assert_eq!(r.opt_int::<i64>(carrier::BITMASK_ID).unwrap(), Some(1));
@@ -874,7 +874,7 @@ mod combinator_tests {
 
     #[test]
     fn finish_rejects_unknown_property() {
-        let n = node("carrier VZW bogus=9\n");
+        let n = node("cr VZW bogus=9\n");
         let mut r = NodeReader::new(&n);
         assert_eq!(r.key_str().unwrap(), "VZW");
         assert!(r.finish().is_err());
@@ -901,7 +901,7 @@ mod combinator_tests {
     /// outright type error past the reader.
     #[test]
     fn finish_rejects_a_duplicate_property_whose_shadowed_value_is_ill_typed() {
-        let n = node("plmn mcc=\"oops\" mcc=310\n");
+        let n = node("p mcc=\"oops\" mcc=310\n");
         let mut r = NodeReader::new(&n);
         assert_eq!(r.opt_int::<u16>("mcc").unwrap(), Some(310));
 
@@ -913,16 +913,15 @@ mod combinator_tests {
     /// consumed as known, or every sub-block would read as an unknown child.
     #[test]
     fn children_matching_consumes_by_predicate() {
-        let n = node("combo {\n    nr257 x=1\n    nr41 x=2\n    lte66 x=3\n}\n");
+        let n = node("c {\n    n257 x=1\n    n41 x=2\n    B66 x=3\n}\n");
         let mut r = NodeReader::new(&n);
 
-        let nr = r.children_matching("nr<band>", |name| {
-            name.strip_prefix("nr").is_some_and(|band| !band.is_empty())
+        let nr = r.children_matching("n<band>", |name| {
+            name.strip_prefix('n').is_some_and(|band| !band.is_empty())
         });
         assert_eq!(nr.len(), 2);
-        let lte = r.children_matching("lte<band>", |name| {
-            name.strip_prefix("lte")
-                .is_some_and(|band| !band.is_empty())
+        let lte = r.children_matching("B<band>", |name| {
+            name.strip_prefix('B').is_some_and(|band| !band.is_empty())
         });
         assert_eq!(lte.len(), 1);
 
@@ -933,9 +932,9 @@ mod combinator_tests {
     /// from name-set membership to pattern matching.
     #[test]
     fn finish_still_rejects_a_child_no_predicate_claimed() {
-        let n = node("combo {\n    nr257 x=1\n    mystery 1\n}\n");
+        let n = node("c {\n    n257 x=1\n    mystery 1\n}\n");
         let mut r = NodeReader::new(&n);
-        let _ = r.children_matching("nr<band>", |name| name.starts_with("nr"));
+        let _ = r.children_matching("n<band>", |name| name.starts_with('n'));
 
         let error = r.finish().unwrap_err().to_string();
 
@@ -944,7 +943,7 @@ mod combinator_tests {
 
     #[test]
     fn finish_rejects_unknown_child() {
-        let n = node("carrier VZW {\n    mystery 1\n}\n");
+        let n = node("cr VZW {\n    mystery 1\n}\n");
         let mut r = NodeReader::new(&n);
         assert_eq!(r.key_str().unwrap(), "VZW");
         assert!(r.finish().is_err());
@@ -972,7 +971,7 @@ mod nr_tests {
 
     fn sample() -> NrDocument {
         NrDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["ATT".into(), "VZW".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 715_188_856,
@@ -1044,21 +1043,18 @@ mod nr_tests {
         let back = nr_from_kdl(&text).expect("read back");
         assert_eq!(nr_to_kdl(&back).unwrap(), text, "byte-identity");
         // spot-check the readable shape:
-        assert!(text.contains("carrier VZW bitmask-id=1"), "{text}");
+        assert!(text.contains("cr VZW bi=1"), "{text}");
+        assert!(text.contains("pf \"66813533\" x=66813533 u=0"), "{text}");
+        assert!(text.contains("n78"), "{text}");
         assert!(
-            text.contains("profile \"66813533\" multiplier=66813533 unknown=0"),
-            "{text}"
-        );
-        assert!(text.contains("nr78"), "{text}");
-        assert!(
-            text.contains("dl=A1"),
+            text.contains("d=A1"),
             "class and per-CC list merge into one value: {text}"
         );
         assert!(
             !text.contains("dl-cc-id") && !text.contains("dl-feature-index"),
             "removed escape-hatch surface keys must not appear: {text}"
         );
-        assert!(text.contains("mapping-id=18446744073709551615"), "{text}");
+        assert!(text.contains("mi=18446744073709551615"), "{text}");
     }
 
     #[test]
@@ -1070,8 +1066,7 @@ mod nr_tests {
         // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
         // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
         // point.
-        let text =
-            "version 1\nbitmask-carriers ATT\ncombo {\n    nr48 dl=B5,8\n    lte66 dl=A\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
@@ -1092,8 +1087,7 @@ mod nr_tests {
         // On an `lte` node the proto-4/5 index is spelled `dl-feature`/`ul-feature` (no
         // `-index`), single-valued; `ul-feature=0` is omitted and re-defaults to `Some(0)`.
         // No per-CC list is read on LTE. Byte-identical fixed point.
-        let text =
-            "version 1\nbitmask-carriers ATT\ncombo {\n    lte7 dl=B1 ul=A2\n    lte66 dl=A3\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
@@ -1122,14 +1116,14 @@ mod nr_tests {
         doc.carriers.get_mut("VZW").unwrap().plmns =
             Some(vec!["311-480".into(), "310-004".into(), "228-ff".into()]);
         let text = nr_to_kdl(&doc).unwrap();
-        assert!(text.contains("plmn mcc=311 mnc=480"), "{text}");
-        assert!(text.contains("plmn mcc=310 mnc=4 mnc-digits=3"), "{text}");
+        assert!(text.contains("p mcc=311 mnc=480"), "{text}");
+        assert!(text.contains("p mcc=310 mnc=4 mnc-digits=3"), "{text}");
         assert!(
-            text.contains("plmn mcc=228\n") || text.contains("plmn mcc=228 "),
+            text.contains("p mcc=228\n") || text.contains("p mcc=228 "),
             "{text}"
         );
         assert!(
-            !text.contains("plmns "),
+            !text.contains("ps "),
             "old plmns list node must be gone: {text}"
         );
         // round-trips
@@ -1166,16 +1160,14 @@ mod nr_tests {
         // pre-migration `plmns "a" "b"` list node — this writer's old shape, and something
         // a hand-editor could still type — must be a hard parse error, never a silent
         // `Some(vec![])` that drops the listed PLMNs.
-        let text = "version 1\nbitmask-carriers \"LEGACY\"\ncarrier \"MAP\" mapping-id=7 {\n    plmns \"310-260\"\n}\n";
+        let text = "version 2\nbc \"LEGACY\"\ncr \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
         let err = format!("{:#}", nr_from_kdl(text).unwrap_err());
-        assert!(err.contains("plmns"), "{err}");
+        assert!(err.contains("ps"), "{err}");
     }
 
     #[test]
     fn nr_rejects_unknown_property() {
-        let text = nr_to_kdl(&sample())
-            .unwrap()
-            .replace("nr78", "nr78 bogus=9");
+        let text = nr_to_kdl(&sample()).unwrap().replace("n78", "n78 bogus=9");
         assert!(nr_from_kdl(&text).is_err());
     }
 
@@ -1188,7 +1180,7 @@ mod nr_tests {
     /// which carries one `parseLteFeatureIndex` scalar whatever its class.
     #[test]
     fn lte_sub_block_rejects_a_repeated_feature_property() {
-        let text = "version 1\nbitmask-carriers ATT\ncombo {\n    lte66 dl=B3,4\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
 
         let error = nr_from_kdl(text).unwrap_err().to_string();
 
@@ -1200,7 +1192,7 @@ mod nr_tests {
     /// designation — the same convention `SubBlockKind::band_label` uses everywhere else.
     #[test]
     fn sub_block_node_name_carries_the_band() {
-        let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr257 dl=G1,1 ul=A1\n    lte66 dl=A2\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
 
         let doc = nr_from_kdl(text).expect("bands parse out of the node name");
         let combo = &doc.combo[0];
@@ -1211,18 +1203,16 @@ mod nr_tests {
         assert_eq!(combo.sub_blocks[1].kind(), SubBlockKind::Lte);
 
         let out = nr_to_kdl(&doc).unwrap();
-        assert!(out.contains("nr257 "), "{out}");
-        assert!(out.contains("lte66 "), "{out}");
+        assert!(out.contains("n257 "), "{out}");
+        assert!(out.contains("B66 "), "{out}");
     }
 
     /// A malformed band must be rejected, not silently read as band 0 or waved through as an
     /// unknown child.
     #[test]
     fn malformed_sub_block_node_names_are_rejected() {
-        for bad in ["nr", "nr257x", "nrfoo", "lte", "x99", "nr99999999"] {
-            let text = format!(
-                "version 1\nbitmask-carriers ATT\ncombo {{\n    {bad} dl-bw-class=1 dl-feature=1\n}}\n"
-            );
+        for bad in ["nr", "n257x", "nrfoo", "lte", "x99", "n99999999"] {
+            let text = format!("version 2\nbc ATT\nc {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
             assert!(
                 nr_from_kdl(&text).is_err(),
                 "`{bad}` must not parse as a sub-block"
@@ -1240,8 +1230,7 @@ mod nr_tests {
             "dl-cc-id=1",
             "ul-cc-id=1",
         ] {
-            let text =
-                format!("version 1\nbitmask-carriers ATT\ncombo {{\n    nr78 dl=A {key}\n}}\n");
+            let text = format!("version 2\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
             let err = nr_from_kdl(&text).unwrap_err().to_string();
             assert!(
                 err.contains("unknown property"),
@@ -1258,34 +1247,32 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_duplicate_carrier() {
-        let text = format!("{}\ncarrier VZW\n", nr_to_kdl(&sample()).unwrap());
+        let text = format!("{}\ncr VZW\n", nr_to_kdl(&sample()).unwrap());
         assert!(nr_from_kdl(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_unknown_cc_kind() {
-        let text = nr_to_kdl(&sample()).unwrap().replace("nr78", "bogus 78");
+        let text = nr_to_kdl(&sample()).unwrap().replace("n78", "bogus78");
         assert!(nr_from_kdl(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_unknown_tier() {
-        let text = nr_to_kdl(&sample())
-            .unwrap()
-            .replace("tier=main", "tier=bogus");
+        let text = nr_to_kdl(&sample()).unwrap().replace("t=main", "t=bogus");
         assert!(nr_from_kdl(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_missing_version() {
-        let text = nr_to_kdl(&sample()).unwrap().replacen("version 1\n", "", 1);
+        let text = nr_to_kdl(&sample()).unwrap().replacen("version 2\n", "", 1);
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
 
     #[test]
     fn nr_rejects_duplicate_version() {
-        let text = format!("version 1\n{}", nr_to_kdl(&sample()).unwrap());
+        let text = format!("version 2\n{}", nr_to_kdl(&sample()).unwrap());
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("duplicate `version`"), "{err}");
     }
@@ -1296,7 +1283,7 @@ mod nr_tests {
         // integer — the reader rejects `profile 66813533` in favor of `profile "66813533"`.
         let text = nr_to_kdl(&sample())
             .unwrap()
-            .replace("profile \"66813533\"", "profile 66813533");
+            .replace("pf \"66813533\"", "pf 66813533");
         assert!(nr_from_kdl(&text).is_err());
     }
 
@@ -1316,7 +1303,7 @@ mod nr_tests {
     }
 
     fn parse_combo(text: &str) -> KdlNode {
-        let doc: KdlDocument = text.parse().expect("combo KDL parses");
+        let doc: KdlDocument = text.parse().expect("c KDL parses");
         doc.nodes().first().expect("one combo node").clone()
     }
 
@@ -1339,10 +1326,7 @@ mod nr_tests {
         // Some(0) + intra=0: derived is None → the zero is written explicitly (the ~20).
         let node = emit_nr_combo(&combo_with(Some(0), Some(0))).unwrap();
         let text = node.to_string();
-        assert!(
-            text.contains("bcs-intra-endc=0"),
-            "exception zero explicit: {text}"
-        );
+        assert!(text.contains("bi=0"), "exception zero explicit: {text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.bcs_intra_endc, Some(0));
         assert_eq!(back.intra_band_en_dc_support, Some(0));
@@ -1352,7 +1336,7 @@ mod nr_tests {
     fn bcs_intra_endc_nonzero_stays_explicit() {
         let node = emit_nr_combo(&combo_with(Some(7), Some(1))).unwrap();
         let text = node.to_string();
-        assert!(text.contains("bcs-intra-endc=7"), "{text}");
+        assert!(text.contains("bi=7"), "{text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.bcs_intra_endc, Some(7));
     }
@@ -1380,7 +1364,7 @@ mod nr_tests {
     #[test]
     fn bw_class_is_direction_first_and_old_spelling_rejected() {
         // New direction-first spelling round-trips byte-identically.
-        let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr78 dl=A ul=A\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse new spelling");
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
@@ -1389,8 +1373,7 @@ mod nr_tests {
         );
 
         // The old suffix spelling is now an unknown property (strict reader, no alias).
-        let old =
-            "version 1\nbitmask-carriers ATT\ncombo {\n    nr78 bw-class-dl=1 bw-class-ul=1\n}\n";
+        let old = "version 2\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
         let err = nr_from_kdl(old).unwrap_err().to_string();
         assert!(
             err.contains("unknown property") && err.contains("bw-class-dl"),
@@ -1402,11 +1385,11 @@ mod nr_tests {
     /// Property order is load-bearing for byte-identity. The merge collapsed each direction's
     /// class and feature list into one property, so what remains to pin is that DL precedes UL.
     fn nr_emits_direction_grouped_order() {
-        let text = "version 1\nbitmask-carriers ATT\ncombo {\n    nr78 dl=A2 ul=A3\n}\n";
+        let text = "version 2\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let out = nr_to_kdl(&doc).unwrap();
-        let dl = out.find("dl=A2").expect("DL property present");
-        let ul = out.find("ul=A3").expect("UL property present");
+        let dl = out.find("d=A2").expect("DL property present");
+        let ul = out.find("u=A3").expect("UL property present");
         assert!(dl < ul, "expected dl before ul:\n{out}");
     }
 }
@@ -1422,7 +1405,7 @@ mod lte_tests {
 
     fn sample() -> LteDocument {
         LteDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 "3".to_string(),
                 LteFileSource {
@@ -1460,19 +1443,14 @@ mod lte_tests {
         let text = lte_to_kdl(&doc).unwrap();
         let back = lte_from_kdl(&text).expect("read back");
         assert_eq!(lte_to_kdl(&back).unwrap(), text, "byte-identity");
-        assert!(
-            text.contains("file \"3\" fingerprint=715188856 bitmask=1"),
-            "{text}"
-        );
-        assert!(text.contains("subblock1 dl-mimo=A4 ul-mimo=A4"), "{text}");
-        assert!(text.contains("subblock3 dl-mimo=A4\n"), "{text}");
+        assert!(text.contains("f \"3\" fp=715188856 bm=1"), "{text}");
+        assert!(text.contains("B1 dm=A4 um=A4"), "{text}");
+        assert!(text.contains("B3 dm=A4\n"), "{text}");
     }
 
     #[test]
     fn lte_rejects_unknown_property() {
-        let text = lte_to_kdl(&sample())
-            .unwrap()
-            .replace("bcs=2", "bcs=2 bogus=9");
+        let text = lte_to_kdl(&sample()).unwrap().replace("b=2", "b=2 bogus=9");
         assert!(lte_from_kdl(&text).is_err());
     }
 
@@ -1481,7 +1459,7 @@ mod lte_tests {
         // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which
         // covers only the NR combo pair. The lte.kdl mimo pair shares the same strict
         // `finish()` and must reject the pre-rename suffix spelling just as firmly.
-        for (new, old) in [("dl-mimo=", "mimo-dl="), ("ul-mimo=", "mimo-ul=")] {
+        for (new, old) in [("dm=", "md="), ("um=", "mu=")] {
             // Additive: keep the required new-spelling property and append the old one, so
             // the reader reports the unknown property rather than a missing required one.
             let text = lte_to_kdl(&sample())
@@ -1497,10 +1475,7 @@ mod lte_tests {
 
     #[test]
     fn lte_rejects_duplicate_file() {
-        let text = format!(
-            "{}\nfile \"3\" fingerprint=1 bitmask=1\n",
-            lte_to_kdl(&sample()).unwrap()
-        );
+        let text = format!("{}\nf \"3\" fp=1 bm=1\n", lte_to_kdl(&sample()).unwrap());
         assert!(lte_from_kdl(&text).is_err());
     }
 
@@ -1508,7 +1483,7 @@ mod lte_tests {
     fn lte_rejects_missing_version() {
         let text = lte_to_kdl(&sample())
             .unwrap()
-            .replacen("version 1\n", "", 1);
+            .replacen("version 2\n", "", 1);
         let err = format!("{:#}", lte_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
@@ -1516,9 +1491,7 @@ mod lte_tests {
     #[test]
     fn lte_rejects_bare_numeric_file_key() {
         // The LTE file id is a map key: a quoted string arg, not a bare integer.
-        let text = lte_to_kdl(&sample())
-            .unwrap()
-            .replace("file \"3\"", "file 3");
+        let text = lte_to_kdl(&sample()).unwrap().replace("f \"3\"", "f 3");
         assert!(lte_from_kdl(&text).is_err());
     }
 }

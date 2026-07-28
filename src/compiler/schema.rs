@@ -17,6 +17,15 @@ use crate::{
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
 
+/// The source-document format version both `nr.kdl` and `lte.kdl` carry.
+///
+/// Bumped to 2 by the short-vocabulary rename: a version-1 document uses spellings this build
+/// does not know, so it must be rejected with a remedy rather than a confusing unknown-node
+/// error. That is also why `kdl_keys::nr_doc::VERSION` is the one key left unabbreviated — the
+/// marker announcing the version cannot be renamed by the change it describes, or the check
+/// below would be unreachable for exactly the documents it exists to diagnose.
+pub(crate) const SOURCE_FORMAT_VERSION: u32 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DecimalU64(pub(crate) u64);
 
@@ -146,7 +155,7 @@ impl NrSelectionIndex {
     fn build(combos: &[ValidatedNrCombo]) -> Self {
         let mut index: HashMap<(CarrierId, SkuId), Vec<u32>> = HashMap::new();
         for (combo_index, combo) in combos.iter().enumerate() {
-            let combo_index = u32::try_from(combo_index).expect("combo count fits in u32");
+            let combo_index = u32::try_from(combo_index).expect("c count fits in u32");
             for member in combo.relation.members() {
                 index.entry(member).or_default().push(combo_index);
             }
@@ -181,7 +190,7 @@ impl ValidatedNr {
         self.source.dl_features = self.features.dl.clone();
         self.source.ul_features = self.features.ul.clone();
         self.source.combo = nr_source_combos(&self.combo, &self.domain, &self.features)
-            .expect("combo surgery must produce serializable source combos");
+            .expect("c surgery must produce serializable source combos");
     }
 }
 
@@ -273,10 +282,16 @@ pub(crate) fn validate_documents(
     nr: NrDocument,
     lte: LteDocument,
 ) -> anyhow::Result<ValidatedSources> {
-    ensure!(nr.version == 1, "unsupported nr.kdl version {}", nr.version);
     ensure!(
-        lte.version == 1,
-        "unsupported lte.kdl version {}",
+        nr.version == SOURCE_FORMAT_VERSION,
+        "nr.kdl is source-format version {} but this build reads version {SOURCE_FORMAT_VERSION}; \
+         re-run `decompose` to regenerate it",
+        nr.version
+    );
+    ensure!(
+        lte.version == SOURCE_FORMAT_VERSION,
+        "lte.kdl is source-format version {} but this build reads version {SOURCE_FORMAT_VERSION}; \
+         re-run `decompose` to regenerate it",
         lte.version
     );
     let bitmask_fingerprints = validate_fingerprint_partition(&nr)?;
@@ -640,7 +655,7 @@ fn validated_profiles(
         let anchor =
             parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
         let Some(profile) = PROFILES.iter().find(|profile| profile.anchor == anchor) else {
-            bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
+            bail!("u profile anchor {anchor} for carrier `{carrier}`");
         };
         let number = signature
             .checked_mul(profile_source.multiplier.0)
@@ -806,7 +821,7 @@ fn validate_fingerprint_partition(nr: &NrDocument) -> anyhow::Result<BTreeMap<St
             validate_carrier_name(carrier)?;
             ensure!(
                 whitelist.contains(carrier.as_str()),
-                "fingerprint carrier `{carrier}` is not a bitmask carrier"
+                "fp carrier `{carrier}` is not a bitmask carrier"
             );
             ensure!(
                 assigned.insert(carrier.as_str()),
@@ -850,32 +865,32 @@ mod tests {
     use super::{parse_sources, to_kdl};
 
     const MINIMAL_NR: &str = r#"
-version 1
-bitmask-carriers "LEGACY"
+version 2
+bc "LEGACY"
 
-bitmask-fingerprint 715188856 {
-    carriers "LEGACY"
+bf 715188856 {
+    c "LEGACY"
 }
 "#;
 
     const MINIMAL_LTE: &str = r#"
-version 1
+version 2
 
-file "400907661" fingerprint=862505271 bitmask=4082165014
+f "400907661" fp=862505271 bm=4082165014
 "#;
 
     fn profiled_nr(profile_key: &str) -> String {
         format!(
             r#"
-version 1
-bitmask-carriers "LEGACY"
+version 2
+bc "LEGACY"
 
-bitmask-fingerprint 715188856 {{
-    carriers "LEGACY"
+bf 715188856 {{
+    c "LEGACY"
 }}
 
-carrier "PROFILED" profiled-id=7 signature=1 tier="main" {{
-    profile "{profile_key}" multiplier=66813533 unknown=0
+cr "PROFILED" pi=7 sg=1 t="main" {{
+    pf "{profile_key}" x=66813533 u=0
 }}
 "#
         )
@@ -884,9 +899,9 @@ carrier "PROFILED" profiled-id=7 signature=1 tier="main" {{
     fn lte_with_file_key(file_key: &str) -> String {
         format!(
             r#"
-version 1
+version 2
 
-file "{file_key}" fingerprint=862505271 bitmask=4082165014
+f "{file_key}" fp=862505271 bm=4082165014
 "#
         )
     }
@@ -894,11 +909,11 @@ file "{file_key}" fingerprint=862505271 bitmask=4082165014
     fn nr_with_carrier_sections(sections: &str) -> String {
         format!(
             r#"
-version 1
-bitmask-carriers "LEGACY"
+version 2
+bc "LEGACY"
 
-bitmask-fingerprint 715188856 {{
-    carriers "LEGACY"
+bf 715188856 {{
+    c "LEGACY"
 }}
 
 {sections}
@@ -909,13 +924,13 @@ bitmask-fingerprint 715188856 {{
     fn nr_with_complete_domain() -> String {
         nr_with_carrier_sections(
             r#"
-carrier "PROFILED" profiled-id=7 signature=1 tier="main" {
-    profile "66813533" multiplier=66813533 unknown=0
-    profile "8969" multiplier=8969 unknown=0
+cr "PROFILED" pi=7 sg=1 t="main" {
+    pf "66813533" x=66813533 u=0
+    pf "8969" x=8969 u=0
 }
 
-carrier "MAPPING" mapping-id=8 {
-    plmns
+cr "MAPPING" mi=8 {
+    ps
 }
 "#,
         )
@@ -923,10 +938,10 @@ carrier "MAPPING" mapping-id=8 {
 
     fn lte_with_complete_domain() -> String {
         r#"
-version 1
+version 2
 
-file "400907661" fingerprint=862505271 bitmask=1
-file "564260317" fingerprint=874888686 bitmask=2
+f "400907661" fp=862505271 bm=1
+f "564260317" fp=874888686 bm=2
 "#
         .into()
     }
@@ -940,14 +955,14 @@ file "564260317" fingerprint=874888686 bitmask=2
     fn carrier_ids_are_independent_and_mapping_ids_alone_are_unique() {
         let nr = format!(
             r#"{MINIMAL_NR}
-carrier "A" profiled-id=0 mapping-id=7 signature=1 tier="main" {{
-    plmns
-    profile "66813533" multiplier=66813533 unknown=0
+cr "A" pi=0 mi=7 sg=1 t="main" {{
+    ps
+    pf "66813533" x=66813533 u=0
 }}
 
-carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
-    plmns
-    profile "66813533" multiplier=66813533 unknown=0
+cr "B" pi=0 mi=8 sg=1 t="main" {{
+    ps
+    pf "66813533" x=66813533 u=0
 }}
 "#
         );
@@ -972,7 +987,7 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
 
     #[test]
     fn mapping_id_requires_plmns_and_must_be_unique() {
-        let missing = format!("{MINIMAL_NR}\ncarrier \"MAP\" mapping-id=7\n");
+        let missing = format!("{MINIMAL_NR}\ncr \"MAP\" mi=7\n");
         let error = parse_sources(&missing, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -981,7 +996,7 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
             "{error}"
         );
 
-        let missing_id = format!("{MINIMAL_NR}\ncarrier \"MAP\" {{\n    plmns\n}}\n");
+        let missing_id = format!("{MINIMAL_NR}\ncr \"MAP\" {{\n    ps\n}}\n");
         let error = parse_sources(&missing_id, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -990,9 +1005,8 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
             "{error}"
         );
 
-        let duplicate = format!(
-            "{MINIMAL_NR}\ncarrier \"A\" mapping-id=7 {{\n    plmns\n}}\ncarrier \"B\" mapping-id=7 {{\n    plmns\n}}\n"
-        );
+        let duplicate =
+            format!("{MINIMAL_NR}\ncr \"A\" mi=7 {{\n    ps\n}}\ncr \"B\" mi=7 {{\n    ps\n}}\n");
         let error = parse_sources(&duplicate, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -1003,32 +1017,32 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     fn canonical_feature_catalogs_prune_deduplicate_sort_and_renumber() {
         let nr = format!(
             "{MINIMAL_NR}\n\
-             dl-feature max-scs=3\n\
-             dl-feature max-scs=1\n\
-             dl-feature max-scs=3\n\
-             ul-feature max-scs=9\n\
-             combo {{\n    nr77 dl=A1\n}}\n\
-             combo {{\n    nr78 dl=A3\n}}\n"
+             df s=3\n\
+             df s=1\n\
+             df s=3\n\
+             uf s=9\n\
+             c {{\n    n77 d=A1\n}}\n\
+             c {{\n    n78 d=A3\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 1);
         assert!(parsed.nr.features.ul.is_empty());
         assert_eq!(parsed.nr.features.dl[0].max_scs, Some(3));
-        assert!(canonical.contains("dl-feature max-scs=3"), "{canonical}");
-        assert!(!canonical.contains("max-scs=1"), "{canonical}");
+        assert!(canonical.contains("df s=3"), "{canonical}");
+        assert!(!canonical.contains("s=1"), "{canonical}");
         assert!(!canonical.contains("ul-feature"), "{canonical}");
-        assert!(canonical.contains("dl=A1"), "{canonical}");
+        assert!(canonical.contains("d=A1"), "{canonical}");
     }
 
     #[test]
     fn feature_catalog_preserves_referenced_absent_and_explicit_zero_records() {
         let nr = format!(
             "{MINIMAL_NR}\n\
-             dl-feature\n\
-             dl-feature max-scs=0\n\
-             combo {{\n    nr77 dl=A2\n}}\n\
-             combo {{\n    nr78 dl=A1\n}}\n"
+             df\n\
+             df s=0\n\
+             c {{\n    n77 d=A2\n}}\n\
+             c {{\n    n78 d=A1\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
@@ -1045,21 +1059,19 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
         // an out-of-range one is still caught at validation against the catalog length — the
         // reader knows references are 1-based, but not how long the catalog is.
         for (cc_line, expected) in [
-            ("nr78 dl=A0", "1-based"),
-            ("nr78 dl=A2", "exceeds the dl catalog length 1"),
-            ("nr78 ul=A0", "1-based"),
-            ("nr78 ul=A2", "exceeds the ul catalog length 1"),
+            ("n78 d=A0", "1-based"),
+            ("n78 d=A2", "exceeds the dl catalog length 1"),
+            ("n78 u=A0", "1-based"),
+            ("n78 u=A2", "exceeds the ul catalog length 1"),
         ] {
-            let nr = format!(
-                "{MINIMAL_NR}\ndl-feature max-scs=3\nul-feature max-scs=4\ncombo {{\n    {cc_line}\n}}\n"
-            );
+            let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nc {{\n    {cc_line}\n}}\n");
             // `{:#}` for the whole chain: a parse-time rejection is wrapped in
             // "parsing nr.kdl", so `to_string()` alone would show only that.
             let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
             assert!(error.contains(expected), "{error}");
         }
 
-        let old = format!("{MINIMAL_NR}\ncombo {{\n    nr78 dl-max-scs=3\n}}\n");
+        let old = format!("{MINIMAL_NR}\nc {{\n    n78 dl-max-scs=3\n}}\n");
         assert!(nr_from_kdl(&old).is_err());
     }
 
@@ -1067,35 +1079,35 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     fn global_source_catalog_can_exceed_one_byte() {
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
-            nr.push_str(&format!("\ndl-feature max-bw={value}\n"));
-            nr.push_str(&format!("\ncombo {{\n    nr{value} dl=A{value}\n}}\n"));
+            nr.push_str(&format!("\ndf b={value}\n"));
+            nr.push_str(&format!("\nc {{\n    n{value} d=A{value}\n}}\n"));
         }
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 300);
     }
 
     #[test]
-    fn versions_are_required_and_only_version_one_is_supported() {
-        let missing = MINIMAL_NR.replacen("version 1\n", "", 1);
+    fn versions_are_required_and_only_the_current_one_is_supported() {
+        let missing = MINIMAL_NR.replacen("version 2\n", "", 1);
         assert!(parse_sources(&missing, MINIMAL_LTE).is_err());
 
-        let unsupported_nr = MINIMAL_NR.replacen("version 1", "version 2", 1);
+        let unsupported_nr = MINIMAL_NR.replacen("\nversion 2", "\nversion 3", 1);
         assert!(
             parse_sources(&unsupported_nr, MINIMAL_LTE)
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported nr.kdl version")
+                .contains("source-format version 3")
         );
 
-        let missing = MINIMAL_LTE.replacen("version 1\n", "", 1);
+        let missing = MINIMAL_LTE.replacen("version 2\n", "", 1);
         assert!(parse_sources(MINIMAL_NR, &missing).is_err());
 
-        let unsupported_lte = MINIMAL_LTE.replacen("version 1", "version 2", 1);
+        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 2", "\nversion 3", 1);
         assert!(
             parse_sources(MINIMAL_NR, &unsupported_lte)
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported lte.kdl version")
+                .contains("source-format version 3")
         );
     }
 
@@ -1126,7 +1138,9 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     }
 
     fn assert_nr_error(nr: &str, needle: &str) {
-        let error = parse_sources(nr, MINIMAL_LTE).unwrap_err().to_string();
+        // `{:#}` for the whole chain: a parse-time rejection is wrapped in "parsing nr.kdl",
+        // so `to_string()` alone would show only that.
+        let error = format!("{:#}", parse_sources(nr, MINIMAL_LTE).unwrap_err());
         assert!(error.contains(needle), "expected {needle:?} in {error:?}");
     }
 
@@ -1134,10 +1148,10 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     fn fingerprint_groups_are_nonempty_disjoint_and_exhaustive() {
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A"
-bitmask-fingerprint 1 {
-    carriers
+version 2
+bc "A"
+bf 1 {
+    c
 }
 "#,
             "nonempty",
@@ -1145,13 +1159,13 @@ bitmask-fingerprint 1 {
 
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A" "B"
-bitmask-fingerprint 1 {
-    carriers "A"
+version 2
+bc "A" "B"
+bf 1 {
+    c "A"
 }
-bitmask-fingerprint 2 {
-    carriers "A" "B"
+bf 2 {
+    c "A" "B"
 }
 "#,
             "more than one fingerprint",
@@ -1159,10 +1173,10 @@ bitmask-fingerprint 2 {
 
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A" "B"
-bitmask-fingerprint 1 {
-    carriers "A"
+version 2
+bc "A" "B"
+bf 1 {
+    c "A"
 }
 "#,
             "partition",
@@ -1170,10 +1184,10 @@ bitmask-fingerprint 1 {
 
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A"
-bitmask-fingerprint 1 {
-    carriers "A" "B"
+version 2
+bc "A"
+bf 1 {
+    c "A" "B"
 }
 "#,
             "not a bitmask carrier",
@@ -1181,10 +1195,10 @@ bitmask-fingerprint 1 {
 
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A" "A"
-bitmask-fingerprint 1 {
-    carriers "A"
+version 2
+bc "A" "A"
+bf 1 {
+    c "A"
 }
 "#,
             "duplicate carrier",
@@ -1192,13 +1206,13 @@ bitmask-fingerprint 1 {
 
         assert_nr_error(
             r#"
-version 1
-bitmask-carriers "A"
-bitmask-fingerprint 1 {
-    carriers "A"
+version 2
+bc "A"
+bf 1 {
+    c "A"
 }
-bitmask-fingerprint 1 {
-    carriers "A"
+bf 1 {
+    c "A"
 }
 "#,
             "duplicate fingerprint",
@@ -1210,8 +1224,8 @@ bitmask-fingerprint 1 {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "PROFILED" tier="main" {
-    profile "66813533" multiplier=66813533 unknown=0
+cr "PROFILED" t="main" {
+    pf "66813533" x=66813533 u=0
 }
 "#,
             ),
@@ -1220,8 +1234,8 @@ carrier "PROFILED" tier="main" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "PROFILED" signature=1 {
-    profile "66813533" multiplier=66813533 unknown=0
+cr "PROFILED" sg=1 {
+    pf "66813533" x=66813533 u=0
 }
 "#,
             ),
@@ -1230,7 +1244,7 @@ carrier "PROFILED" signature=1 {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "ORPHAN" signature=1 tier="main"
+cr "ORPHAN" sg=1 t="main"
 "#,
             ),
             "without profiles",
@@ -1238,8 +1252,8 @@ carrier "ORPHAN" signature=1 tier="main"
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "MAPPING" {
-    plmns
+cr "MAPPING" {
+    ps
 }
 "#,
             ),
@@ -1248,7 +1262,7 @@ carrier "MAPPING" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "MAPPING" mapping-id=7
+cr "MAPPING" mi=7
 "#,
             ),
             "must provide mapping_id and plmns together",
@@ -1256,7 +1270,7 @@ carrier "MAPPING" mapping-id=7
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "MAPPING" profiled-id=7
+cr "MAPPING" pi=7
 "#,
             ),
             "has profiled_id but no profiled NR files",
@@ -1264,7 +1278,7 @@ carrier "MAPPING" profiled-id=7
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "NOT_LEGACY" bitmask-id=1
+cr "NOT_LEGACY" bi=1
 "#,
             ),
             "bitmask_carriers",
@@ -1272,7 +1286,7 @@ carrier "NOT_LEGACY" bitmask-id=1
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "LEGACY" bitmask-id=2147483648
+cr "LEGACY" bi=2147483648
 "#,
             ),
             "int32",
@@ -1280,8 +1294,8 @@ carrier "LEGACY" bitmask-id=2147483648
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "PROFILED" profiled-id=2147483648 signature=1 tier="main" {
-    profile "66813533" multiplier=66813533 unknown=0
+cr "PROFILED" pi=2147483648 sg=1 t="main" {
+    pf "66813533" x=66813533 u=0
 }
 "#,
             ),
@@ -1291,8 +1305,8 @@ carrier "PROFILED" profiled-id=2147483648 signature=1 tier="main" {
         parse_sources(
             &nr_with_carrier_sections(
                 r#"
-carrier "MAPPING" mapping-id=18446744073709551615 {
-    plmns
+cr "MAPPING" mi=18446744073709551615 {
+    ps
 }
 "#,
             ),
@@ -1305,16 +1319,16 @@ carrier "MAPPING" mapping-id=18446744073709551615 {
     fn profile_products_resolve_exactly_the_keyed_registered_anchor() {
         parse_sources(&profiled_nr("66813533"), MINIMAL_LTE).unwrap();
 
-        assert_nr_error(&profiled_nr("123"), "unknown profile anchor");
+        assert_nr_error(&profiled_nr("123"), "u profile anchor");
         assert_nr_error(
-            &profiled_nr("66813533").replace("multiplier=66813533", "multiplier=1176929627"),
+            &profiled_nr("66813533").replace("x=66813533", "x=1176929627"),
             "wrong profile anchor",
         );
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "PROFILED" signature=1 tier="main" {
-    profile "167" multiplier=308449 unknown=0
+cr "PROFILED" sg=1 t="main" {
+    pf "167" x=308449 u=0
 }
 "#,
             ),
@@ -1323,8 +1337,8 @@ carrier "PROFILED" signature=1 tier="main" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-carrier "PROFILED" signature=18446744073709551615 tier="main" {
-    profile "167" multiplier=2 unknown=0
+cr "PROFILED" sg=18446744073709551615 t="main" {
+    pf "167" x=2 u=0
 }
 "#,
             ),
@@ -1337,10 +1351,10 @@ carrier "PROFILED" signature=18446744073709551615 tier="main" {
         parse_sources(
             &nr_with_carrier_sections(
                 r#"
-carrier "MAPPING" mapping-id=7 {
-    plmn mcc=302 mnc=220
-    plmn mcc=250 mnc=1
-    plmn mcc=302 mnc=220
+cr "MAPPING" mi=7 {
+    p mcc=302 mnc=220
+    p mcc=250 mnc=1
+    p mcc=302 mnc=220
 }
 "#,
             ),
@@ -1358,8 +1372,8 @@ carrier "MAPPING" mapping-id=7 {
             parse_sources(
                 &nr_with_carrier_sections(
                     r#"
-carrier "MAPPING" mapping-id=7 {
-    plmn mcc=302 mnc=99999
+cr "MAPPING" mi=7 {
+    p mcc=302 mnc=99999
 }
 "#,
                 ),
@@ -1372,7 +1386,7 @@ carrier "MAPPING" mapping-id=7 {
 
     #[test]
     fn modern_nr_bitmasks_cannot_be_stored_in_source() {
-        let nr = format!("{MINIMAL_NR}\ncombo bitmask=1 {{\n    nr78\n}}\n");
+        let nr = format!("{MINIMAL_NR}\nc bm=1 {{\n    n78\n}}\n");
         assert!(parse_sources(&nr, MINIMAL_LTE).is_err());
     }
 
@@ -1406,11 +1420,11 @@ carrier "MAPPING" mapping-id=7 {
     #[test]
     fn selections_are_resolved_and_cached_during_validation() {
         let nr = format!(
-            "{}\ncombo {{\n    selection {{\n        carriers \"PROFILED\"\n        skus \"G2YBB\"\n    }}\n    nr78\n}}\n",
+            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78\n}}\n",
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\ncombo {{\n    selection {{\n        skus \"G2YBB\" \"lte:564260317\"\n    }}\n    subblock1 dl-mimo=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 dm=A4\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1433,7 +1447,7 @@ carrier "MAPPING" mapping-id=7 {
 
     #[test]
     fn nr_payloads_require_valid_components_and_canonicalize_them() {
-        for (catalog, combo_body) in [("", ""), ("", "nr0\n"), ("", "lte1 srs-tx-switch=5\n")] {
+        for (catalog, combo_body) in [("", ""), ("", "n0\n"), ("", "B1 st=5\n")] {
             let nr = format!("{MINIMAL_NR}\n{catalog}combo {{\n{combo_body}}}\n");
             assert!(
                 parse_sources(&nr, MINIMAL_LTE).is_err(),
@@ -1441,8 +1455,7 @@ carrier "MAPPING" mapping-id=7 {
             );
         }
 
-        let nr =
-            format!("{MINIMAL_NR}\ndl-feature max-scs=3\ncombo {{\n    nr78 dl=A1\n    lte1\n}}\n");
+        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\n");
         let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
@@ -1455,19 +1468,17 @@ carrier "MAPPING" mapping-id=7 {
     #[test]
     fn duplicate_canonical_nr_payload_records_are_rejected() {
         let nr = format!(
-            "{MINIMAL_NR}\ndl-feature max-scs=3\ndl-feature max-scs=3\ncombo {{\n    nr78 dl=A1\n    lte1\n}}\ncombo {{\n    lte1\n    nr78 dl=A2\n}}\n"
+            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\nc {{\n    B1\n    n78 d=A2\n}}\n"
         );
         assert_nr_error(&nr, "duplicate canonical NR payload");
     }
 
     #[test]
     fn lte_payloads_require_components_preserve_order_and_reject_exact_duplicates() {
-        let empty = format!("{MINIMAL_LTE}\ncombo {{\n}}\n");
+        let empty = format!("{MINIMAL_LTE}\nc {{\n}}\n");
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
-        let duplicate = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-mimo=A4\n}}\ncombo {{\n    subblock1 dl-mimo=A4\n}}\n"
-        );
+        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc {{\n    B1 dm=A4\n}}\n");
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
                 .unwrap_err()
@@ -1476,16 +1487,15 @@ carrier "MAPPING" mapping-id=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-mimo=A4\n    subblock3 dl-mimo=A4\n}}\ncombo {{\n    subblock3 dl-mimo=A4\n    subblock1 dl-mimo=A4\n}}\n"
+            "{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n    B3 dm=A4\n}}\nc {{\n    B3 dm=A4\n    B1 dm=A4\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
-        let optional_presence = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-mimo=A4\n}}\ncombo bcs=0 {{\n    subblock1 dl-mimo=A4 ul-mimo=off\n}}\n"
-        );
+        let optional_presence =
+            format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc b=0 {{\n    B1 dm=A4 um=off\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
@@ -1500,11 +1510,11 @@ carrier "MAPPING" mapping-id=7 {
     fn validated_metadata_caches_derived_fingerprints_and_parsed_plmns() {
         let nr = nr_with_carrier_sections(
             r#"
-carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
-    plmn mcc=302 mnc=220
-    plmn mcc=250 mnc=1
-    plmn mcc=302 mnc=220
-    profile "66813533" multiplier=66813533 unknown=9
+cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
+    p mcc=302 mnc=220
+    p mcc=250 mnc=1
+    p mcc=302 mnc=220
+    pf "66813533" x=66813533 u=9
 }
 "#,
         );
@@ -1514,13 +1524,13 @@ carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
         let legend_plmns: Vec<u64> = carrier
             .legend
             .as_ref()
-            .expect("carrier has a legend entry")
+            .expect("cr has a legend entry")
             .plmns
             .iter()
             .map(|plmn| plmn.to_encoded())
             .collect();
         assert_eq!(legend_plmns, [197_154, 5_435_408, 197_154]);
-        let profiled = carrier.profiled.as_ref().expect("carrier is profiled");
+        let profiled = carrier.profiled.as_ref().expect("cr is profiled");
         let profile = &profiled.profiles[&66_813_533];
         assert_eq!(profile.number, 66_813_533);
         assert_eq!(profile.fingerprint, 627_223_094);
@@ -1530,11 +1540,11 @@ carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
     #[test]
     fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
         let nr_text = format!(
-            "{}\ndl-feature max-scs=3\ncombo {{\n    selection {{\n        carriers \"PROFILED\" \"PROFILED\"\n        skus \"G2YBB\" \"G2YBB\"\n    }}\n    nr78 dl=A1\n    lte1\n}}\ncombo {{\n    selection {{\n        carriers \"LEGACY\"\n    }}\n    lte3\n}}\n",
+            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 d=A1\n    B1\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3\n}}\n",
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\ncombo {{\n    selection {{\n        skus \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    subblock3 dl-mimo=A4\n    subblock1 dl-mimo=A4\n}}\ncombo {{\n    selection {{\n        skus \"GR83Y\"\n    }}\n    subblock7 dl-mimo=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 dm=A4\n    B1 dm=A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 dm=A4\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();
@@ -1577,24 +1587,21 @@ carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
     fn to_kdl_preserves_plmn_presence_order_duplicates_and_large_mapping_ids() {
         let nr_text = nr_with_carrier_sections(
             r#"
-carrier "ABSENT" bitmask-id=1
+cr "ABSENT" bi=1
 
-carrier "MAP_ONLY" mapping-id=18446744073709551615 {
-    plmns
+cr "MAP_ONLY" mi=18446744073709551615 {
+    ps
 }
 
-carrier "ORDERED" mapping-id=7 {
-    plmn mcc=302 mnc=220
-    plmn mcc=228
-    plmn mcc=302 mnc=220
+cr "ORDERED" mi=7 {
+    p mcc=302 mnc=220
+    p mcc=228
+    p mcc=302 mnc=220
 }
 "#,
         )
-        .replace(
-            "bitmask-carriers \"LEGACY\"",
-            "bitmask-carriers \"ABSENT\" \"LEGACY\"",
-        )
-        .replace("carriers \"LEGACY\"", "carriers \"ABSENT\" \"LEGACY\"");
+        .replace("bc \"LEGACY\"", "bc \"ABSENT\" \"LEGACY\"")
+        .replace("c \"LEGACY\"", "c \"ABSENT\" \"LEGACY\"");
         let nr = nr_from_kdl(&nr_text).unwrap();
         let lte = lte_from_kdl(MINIMAL_LTE).unwrap();
         let (nr_text, _) = to_kdl(&nr, &lte).unwrap();
@@ -1607,6 +1614,6 @@ carrier "ORDERED" mapping-id=7 {
         );
         assert_eq!(nr.carriers["MAP_ONLY"].profiled_id, None);
         assert_eq!(nr.carriers["MAP_ONLY"].mapping_id, Some(u64::MAX));
-        assert!(nr_text.contains("mapping-id=18446744073709551615"));
+        assert!(nr_text.contains("mi=18446744073709551615"));
     }
 }

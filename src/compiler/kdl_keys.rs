@@ -15,29 +15,29 @@ pub(crate) mod nr_doc {
     /// would reject the document as having an unknown top-level node before ever reaching the
     /// version check.
     pub(crate) const VERSION: &str = "version";
-    pub(crate) const BITMASK_CARRIERS: &str = "bitmask-carriers";
-    pub(crate) const BITMASK_FINGERPRINT: &str = "bitmask-fingerprint";
-    pub(crate) const CARRIER: &str = "carrier";
-    pub(crate) const DL_FEATURE: &str = "dl-feature";
-    pub(crate) const UL_FEATURE: &str = "ul-feature";
-    pub(crate) const COMBO: &str = "combo";
+    pub(crate) const BITMASK_CARRIERS: &str = "bc";
+    pub(crate) const BITMASK_FINGERPRINT: &str = "bf";
+    pub(crate) const CARRIER: &str = "cr";
+    pub(crate) const DL_FEATURE: &str = "df";
+    pub(crate) const UL_FEATURE: &str = "uf";
+    pub(crate) const COMBO: &str = "c";
 }
 
 /// Children of a `bitmask-fingerprint`.
 pub(crate) mod fingerprint {
-    pub(crate) const CARRIERS: &str = "carriers";
+    pub(crate) const CARRIERS: &str = "c";
 }
 
 /// Properties and children of a `carrier`.
 pub(crate) mod carrier {
-    pub(crate) const BITMASK_ID: &str = "bitmask-id";
-    pub(crate) const PROFILED_ID: &str = "profiled-id";
-    pub(crate) const MAPPING_ID: &str = "mapping-id";
-    pub(crate) const SIGNATURE: &str = "signature";
-    pub(crate) const TIER: &str = "tier";
-    pub(crate) const PLMN: &str = "plmn";
-    pub(crate) const PLMNS: &str = "plmns";
-    pub(crate) const PROFILE: &str = "profile";
+    pub(crate) const BITMASK_ID: &str = "bi";
+    pub(crate) const PROFILED_ID: &str = "pi";
+    pub(crate) const MAPPING_ID: &str = "mi";
+    pub(crate) const SIGNATURE: &str = "sg";
+    pub(crate) const TIER: &str = "t";
+    pub(crate) const PLMN: &str = "p";
+    pub(crate) const PLMNS: &str = "ps";
+    pub(crate) const PROFILE: &str = "pf";
 }
 
 /// Properties of a `plmn`. Deliberately never abbreviated — 444 occurrences in the whole real
@@ -55,86 +55,86 @@ pub(crate) mod plmn {
 
 /// Properties of a `profile`.
 pub(crate) mod profile {
-    pub(crate) const MULTIPLIER: &str = "multiplier";
-    pub(crate) const UNKNOWN: &str = "unknown";
+    pub(crate) const MULTIPLIER: &str = "x";
+    pub(crate) const UNKNOWN: &str = "u";
 }
 
 /// Properties and children of an `nr.kdl` `combo`.
 pub(crate) mod combo {
-    pub(crate) const POWER_CLASS: &str = "power-class";
-    pub(crate) const BCS_NR: &str = "bcs-nr";
-    pub(crate) const BCS_INTRA_ENDC: &str = "bcs-intra-endc";
-    pub(crate) const BCS_EUTRA: &str = "bcs-eutra";
-    pub(crate) const INTRA_BAND_EN_DC_SUPPORT: &str = "intra-band-en-dc-support";
-    pub(crate) const SELECTION: &str = "selection";
+    pub(crate) const POWER_CLASS: &str = "pc";
+    pub(crate) const BCS_NR: &str = "bn";
+    pub(crate) const BCS_INTRA_ENDC: &str = "bi";
+    pub(crate) const BCS_EUTRA: &str = "be";
+    pub(crate) const INTRA_BAND_EN_DC_SUPPORT: &str = "ie";
+    pub(crate) const SELECTION: &str = "s";
     /// Sub-block node-name prefix for an NR component. The band is appended to it.
-    pub(crate) const NR_PREFIX: &str = "nr";
+    pub(crate) const NR_PREFIX: &str = "n";
     /// Sub-block node-name prefix for an E-UTRA component.
-    pub(crate) const LTE_PREFIX: &str = "lte";
+    pub(crate) const LTE_PREFIX: &str = "B";
 }
 
 /// Children of a `selection`.
 pub(crate) mod selection {
-    pub(crate) const CARRIERS: &str = "carriers";
-    pub(crate) const SKUS: &str = "skus";
+    pub(crate) const CARRIERS: &str = "c";
+    pub(crate) const SKUS: &str = "m";
 }
 
 /// Properties of an `nr.kdl` sub-block. `DL`/`UL` each carry the bandwidth-class letter and the
 /// per-CC index list in one value — see `compiler::kdl_direction`.
 pub(crate) mod sub_block {
-    pub(crate) const DL: &str = "dl";
-    pub(crate) const UL: &str = "ul";
-    pub(crate) const SRS_TX_SWITCH: &str = "srs-tx-switch";
+    pub(crate) const DL: &str = "d";
+    pub(crate) const UL: &str = "u";
+    pub(crate) const SRS_TX_SWITCH: &str = "st";
 }
 
 /// Properties of a `dl-feature` catalog node.
 pub(crate) mod dl_catalog {
-    pub(crate) const MAX_SCS: &str = "max-scs";
-    pub(crate) const MAX_MIMO: &str = "max-mimo";
-    pub(crate) const MAX_BW: &str = "max-bw";
-    pub(crate) const MAX_MOD_ORDER: &str = "max-mod-order";
-    pub(crate) const BW_90MHZ_SUPPORTED: &str = "bw-90mhz-supported";
+    pub(crate) const MAX_SCS: &str = "s";
+    pub(crate) const MAX_MIMO: &str = "m";
+    pub(crate) const MAX_BW: &str = "b";
+    pub(crate) const MAX_MOD_ORDER: &str = "o";
+    pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
 }
 
 /// Properties of a `ul-feature` catalog node.
 pub(crate) mod ul_catalog {
-    pub(crate) const MAX_SCS: &str = "max-scs";
-    pub(crate) const MAX_MIMO_CB: &str = "max-mimo-cb";
-    pub(crate) const MAX_BW: &str = "max-bw";
-    pub(crate) const MAX_MOD_ORDER: &str = "max-mod-order";
-    pub(crate) const BW_90MHZ_SUPPORTED: &str = "bw-90mhz-supported";
-    pub(crate) const MAX_MIMO_NON_CB: &str = "max-mimo-non-cb";
+    pub(crate) const MAX_SCS: &str = "s";
+    pub(crate) const MAX_MIMO_CB: &str = "m";
+    pub(crate) const MAX_BW: &str = "b";
+    pub(crate) const MAX_MOD_ORDER: &str = "o";
+    pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
+    pub(crate) const MAX_MIMO_NON_CB: &str = "nc";
 }
 
 /// Document level in `lte.kdl`.
 pub(crate) mod lte_doc {
     /// Not abbreviated, for the same reason as [`super::nr_doc::VERSION`].
     pub(crate) const VERSION: &str = "version";
-    pub(crate) const FILE: &str = "file";
-    pub(crate) const COMBO: &str = "combo";
+    pub(crate) const FILE: &str = "f";
+    pub(crate) const COMBO: &str = "c";
 }
 
 /// Properties of an `lte.kdl` `file`.
 pub(crate) mod lte_file {
-    pub(crate) const FINGERPRINT: &str = "fingerprint";
-    pub(crate) const BITMASK: &str = "bitmask";
+    pub(crate) const FINGERPRINT: &str = "fp";
+    pub(crate) const BITMASK: &str = "bm";
 }
 
 /// Properties and children of an `lte.kdl` `combo`.
 pub(crate) mod lte_combo {
-    pub(crate) const BCS: &str = "bcs";
-    pub(crate) const UNKNOWN1: &str = "unknown1";
-    pub(crate) const UNKNOWN2: &str = "unknown2";
-    pub(crate) const SELECTION: &str = "selection";
+    pub(crate) const BCS: &str = "b";
+    pub(crate) const UNKNOWN1: &str = "u1";
+    pub(crate) const UNKNOWN2: &str = "u2";
+    pub(crate) const SELECTION: &str = "s";
     /// Sub-block node-name prefix. The band is appended to it.
-    pub(crate) const SUB_BLOCK_PREFIX: &str = "subblock";
+    pub(crate) const SUB_BLOCK_PREFIX: &str = "B";
 }
 
 /// Properties of an `lte.kdl` sub-block.
 /// Properties of an `lte.kdl` sub-block: the class+MIMO bitfield as `<letter><mimo>`.
 pub(crate) mod lte_sub_block {
-    pub(crate) const DL_MIMO: &str = "dl-mimo";
-    pub(crate) const UL_MIMO: &str = "ul-mimo";
+    pub(crate) const DL_MIMO: &str = "dm";
+    pub(crate) const UL_MIMO: &str = "um";
 }
 
 #[cfg(test)]

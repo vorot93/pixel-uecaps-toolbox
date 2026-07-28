@@ -16,64 +16,64 @@ pub(crate) const SYNTHETIC_ANCHOR: u64 = 8_969;
 pub(crate) const FIRST_LTE_ID: u64 = 400_907_661;
 pub(crate) const SECOND_LTE_ID: u64 = 92;
 
-const EXPECTED_NR_KDL: &str = r#"version 1
-bitmask-carriers ALPHA BETA
-bitmask-fingerprint 702152537 {
-    carriers BETA
+const EXPECTED_NR_KDL: &str = r#"version 2
+bc ALPHA BETA
+bf 702152537 {
+    c BETA
 }
-bitmask-fingerprint 715188856 {
-    carriers ALPHA
+bf 715188856 {
+    c ALPHA
 }
-carrier ALPHA bitmask-id=1 profiled-id=7 mapping-id=7 signature=11 tier=main {
-    plmn mcc=250 mnc=1
-    plmn mcc=250 mnc=1
-    profile "66813533" multiplier=66813533 unknown=11
-    profile "8969" multiplier=8969 unknown=22
+cr ALPHA bi=1 pi=7 mi=7 sg=11 t=main {
+    p mcc=250 mnc=1
+    p mcc=250 mnc=1
+    pf "66813533" x=66813533 u=11
+    pf "8969" x=8969 u=22
 }
-carrier BETA bitmask-id=2 profiled-id=8 mapping-id=8 signature=13 tier=main {
-    plmns
-    profile "66813533" multiplier=66813533 unknown=33
-    profile "8969" multiplier=8969 unknown=44
+cr BETA bi=2 pi=8 mi=8 sg=13 t=main {
+    ps
+    pf "66813533" x=66813533 u=33
+    pf "8969" x=8969 u=44
 }
-combo {
-    selection {
-        skus prime:8969
+c {
+    s {
+        m prime:8969
     }
-    nr3 dl=A ul=A
+    n3 d=A u=A
 }
-combo {
-    selection {
-        carriers BETA
-        skus legacy G2YBB
+c {
+    s {
+        c BETA
+        m legacy G2YBB
     }
-    nr41 dl=A ul=A
+    n41 d=A u=A
 }
-combo {
-    selection {
-        carriers ALPHA
-        skus legacy G2YBB
+c {
+    s {
+        c ALPHA
+        m legacy G2YBB
     }
-    nr78 dl=A ul=A
+    n78 d=A u=A
 }
 "#;
 
-const EXPECTED_LTE_KDL: &str = r#"version 1
-file "400907661" fingerprint=101 bitmask=201
-file "92" fingerprint=102 bitmask=202
-combo bcs=0 unknown1=0 unknown2=0 {
-    selection {
-        skus G2YBB GGX8B GR83Y
+const EXPECTED_LTE_KDL: &str = r#"version 2
+f "400907661" fp=101 bm=201
+f "92" fp=102 bm=202
+c b=0 u1=0 u2=0 {
+    s {
+        m G2YBB GGX8B GR83Y
     }
-    subblock1 dl-mimo=A4 ul-mimo=off
+    B1 dm=A4 um=off
 }
-combo bcs=0 unknown1=0 unknown2=0 {
-    subblock3 dl-mimo=A4 ul-mimo=off
+c b=0 u1=0 u2=0 {
+    B3 dm=A4 um=off
 }
-combo bcs=0 unknown1=0 unknown2=0 {
-    selection {
-        skus lte:92
+c b=0 u1=0 u2=0 {
+    s {
+        m lte:92
     }
-    subblock5 dl-mimo=A4 ul-mimo=off
+    B5 dm=A4 um=off
 }
 "#;
 

@@ -311,7 +311,7 @@ mod tests {
 
     fn miniature_documents() -> (NrDocument, LteDocument) {
         let nr = NrDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["BETA".into(), "EMPTY_LEGACY".into(), "ALPHA".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 715_188_856,
@@ -369,7 +369,7 @@ mod tests {
             ],
         };
         let lte = LteDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 TARGET_LTE_ID.to_string(),
                 LteFileSource {
@@ -801,7 +801,7 @@ mod tests {
     fn sources_are_fully_loaded_and_validated_before_model_resolution() {
         let temp = tempdir().unwrap();
         write_sources(temp.path());
-        fs::write(temp.path().join("lte.kdl"), "version 1\nunknown 1\n").unwrap();
+        fs::write(temp.path().join("lte.kdl"), "version 2\nu 1\n").unwrap();
 
         let error = load_and_generate(temp.path(), "NOT-A-MODEL").unwrap_err();
         let error = format!("{error:#}");
@@ -955,7 +955,7 @@ mod tests {
         fs::write(&output, b"original zip bytes").unwrap();
         let original_names = directory_names(temp.path());
 
-        fs::write(source.join("lte.kdl"), "version 1\nunknown 1\n").unwrap();
+        fs::write(source.join("lte.kdl"), "version 2\nu 1\n").unwrap();
         let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("parsing lte.kdl"),
@@ -999,15 +999,15 @@ mod tests {
         );
 
         assert_provision_prewrite_failure(
-            Some(base_nr.replacen("profile \"66813533\"", "profile \"066813533\"", 1)),
+            Some(base_nr.replacen("pf \"66813533\"", "pf \"066813533\"", 1)),
             Some(base_lte.clone()),
             TARGET_MODEL,
             "shortest-decimal",
         );
 
         let invalid_selection = base_nr.replacen(
-            "carriers ALPHA BETA\n        skus legacy",
-            "carriers ALPHA\n        skus prime:8969",
+            "c ALPHA BETA\n        m legacy",
+            "c ALPHA\n        m prime:8969",
             1,
         );
         assert_ne!(invalid_selection, base_nr);
@@ -1021,7 +1021,7 @@ mod tests {
         // ALPHA's PLMN list is `["250-01", "250-01"]`, written as two identical
         // `plmn mcc=250 mnc=1` nodes; corrupt the first into an out-of-range MNC so it
         // fails to reconstruct into a valid PLMN.
-        let invalid_plmn = base_nr.replacen("plmn mcc=250 mnc=1", "plmn mcc=250 mnc=99999", 1);
+        let invalid_plmn = base_nr.replacen("p mcc=250 mnc=1", "p mcc=250 mnc=99999", 1);
         assert_ne!(invalid_plmn, base_nr);
         assert_provision_prewrite_failure(
             Some(invalid_plmn),
@@ -1030,7 +1030,7 @@ mod tests {
             "invalid PLMN",
         );
 
-        let overflow = base_nr.replacen("signature=11", "signature=18446744073709551615", 1);
+        let overflow = base_nr.replacen("sg=11", "sg=18446744073709551615", 1);
         assert_provision_prewrite_failure(
             Some(overflow),
             Some(base_lte.clone()),

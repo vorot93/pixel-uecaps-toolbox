@@ -198,12 +198,12 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     source_names.sort();
     assert_eq!(source_names, ["lte.kdl", "nr.kdl"]);
     let nr_source = fs::read_to_string(fixture.source.join("nr.kdl")).unwrap();
-    assert!(nr_source.contains("mapping-id=7"), "{nr_source}");
-    assert!(!nr_source.contains("profiled-id="), "{nr_source}");
+    assert!(nr_source.contains("mi=7"), "{nr_source}");
+    assert!(!nr_source.contains("pi="), "{nr_source}");
     // The catalog NODE keeps its name; only the sub-block *reference* merged into `dl=`.
-    assert!(nr_source.contains("dl-feature max-scs=3"), "{nr_source}");
-    assert!(!nr_source.contains("max-scs=1"), "{nr_source}");
-    assert!(nr_source.contains("dl=A1"), "{nr_source}");
+    assert!(nr_source.contains("df s=3"), "{nr_source}");
+    assert!(!nr_source.contains("s=1"), "{nr_source}");
+    assert!(nr_source.contains("d=A1"), "{nr_source}");
 
     let provisioned = fixture.provision(MODEL);
     assert!(provisioned.status.success(), "{}", stderr(&provisioned));

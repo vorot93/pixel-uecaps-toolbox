@@ -703,7 +703,7 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(NrDocument {
-        version: 1,
+        version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
         bitmask_carriers,
         bitmask_fingerprints,
         carriers,
@@ -974,7 +974,7 @@ mod tests {
 
     fn validated_nr(document: NrDocument) -> ValidatedNr {
         let lte = LteDocument {
-            version: 1,
+            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 "1".into(),
                 LteFileSource {
