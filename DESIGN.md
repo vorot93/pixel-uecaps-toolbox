@@ -425,16 +425,16 @@ regression. That byte-stability includes keeping a node's sole leading positiona
 autoformat-stability test in `src/kdl_support/` guards it. Sub-blocks no longer rely on it:
 their band is part of the node name.
 
-**Naming rule: a plain, kind-less node name when the file/document already fixes the radio kind;
-explicit `nr`/`lte` node names only where a single combo can mix both.** The compiler's `lte.kdl` is
-uniformly LTE — its `subblock` node carries no kind tag. Whenever a single combo can mix LTE and NR
-components (an EN-DC combo), the radio kind **is** the node name (`nr 78 …` / `lte 66 …`), not a
-`kind=` property: `RawSubBlock` is an *enum over the two radio kinds* for exactly
-that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field is gone).
-The naming rule is uniform across every KDL surface: NR-carrier/EN-DC combos (compiler `nr.kdl`)
-spell the kind as the node name; uniformly-LTE combos (compiler `lte.kdl`) use plain `subblock`
-with no kind tag. A sub-block's band is part of its **node name** (`n257`, `B66`), parsed by
-`parse_sub_block_name` and matched by `NodeReader::children_matching`, not a positional argument.
+**Naming rule: a sub-block's node name is its kind prefix followed by its band, one token —
+`n257`, `B66`.** `n` marks an NR component and `B` an E-UTRA one, so the radio kind **is** part of
+the node name rather than a `kind=` property: `RawSubBlock` is an *enum over the two radio kinds*
+for exactly that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field
+is gone). The prefix earns its place in `nr.kdl`, where an EN-DC combo mixes both kinds in one
+combo — 45 045 of the real corpus's `nr.kdl` sub-blocks are `B<band>` E-UTRA components. `lte.kdl`
+is uniformly LTE and so only ever emits `B`, but it spells its sub-blocks identically rather than
+inventing a kind-less form, which is what lets one `parse_sub_block_name` serve both documents.
+The band is part of the **node name**, parsed by `parse_sub_block_name` and matched by
+`NodeReader::children_matching`, not a positional argument.
 **Direction-paired properties lead with the direction** — `d`/`u` on every sub-block in both
 documents, never a `-dl`/`-ul` suffix — and a sub-block emits DL before UL, with the
 direction-agnostic `st` last. Readers are property-keyed, so this order is an emit convention
