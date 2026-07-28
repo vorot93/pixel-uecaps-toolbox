@@ -6,31 +6,7 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 
-use crate::{
-    compiler::kdl_keys::{carrier, plmn as plmn_keys},
-    raw_nr::SubBlockKind,
-};
-
-// ---- component radio-kind codec (compiler `cc`) ----
-/// A component's radio kind → its KDL spelling. Every NR-carrier/EN-DC combo surface in the
-/// crate (compiler `nr.kdl`) emits it as the `nr`/`lte` node NAME; uniformly-LTE surfaces
-/// (compiler `lte.kdl`) use plain `subblock` with no kind tag. One source of truth.
-pub(crate) fn cckind_to_str(k: SubBlockKind) -> &'static str {
-    match k {
-        SubBlockKind::Nr => "nr",
-        SubBlockKind::Lte => "lte",
-    }
-}
-/// Parse a radio kind from its KDL spelling. `what` names the surface in the error message
-/// (e.g. `"NR/EN-DC component kind"` for the compiler's `nr.kdl`), so each caller
-/// keeps its own phrasing.
-pub(crate) fn str_to_cckind(s: &str, what: &str) -> Result<SubBlockKind> {
-    match s {
-        "nr" => Ok(SubBlockKind::Nr),
-        "lte" => Ok(SubBlockKind::Lte),
-        other => bail!("unknown {what} `{other}` (expected `nr` or `lte`)"),
-    }
-}
+use crate::compiler::kdl_keys::{carrier, plmn as plmn_keys};
 
 // ---- writer helpers ----
 /// Generic over the integer width so call sites pass their natural type (`i32`/`u32`/`u64`)
@@ -81,6 +57,9 @@ pub(crate) fn finish_doc(mut doc: KdlDocument) -> String {
 /// Reads one `KdlNode`, tracking which positional args, properties, and child-node
 /// names were consumed so `finish()` can reject anything unexpected (the strict
 /// `deny_unknown_fields` equivalent).
+/// A claimed child *shape*: a diagnostic label plus the predicate that recognises the name.
+type ChildPredicate = (&'static str, fn(&str) -> bool);
+
 pub(crate) struct NodeReader<'a> {
     node: &'a KdlNode,
     args_used: usize,
@@ -89,6 +68,9 @@ pub(crate) struct NodeReader<'a> {
     /// Keys read through [`repeated_int`](Self::repeated_int), which are legitimately
     /// multi-valued. Every other repeat is rejected by [`finish`](Self::finish).
     repeatable: BTreeSet<String>,
+    /// Predicates that claimed children, with a human label for diagnostics. The parallel of
+    /// `children_used` for child names that are computed rather than fixed.
+    child_predicates: Vec<ChildPredicate>,
 }
 
 impl<'a> NodeReader<'a> {
@@ -99,6 +81,7 @@ impl<'a> NodeReader<'a> {
             props_used: BTreeSet::new(),
             children_used: BTreeSet::new(),
             repeatable: BTreeSet::new(),
+            child_predicates: Vec::new(),
         }
     }
 
@@ -241,6 +224,27 @@ impl<'a> NodeReader<'a> {
         }
     }
 
+    /// All child nodes whose name satisfies `matches` (marks them consumed).
+    ///
+    /// The name-based [`children`](Self::children) cannot express a computed child name — a
+    /// sub-block is spelled `nr257`, one distinct node name per band. `label` names the shape
+    /// in diagnostics (e.g. `"nr<band>"`).
+    pub(crate) fn children_matching(
+        &mut self,
+        label: &'static str,
+        matches: fn(&str) -> bool,
+    ) -> Vec<&'a KdlNode> {
+        self.child_predicates.push((label, matches));
+        match self.node.children() {
+            None => Vec::new(),
+            Some(doc) => doc
+                .nodes()
+                .iter()
+                .filter(|n| matches(n.name().value()))
+                .collect(),
+        }
+    }
+
     /// Zero-or-one child node with this name.
     pub(crate) fn opt_child(&mut self, name: &'static str) -> Result<Option<&'a KdlNode>> {
         let mut kids = self.children(name);
@@ -295,7 +299,12 @@ impl<'a> NodeReader<'a> {
         if let Some(doc) = self.node.children() {
             for child in doc.nodes() {
                 let cn = child.name().value();
-                if !self.children_used.contains(cn) {
+                // Claimed either by an exact name (`children`) or by a shape
+                // (`children_matching`) — a computed child name has no fixed spelling to
+                // record, so the predicate itself is what marks it known.
+                let claimed = self.children_used.contains(cn)
+                    || self.child_predicates.iter().any(|(_, matches)| matches(cn));
+                if !claimed {
                     bail!(
                         "`{}` has unknown child node `{cn}`",
                         self.node.name().value()
@@ -426,15 +435,16 @@ mod reader_tests {
 
     #[test]
     fn autoformat_keeps_leading_positional_arg() {
-        // The nr.kdl and lte.kdl formats emit `band` as the sole leading positional arg
-        // (`nr 78 dl-bw-class=2 …`); the pinned kdl 6.7.1 autoformatter must keep it
-        // leading and stay idempotent, or a reformatted source would misparse.
-        let src = "nr 78 dl-bw-class=2 dl-feature=1\n";
+        // Several nr.kdl/lte.kdl nodes carry a sole leading positional arg — `carrier <name>`,
+        // `bitmask-fingerprint <n>`, `profile "<n>"`, `file "<n>"`. (Sub-blocks no longer do:
+        // their band is part of the node name.) The autoformatter must keep that arg leading
+        // and stay idempotent, or a reformatted source would misparse.
+        let src = "carrier ALPHA bitmask-id=1 tier=main\n";
         let mut doc: kdl::KdlDocument = src.parse().unwrap();
         doc.autoformat();
         let once = doc.to_string();
         assert!(
-            once.contains("nr 78"),
+            once.contains("carrier ALPHA"),
             "positional band stays leading: {once}"
         );
         let mut doc2: kdl::KdlDocument = once.parse().unwrap();

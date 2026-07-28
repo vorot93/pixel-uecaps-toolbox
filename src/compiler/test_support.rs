@@ -39,21 +39,21 @@ combo {
     selection {
         skus prime:8969
     }
-    nr 3 dl-bw-class=1 ul-bw-class=1
+    nr3 dl-bw-class=1 ul-bw-class=1
 }
 combo {
     selection {
         carriers BETA
         skus legacy G2YBB
     }
-    nr 41 dl-bw-class=1 ul-bw-class=1
+    nr41 dl-bw-class=1 ul-bw-class=1
 }
 combo {
     selection {
         carriers ALPHA
         skus legacy G2YBB
     }
-    nr 78 dl-bw-class=1 ul-bw-class=1
+    nr78 dl-bw-class=1 ul-bw-class=1
 }
 "#;
 
@@ -64,16 +64,16 @@ combo bcs=0 unknown1=0 unknown2=0 {
     selection {
         skus G2YBB GGX8B GR83Y
     }
-    subblock 1 dl-bw-class-mimo=32769 ul-bw-class-mimo=0
+    subblock1 dl-bw-class-mimo=32769 ul-bw-class-mimo=0
 }
 combo bcs=0 unknown1=0 unknown2=0 {
-    subblock 3 dl-bw-class-mimo=32771 ul-bw-class-mimo=0
+    subblock3 dl-bw-class-mimo=32771 ul-bw-class-mimo=0
 }
 combo bcs=0 unknown1=0 unknown2=0 {
     selection {
         skus lte:92
     }
-    subblock 5 dl-bw-class-mimo=32773 ul-bw-class-mimo=0
+    subblock5 dl-bw-class-mimo=32773 ul-bw-class-mimo=0
 }
 "#;
 

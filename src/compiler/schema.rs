@@ -258,7 +258,7 @@ impl ValidatedSources {
     pub(crate) fn to_kdl(&self) -> anyhow::Result<(String, String)> {
         Ok((
             super::nr_to_kdl(&self.nr.source)?,
-            super::lte_to_kdl(&self.lte.source),
+            super::lte_to_kdl(&self.lte.source)?,
         ))
     }
 }
@@ -1007,8 +1007,8 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
              dl-feature max-scs=1\n\
              dl-feature max-scs=3\n\
              ul-feature max-scs=9\n\
-             combo {{\n    nr 77 dl-bw-class=1 dl-feature=1\n}}\n\
-             combo {{\n    nr 78 dl-bw-class=1 dl-feature=3\n}}\n"
+             combo {{\n    nr77 dl-bw-class=1 dl-feature=1\n}}\n\
+             combo {{\n    nr78 dl-bw-class=1 dl-feature=3\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
@@ -1027,8 +1027,8 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
             "{MINIMAL_NR}\n\
              dl-feature\n\
              dl-feature max-scs=0\n\
-             combo {{\n    nr 77 dl-bw-class=1 dl-feature=2\n}}\n\
-             combo {{\n    nr 78 dl-bw-class=1 dl-feature=1\n}}\n"
+             combo {{\n    nr77 dl-bw-class=1 dl-feature=2\n}}\n\
+             combo {{\n    nr78 dl-bw-class=1 dl-feature=1\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
@@ -1042,10 +1042,10 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
     #[test]
     fn feature_references_reject_zero_out_of_range_and_old_inline_fields() {
         for (cc_line, expected) in [
-            ("nr 78 dl-feature=0", "dl_feature index must be 1-based"),
-            ("nr 78 dl-feature=2", "exceeds the dl catalog length 1"),
-            ("nr 78 ul-feature=0", "ul_feature index must be 1-based"),
-            ("nr 78 ul-feature=2", "exceeds the ul catalog length 1"),
+            ("nr78 dl-feature=0", "dl_feature index must be 1-based"),
+            ("nr78 dl-feature=2", "exceeds the dl catalog length 1"),
+            ("nr78 ul-feature=0", "ul_feature index must be 1-based"),
+            ("nr78 ul-feature=2", "exceeds the ul catalog length 1"),
         ] {
             let nr = format!(
                 "{MINIMAL_NR}\ndl-feature max-scs=3\nul-feature max-scs=4\ncombo {{\n    {cc_line}\n}}\n"
@@ -1054,7 +1054,7 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
             assert!(error.contains(expected), "{error}");
         }
 
-        let old = format!("{MINIMAL_NR}\ncombo {{\n    nr 78 dl-max-scs=3\n}}\n");
+        let old = format!("{MINIMAL_NR}\ncombo {{\n    nr78 dl-max-scs=3\n}}\n");
         assert!(nr_from_kdl(&old).is_err());
     }
 
@@ -1064,7 +1064,7 @@ carrier "B" profiled-id=0 mapping-id=8 signature=1 tier="main" {{
         for value in 1..=300 {
             nr.push_str(&format!("\ndl-feature max-bw={value}\n"));
             nr.push_str(&format!(
-                "\ncombo {{\n    nr {value} dl-bw-class=1 dl-feature={value}\n}}\n"
+                "\ncombo {{\n    nr{value} dl-bw-class=1 dl-feature={value}\n}}\n"
             ));
         }
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
@@ -1369,7 +1369,7 @@ carrier "MAPPING" mapping-id=7 {
 
     #[test]
     fn modern_nr_bitmasks_cannot_be_stored_in_source() {
-        let nr = format!("{MINIMAL_NR}\ncombo bitmask=1 {{\n    nr 78\n}}\n");
+        let nr = format!("{MINIMAL_NR}\ncombo bitmask=1 {{\n    nr78\n}}\n");
         assert!(parse_sources(&nr, MINIMAL_LTE).is_err());
     }
 
@@ -1403,11 +1403,11 @@ carrier "MAPPING" mapping-id=7 {
     #[test]
     fn selections_are_resolved_and_cached_during_validation() {
         let nr = format!(
-            "{}\ncombo {{\n    selection {{\n        carriers \"PROFILED\"\n        skus \"G2YBB\"\n    }}\n    nr 78\n}}\n",
+            "{}\ncombo {{\n    selection {{\n        carriers \"PROFILED\"\n        skus \"G2YBB\"\n    }}\n    nr78\n}}\n",
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\ncombo {{\n    selection {{\n        skus \"G2YBB\" \"lte:564260317\"\n    }}\n    subblock 1 dl-bw-class-mimo=32768\n}}\n",
+            "{}\ncombo {{\n    selection {{\n        skus \"G2YBB\" \"lte:564260317\"\n    }}\n    subblock1 dl-bw-class-mimo=32768\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1430,7 +1430,7 @@ carrier "MAPPING" mapping-id=7 {
 
     #[test]
     fn nr_payloads_require_valid_components_and_canonicalize_them() {
-        for (catalog, combo_body) in [("", ""), ("", "nr 0\n"), ("", "lte 1 srs-tx-switch=5\n")] {
+        for (catalog, combo_body) in [("", ""), ("", "nr0\n"), ("", "lte1 srs-tx-switch=5\n")] {
             let nr = format!("{MINIMAL_NR}\n{catalog}combo {{\n{combo_body}}}\n");
             assert!(
                 parse_sources(&nr, MINIMAL_LTE).is_err(),
@@ -1439,7 +1439,7 @@ carrier "MAPPING" mapping-id=7 {
         }
 
         let nr = format!(
-            "{MINIMAL_NR}\ndl-feature max-scs=3\ncombo {{\n    nr 78 dl-bw-class=1 dl-feature=1\n    lte 1\n}}\n"
+            "{MINIMAL_NR}\ndl-feature max-scs=3\ncombo {{\n    nr78 dl-bw-class=1 dl-feature=1\n    lte1\n}}\n"
         );
         let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
@@ -1453,7 +1453,7 @@ carrier "MAPPING" mapping-id=7 {
     #[test]
     fn duplicate_canonical_nr_payload_records_are_rejected() {
         let nr = format!(
-            "{MINIMAL_NR}\ndl-feature max-scs=3\ndl-feature max-scs=3\ncombo {{\n    nr 78 dl-bw-class=1 dl-feature=1\n    lte 1\n}}\ncombo {{\n    lte 1\n    nr 78 dl-bw-class=1 dl-feature=2\n}}\n"
+            "{MINIMAL_NR}\ndl-feature max-scs=3\ndl-feature max-scs=3\ncombo {{\n    nr78 dl-bw-class=1 dl-feature=1\n    lte1\n}}\ncombo {{\n    lte1\n    nr78 dl-bw-class=1 dl-feature=2\n}}\n"
         );
         assert_nr_error(&nr, "duplicate canonical NR payload");
     }
@@ -1464,7 +1464,7 @@ carrier "MAPPING" mapping-id=7 {
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
         let duplicate = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock 1 dl-bw-class-mimo=32768\n}}\ncombo {{\n    subblock 1 dl-bw-class-mimo=32768\n}}\n"
+            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-bw-class-mimo=32768\n}}\ncombo {{\n    subblock1 dl-bw-class-mimo=32768\n}}\n"
         );
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
@@ -1474,7 +1474,7 @@ carrier "MAPPING" mapping-id=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock 1 dl-bw-class-mimo=1\n    subblock 3 dl-bw-class-mimo=3\n}}\ncombo {{\n    subblock 3 dl-bw-class-mimo=3\n    subblock 1 dl-bw-class-mimo=1\n}}\n"
+            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-bw-class-mimo=1\n    subblock3 dl-bw-class-mimo=3\n}}\ncombo {{\n    subblock3 dl-bw-class-mimo=3\n    subblock1 dl-bw-class-mimo=1\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
@@ -1482,7 +1482,7 @@ carrier "MAPPING" mapping-id=7 {
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
         let optional_presence = format!(
-            "{MINIMAL_LTE}\ncombo {{\n    subblock 1 dl-bw-class-mimo=1\n}}\ncombo bcs=0 {{\n    subblock 1 dl-bw-class-mimo=1 ul-bw-class-mimo=0\n}}\n"
+            "{MINIMAL_LTE}\ncombo {{\n    subblock1 dl-bw-class-mimo=1\n}}\ncombo bcs=0 {{\n    subblock1 dl-bw-class-mimo=1 ul-bw-class-mimo=0\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
@@ -1528,11 +1528,11 @@ carrier "PROFILED" profiled-id=7 mapping-id=7 signature=1 tier="alt" {
     #[test]
     fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
         let nr_text = format!(
-            "{}\ndl-feature max-scs=3\ncombo {{\n    selection {{\n        carriers \"PROFILED\" \"PROFILED\"\n        skus \"G2YBB\" \"G2YBB\"\n    }}\n    nr 78 dl-bw-class=1 dl-feature=1\n    lte 1\n}}\ncombo {{\n    selection {{\n        carriers \"LEGACY\"\n    }}\n    lte 3\n}}\n",
+            "{}\ndl-feature max-scs=3\ncombo {{\n    selection {{\n        carriers \"PROFILED\" \"PROFILED\"\n        skus \"G2YBB\" \"G2YBB\"\n    }}\n    nr78 dl-bw-class=1 dl-feature=1\n    lte1\n}}\ncombo {{\n    selection {{\n        carriers \"LEGACY\"\n    }}\n    lte3\n}}\n",
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\ncombo {{\n    selection {{\n        skus \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    subblock 3 dl-bw-class-mimo=3\n    subblock 1 dl-bw-class-mimo=1\n}}\ncombo {{\n    selection {{\n        skus \"GR83Y\"\n    }}\n    subblock 7 dl-bw-class-mimo=7\n}}\n",
+            "{}\ncombo {{\n    selection {{\n        skus \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    subblock3 dl-bw-class-mimo=3\n    subblock1 dl-bw-class-mimo=1\n}}\ncombo {{\n    selection {{\n        skus \"GR83Y\"\n    }}\n    subblock7 dl-bw-class-mimo=7\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();
