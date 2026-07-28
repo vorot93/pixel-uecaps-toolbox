@@ -75,9 +75,17 @@ impl NrDomain {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        // Strict `<`, not `<=`. At exactly `MAX + 1` (65536) the bound is satisfied but the
+        // cast below wraps: `(0..65536usize as u16)` is `(0..0)`, so `carriers` and `skus`
+        // silently become EMPTY. Every wildcard-axis rectangle then resolves to the empty set
+        // and fails with the misleading "selection rectangle N has an empty intersection with
+        // the NR domain", while `canonical_selection`'s `(carriers != domain.carriers)` test can
+        // never omit a carrier list again — emitting a non-canonical fully-explicit form, which
+        // is this crate's worst failure mode. An `assert!` rather than `ensure!` because
+        // `NrDomain::new` returns `Self`; reachability is remote (the corpus has 91 carriers).
         assert!(
-            carrier_names.len() <= CarrierId::MAX as usize + 1
-                && sku_values.len() <= SkuId::MAX as usize + 1,
+            carrier_names.len() < CarrierId::MAX as usize + 1
+                && sku_values.len() < SkuId::MAX as usize + 1,
             "NR domain exceeds the carrier/sku interner id space"
         );
         let member_ids: BTreeSet<(CarrierId, SkuId)> = members

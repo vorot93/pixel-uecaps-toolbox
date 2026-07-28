@@ -243,7 +243,7 @@ mod tests {
         model::{known_model_codes, phone_model},
         outcome::Outcome,
         proto::PlmnMap,
-        report::combos::build_combos_with_bitmasks,
+        report::combos::build_combos,
         wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
     };
     use zip::{CompressionMethod, DateTime, ZipArchive};
@@ -635,9 +635,9 @@ mod tests {
         for file in &files {
             let caps = decode_uecaps(&file.bytes, &file.basename).unwrap();
             assert!(
-                build_combos_with_bitmasks(&caps)
+                build_combos(&caps)
                     .iter()
-                    .all(|(_, bitmask)| *bitmask == Some(65_535))
+                    .all(|combo| combo.bit_mask == Some(65_535))
             );
         }
         let empty = files
@@ -696,9 +696,9 @@ mod tests {
         assert_eq!(alpha.id, Some(7));
         assert_eq!(alpha.unknown, 71);
         assert_eq!(
-            build_combos_with_bitmasks(&alpha)
+            build_combos(&alpha)
                 .iter()
-                .map(|(_, bitmask)| *bitmask)
+                .map(|combo| combo.bit_mask)
                 .collect::<Vec<_>>(),
             [Some(0)]
         );

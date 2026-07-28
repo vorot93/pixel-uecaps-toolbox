@@ -19,7 +19,7 @@ use crate::{
     model::{PROFILES, Profile, fp_info, matching_anchors, profile_model_codes},
     proto::{Combo, ComboGroup, ComboHeader, SubBlock as ProtoSubBlock, UeCaps},
     raw_nr::{Direction, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
-    report::combos::{NR_BAND_OFFSET, build_combos_with_bitmasks, feature_index},
+    report::combos::{NR_BAND_OFFSET, feature_index},
 };
 
 /// An unnumbered `<CARRIER>.binarypb` from the bitmask folder. Legacy files have no filename
@@ -362,11 +362,18 @@ fn verify_generated_file(
             && decoded.unknown == expected_caps.unknown,
         "generated NR identity self-check failed for {basename}"
     );
-    let wire_combos = build_combos_with_bitmasks(&decoded);
+    // Read the bitmask straight off the decoded message. This used to call
+    // `build_combos_with_bitmasks` and use only the tuple's second element, allocating and
+    // discarding the entire report display tree — a `Vec<SubBlock>` per combo plus a band
+    // `CompactString`, two `resolve_all` vectors and a `render_component` `String` per
+    // component, then a joined `bands` string — on the order of 7-8M throwaway allocations per
+    // `decompose`, to check one integer per combo.
     ensure!(
-        wire_combos
+        decoded
+            .combo_groups
             .iter()
-            .all(|(_, bitmask)| *bitmask == Some(expected_bitmask)),
+            .flat_map(|group| &group.combo)
+            .all(|combo| combo.bitmask == Some(expected_bitmask)),
         "generated NR bitmask self-check failed for {basename}"
     );
     ensure!(

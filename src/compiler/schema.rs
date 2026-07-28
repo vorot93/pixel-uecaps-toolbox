@@ -168,14 +168,26 @@ impl NrSelectionIndex {
 
 #[cfg(test)]
 impl ValidatedNr {
-    /// Test-only combo surgery: replace `combo` and rebuild every field derived from it
-    /// (`features` and `selection_index`) so they stay consistent. Production sets all three once
-    /// in [`validate_documents`]; because `selection_index` points at `combo` positions, any
-    /// post-construction combo replacement must go through here or those indices dangle.
+    /// Test-only combo surgery: replace `combo` and rebuild every field derived from it, so
+    /// they stay consistent. Production sets them once in [`validate_documents`]; because
+    /// `selection_index` points at `combo` positions, any post-construction combo replacement
+    /// must go through here or those indices dangle.
+    ///
+    /// "Every field derived from it" is five, not two. Besides `features` and
+    /// `selection_index`, `canonicalize_sources` also derives `source.combo`,
+    /// `source.dl_features` and `source.ul_features` — and `to_kdl` serializes `source`, while
+    /// generation reads `features`. Rebuilding only the first two left a test that performed
+    /// combo surgery and then serialized emitting the *pre-surgery* document, with the emitted
+    /// catalog disagreeing with the catalog generation actually used, on the byte-identity
+    /// critical path.
     pub(crate) fn set_combos(&mut self, combo: Vec<ValidatedNrCombo>) {
         self.features = FeatureCatalogs::from_payloads(combo.iter().map(|combo| &combo.payload));
         self.selection_index = NrSelectionIndex::build(&combo);
         self.combo = combo;
+        self.source.dl_features = self.features.dl.clone();
+        self.source.ul_features = self.features.ul.clone();
+        self.source.combo = nr_source_combos(&self.combo, &self.domain, &self.features)
+            .expect("combo surgery must produce serializable source combos");
     }
 }
 

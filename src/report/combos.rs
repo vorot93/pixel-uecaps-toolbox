@@ -19,9 +19,15 @@ fn none_mark() -> String {
 }
 
 /// CA bandwidth-class index -> letter (1=A, 2=B, ...); empty for 0/absent.
+///
+/// The range covers the whole letter alphabet, not `1..=6`. Shannon's NR classes are
+/// non-contiguous — `raw_nr::NR_CC_COUNTS` verifies 1, 2, 3 and 7..=13 across the corpus — so
+/// stopping at F rendered 7 of the 10 real NR classes as the unknown-value form `(7)`..`(13)`,
+/// i.e. reported a known class as unrecognised. The `({n})` fallback stays for anything a
+/// letter genuinely cannot name.
 pub(crate) fn bw_letter(c: Option<i32>) -> String {
     match c {
-        Some(n) if (1..=6).contains(&n) => ((b'A' + (n as u8 - 1)) as char).to_string(),
+        Some(n) if (1..=26).contains(&n) => ((b'A' + (n as u8 - 1)) as char).to_string(),
         Some(0) | None => String::new(),
         Some(n) => format!("({n})"),
     }
@@ -41,7 +47,7 @@ fn cc_class(dl: Option<i32>, ul: Option<i32>) -> String {
 }
 
 /// NR bands are stored offset by this base; `band >= NR_BAND_OFFSET` marks an NR band.
-pub(crate) const NR_BAND_OFFSET: i32 = 10_000;
+pub const NR_BAND_OFFSET: i32 = 10_000;
 
 /// Canonical band label for a combo component, inferring the kind from the raw protobuf band:
 /// `n<num>` (NR, `band >= NR_BAND_OFFSET`) or `B<num>` (E-UTRA). The kind-known counterpart —
@@ -226,12 +232,14 @@ fn build_sub_block(raw: &ProtoSubBlock, caps: &UeCaps) -> SubBlock {
     }
 }
 
-/// Build combo views together with their exact optional wire bitmask presence. Most
-/// report callers intentionally use [`build_combos`], whose historical scalar view maps
-/// absence to zero — folder ingestion needs the optional form to distinguish the modern
-/// input contract at its boundary. Per-component resolution is delegated to
+/// Build the combo views the reports render. Per-component resolution is delegated to
 /// [`build_sub_block`].
-pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u32>)> {
+///
+/// This used to be `build_combos_with_bitmasks`, returning `(Combo, Option<u32>)` so a caller
+/// could see the exact wire presence of field 2 that the DTO's `bit_mask` flattened away with
+/// `unwrap_or(0)`. `Combo::bit_mask` now carries `Option<u32>` verbatim, so the side channel
+/// was duplicating a field of its own return value and is gone.
+pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
     let mut combo = Vec::new();
     for (gi, cg) in caps.combo_groups.iter().enumerate() {
         let h = cg.combo_header.as_ref();
@@ -247,32 +255,21 @@ pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u3
                 .map(|x| render_component(x.band, x.dl_bw_class, x.ul_bw_class))
                 .collect::<Vec<_>>()
                 .join(" + ");
-            combo.push((
-                Combo {
-                    group: gi + 1,
-                    index: ci + 1,
-                    bands,
-                    power_class: h.and_then(|x| x.power_class),
-                    bcs_nr: h.and_then(|x| x.bcs_nr),
-                    bcs_intra_endc: h.and_then(|x| x.bcs_intra_endc),
-                    bcs_eutra: h.and_then(|x| x.bcs_eutra),
-                    intra_band_en_dc_support: h.and_then(|x| x.intra_band_en_dc_support),
-                    bit_mask: c.bitmask,
-                    sub_blocks,
-                },
-                c.bitmask,
-            ));
+            combo.push(Combo {
+                group: gi + 1,
+                index: ci + 1,
+                bands,
+                power_class: h.and_then(|x| x.power_class),
+                bcs_nr: h.and_then(|x| x.bcs_nr),
+                bcs_intra_endc: h.and_then(|x| x.bcs_intra_endc),
+                bcs_eutra: h.and_then(|x| x.bcs_eutra),
+                intra_band_en_dc_support: h.and_then(|x| x.intra_band_en_dc_support),
+                bit_mask: c.bitmask,
+                sub_blocks,
+            });
         }
     }
     combo
-}
-
-/// Build the historical scalar combo view used by reports.
-pub(crate) fn build_combos(caps: &UeCaps) -> Vec<Combo> {
-    build_combos_with_bitmasks(caps)
-        .into_iter()
-        .map(|(combo, _)| combo)
-        .collect()
 }
 
 /// CC0's DL feature record, if it has anything to show. Text reports render one line per
@@ -520,7 +517,17 @@ mod tests {
         assert_eq!(bw_letter(Some(6)), "F");
         assert_eq!(bw_letter(None), "");
         assert_eq!(bw_letter(Some(0)), "");
-        assert_eq!(bw_letter(Some(9)), "(9)");
+
+        // Every corpus-verified NR class gets a letter. Shannon's classes are non-contiguous
+        // (`raw_nr::NR_CC_COUNTS` = 1, 2, 3, 7..=13), and stopping the alphabet at F rendered
+        // seven of the ten as the unknown-value form — reporting a known class as unrecognised,
+        // in a string that also feeds `combo_key`.
+        assert_eq!(bw_letter(Some(7)), "G");
+        assert_eq!(bw_letter(Some(9)), "I");
+        assert_eq!(bw_letter(Some(13)), "M");
+
+        // Past the alphabet the defensive form still applies.
+        assert_eq!(bw_letter(Some(27)), "(27)");
     }
 
     #[test]

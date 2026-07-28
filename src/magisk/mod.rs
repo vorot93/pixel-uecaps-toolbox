@@ -1,6 +1,6 @@
 //! `magisk` — package UE-capability files into a flashable Magisk module (.zip).
 
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use std::io::{Cursor, Write};
 use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 
@@ -30,9 +30,19 @@ fn opts(mode: u32) -> SimpleFileOptions {
 }
 
 /// Assemble a complete deterministic uecapconfig replacement module in memory. Always writes
-/// the `.replace` marker: this crate builds nothing but complete replacements.
+/// the `.replace` marker: this crate builds nothing but complete replacements — which is also
+/// why an empty input set is refused rather than packaged.
 pub(crate) fn replacement_module(inputs: &[ModuleEntry], name: &str) -> anyhow::Result<Vec<u8>> {
     validate_module_name(name)?;
+    // An empty input set plus the `.replace` marker is a module that does nothing but *delete*
+    // the device's `uecapconfig` directory — the marker tells Magisk to replace the whole
+    // directory, and there would be nothing to replace it with. That is never what a caller
+    // wants and is destructive on-device, so refuse rather than emit it.
+    ensure!(
+        !inputs.is_empty(),
+        "refusing to build a replacement module with no files: the `.replace` marker would \
+         wipe the device's uecapconfig directory and put nothing back"
+    );
     let inputs = sorted_inputs(inputs)?;
     let basenames: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
 
@@ -169,6 +179,16 @@ mod tests {
             out.insert(name, buf);
         }
         out
+    }
+
+    /// The `.replace` marker makes Magisk replace the whole `uecapconfig` directory, so a
+    /// module carrying the marker and no files is a module that only deletes the device's
+    /// capability configuration. Refuse it instead of shipping it.
+    #[test]
+    fn refuses_to_build_a_module_with_no_files() {
+        let error = replacement_module(&[], "Empty").unwrap_err().to_string();
+        assert!(error.contains("no files"), "{error}");
+        assert!(error.contains("wipe"), "{error}");
     }
 
     #[test]

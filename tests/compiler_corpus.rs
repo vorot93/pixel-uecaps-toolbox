@@ -6,6 +6,7 @@ use std::{
 };
 
 use pixel_uecaps_toolbox::{
+    NR_BAND_OFFSET,
     compiler::{decompose, load_sources, provision_from_sources},
     model::PHONE_MODELS,
     proto::{LteCaps, LteCombo, UeCaps},
@@ -16,10 +17,6 @@ use zip::ZipArchive;
 
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
-
-/// Mirrors `report::combos::NR_BAND_OFFSET`, which is `pub(crate)` and so unreachable from
-/// this integration-test crate.
-const NR_BAND_OFFSET: i32 = 10_000;
 
 fn read_lte_sequences(dir: &Path) -> BTreeMap<u64, Vec<Vec<u8>>> {
     let mut sequences = BTreeMap::new();

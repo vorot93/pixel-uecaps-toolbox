@@ -490,8 +490,10 @@ mod tests {
         // path rejects both, so check now surfaces them as anomalies (exit 1), not exit 0.
         use crate::proto::{Carrier, PlmnMap};
         use prost::Message;
-        let dir = std::env::temp_dir().join(format!("uecaps-check-legend-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // `tempfile` rather than a hand-rolled PID-named directory: the old form leaked on
+        // panic and made the test depend on PID history, since a recycled PID reused the path.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
         let entry = |index, name: &str| Carrier {
             plmns: vec![],
             index,
@@ -505,8 +507,8 @@ mod tests {
             ],
         };
         std::fs::write(dir.join("ap_plmn_mapping.binarypb"), map.encode_to_vec()).unwrap();
-        let code = check_folder(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).ok();
+        // `temp` cleans up on drop, including on panic — no manual removal needed.
+        let code = check_folder(dir).unwrap();
         assert_eq!(
             code,
             Outcome::Findings,
@@ -527,9 +529,8 @@ mod tests {
         // reading `check_folder`'s explicit `tier_votes.len() > 1` branch above.
         use crate::proto::{Combo, ComboGroup, UeCaps};
         use prost::Message;
-        let dir =
-            std::env::temp_dir().join(format!("uecaps-check-mixedtier-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
 
         // Pick two distinct anchor primes whose primality guarantees `matching_anchors`
         // returns exactly one profile for each filename number.
@@ -562,8 +563,7 @@ mod tests {
         )
         .unwrap();
 
-        let code = check_folder(&dir).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+        let code = check_folder(dir).unwrap();
         assert_eq!(
             code,
             Outcome::Findings,

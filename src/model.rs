@@ -1046,6 +1046,22 @@ mod tests {
         }
     }
 
+    /// `Profile.anchor` duplicates `core.last()` in all 16 rows. Nothing tied them together, so
+    /// a typo in either column would make profile *matching* (which uses `anchor`) and profile
+    /// *display* (which shows `core`) describe different SKUs, silently.
+    #[test]
+    fn every_profiles_anchor_is_its_last_core_prime() {
+        for profile in PROFILES {
+            assert_eq!(
+                Some(profile.anchor),
+                profile.core.last().copied(),
+                "profile with core {:?} has anchor {} but its last core prime differs",
+                profile.core,
+                profile.anchor
+            );
+        }
+    }
+
     #[test]
     fn decodes_plmns() {
         // Pin every documented PLMN packed-BCD vector from DESIGN.md directly at the

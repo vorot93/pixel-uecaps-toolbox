@@ -385,6 +385,16 @@ pub(super) fn validate_profiled_carrier_basename(basename: &str) -> anyhow::Resu
 }
 
 fn parse_filename_number(decimal: &str, basename: &str, field: &str) -> anyhow::Result<u64> {
+    // Two arms, because "does not fit u64" is only true of one of them. The single arm this
+    // replaces fired for *any* unparseable text, so `lte_bad.binarypb` reported the ID `bad`
+    // as not fitting u64 and `CARRIER_.binarypb` said the same of the empty string. That
+    // wording is the stated reason CONTRIBUTING gives for keeping this two-step form over an
+    // `Option` primitive — "a distinct, tested `does not fit u64` vs `must be shortest decimal`
+    // message" — so it has to actually be distinct.
+    ensure!(
+        !decimal.is_empty() && decimal.bytes().all(|b| b.is_ascii_digit()),
+        "profiled filename `{basename}` {field} `{decimal}` is not a decimal number"
+    );
     let value = decimal.parse::<u64>().with_context(|| {
         format!("profiled filename `{basename}` {field} `{decimal}` does not fit u64")
     })?;

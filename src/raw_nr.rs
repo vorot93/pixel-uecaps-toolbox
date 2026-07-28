@@ -1063,6 +1063,41 @@ mod tests {
         assert!(error.contains("B3"), "{error}");
     }
 
+    /// The five `narrow_field`/`narrow_opt_field` call sites are fail-closed paths with no
+    /// coverage of their own — the only test exercising the narrowed widths is corpus-gated, so
+    /// CI never runs it. Each rejects a value one past the width's maximum, naming the field.
+    #[test]
+    fn narrowing_rejects_a_value_past_each_fields_width() {
+        // band is u16 in the raw model; the proto carries i32.
+        let error = format!(
+            "{:#}",
+            super::narrow_field::<u16>(i32::from(u16::MAX) + 1, "band").unwrap_err()
+        );
+        assert!(error.contains("band"), "{error}");
+        assert!(error.contains("65536"), "{error}");
+
+        // bw_class is u8.
+        let error = format!(
+            "{:#}",
+            super::narrow_field::<u8>(256, "dl_bw_class").unwrap_err()
+        );
+        assert!(error.contains("dl_bw_class"), "{error}");
+
+        // A negative proto value cannot narrow to an unsigned raw field either.
+        assert!(super::narrow_field::<u16>(-1, "band").is_err());
+
+        // The Option form passes absence through and narrows presence.
+        assert_eq!(
+            super::narrow_opt_field::<u8>(Some(13), "dl_bw_class").unwrap(),
+            Some(13)
+        );
+        assert_eq!(
+            super::narrow_opt_field::<u8>(None, "dl_bw_class").unwrap(),
+            None
+        );
+        assert!(super::narrow_opt_field::<u8>(Some(256), "ul_bw_class").is_err());
+    }
+
     /// Returns the NR *variant struct*, not the enum, so tests can keep using functional
     /// update (`RawNrSubBlock { dl: …, ..nr_cc(78) }`) and `.into()` at the use site.
     fn nr_cc(band: u16) -> RawNrSubBlock {

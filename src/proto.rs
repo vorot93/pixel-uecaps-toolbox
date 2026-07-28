@@ -141,7 +141,8 @@ pub struct ShannonFeatureSetUlPerCcNr {
 /// byte-identity checks would fail if one did, so this is verified, not assumed. A
 /// foreign/future file that DID carry an explicit zero (e.g. dl_bw_class_mimo = 0
 /// "DL disabled") would need `optional` here to round-trip bit-for-bit — do NOT add it on
-/// spec alone; confirm against a real file and update the corpus test together (backlog R15).
+/// spec alone; confirm against a real file and update the corpus test together, since the
+/// opt-in corpus byte-identity checks are what would catch the regression.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LteCaps {
     /// = version
