@@ -403,6 +403,13 @@ fn nr_caps(
                     // corpus never contains, and one regeneration would have silently added.
                     dl_feature_per_cc_ids: Some(vec![0]),
                     ul_feature_per_cc_ids: Some(vec![0]),
+                    // Fields 4/5 are likewise never absent in a real file, and NR generation
+                    // always emits them (the index is derived from the resolved feature sets).
+                    // The all-zero placeholder resolves to no feature set, so the derived index
+                    // is 0 — omitting these made regeneration add two bytes the fixture lacked,
+                    // which is precisely what the new byte-identity check catches.
+                    dl_feature_index: Some(0),
+                    ul_feature_index: Some(0),
                     ..Default::default()
                 }],
                 bitmask,

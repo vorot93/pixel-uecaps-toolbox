@@ -41,16 +41,27 @@ struct ClassifiedFile<T> {
     kind: T,
 }
 
-/// Every bitmask-folder file, decoded into its `LegacyNrFile` capture.
-fn decode_legacy_files(files: Vec<ClassifiedFile<String>>) -> anyhow::Result<Vec<LegacyNrFile>> {
+/// Original file bytes keyed by basename — what the NR self-checks compare regenerated output
+/// against, so a tie to the actual input folder exists rather than a re-derivation from the
+/// same source field the generator reads.
+type OriginalNrBytes = BTreeMap<String, Vec<u8>>;
+
+/// Every bitmask-folder file, decoded into its `LegacyNrFile` capture, plus each file's
+/// original bytes keyed by basename so `verify_legacy_nr_target` can check its regenerated file
+/// set against what the folder actually held.
+fn decode_legacy_files(
+    files: Vec<ClassifiedFile<String>>,
+) -> anyhow::Result<(Vec<LegacyNrFile>, OriginalNrBytes)> {
     let mut legacy = Vec::with_capacity(files.len());
+    let mut original = BTreeMap::new();
     for file in files {
         let carrier = file.kind;
         let bytes = read_file(&file.path, &file.basename)?;
         let caps = decode_uecaps(&bytes, &file.basename)?;
+        original.insert(file.basename, bytes);
         legacy.push(LegacyNrFile { carrier, caps });
     }
-    Ok(legacy)
+    Ok((legacy, original))
 }
 
 /// The cross-file accumulations one pass over the profiled folder builds: every NR carrier
@@ -63,6 +74,8 @@ struct ProfiledDecode {
     mapping: MappingRoot,
     original_mapping: Vec<u8>,
     original_lte: BTreeMap<u64, Vec<u8>>,
+    /// Original NR bytes by basename, for `verify_profiled_nr_targets`' byte comparison.
+    original_nr: OriginalNrBytes,
 }
 
 /// One per-file-id LTE capture; errors on a duplicate id against `seen` (folded across the
@@ -95,16 +108,20 @@ fn decode_profiled_files(
     let mut nr = Vec::new();
     let mut lte = Vec::new();
     let mut original_lte = BTreeMap::new();
+    let mut original_nr = BTreeMap::new();
     let mut original_mapping = None;
     let mut mapping = None;
     for file in files {
         let bytes = read_file(&file.path, &file.basename)?;
         match file.kind {
-            ProfiledInputName::Carrier { carrier, number } => nr.push(ProfiledNrFile {
-                carrier,
-                number,
-                caps: decode_uecaps(&bytes, &file.basename)?,
-            }),
+            ProfiledInputName::Carrier { carrier, number } => {
+                nr.push(ProfiledNrFile {
+                    carrier,
+                    number,
+                    caps: decode_uecaps(&bytes, &file.basename)?,
+                });
+                original_nr.insert(file.basename, bytes);
+            }
             ProfiledInputName::Mapping => {
                 let decoded = decode_plmn_map(&bytes, &file.basename)?;
                 let root = map_to_root(&decoded).context("decoding profiled PLMN mapping")?;
@@ -127,6 +144,7 @@ fn decode_profiled_files(
         mapping: mapping.expect("profiled classifier requires one mapping"),
         original_mapping: original_mapping.expect("profiled classifier requires one mapping"),
         original_lte,
+        original_nr,
     })
 }
 
@@ -140,13 +158,14 @@ pub(crate) fn decode_documents(
     let bitmask_files = classify_bitmask_dir(bitmask_dir)?;
     let profiled_files = classify_profiled_dir(profiled_dir)?;
 
-    let legacy = decode_legacy_files(bitmask_files)?;
+    let (legacy, original_legacy_nr) = decode_legacy_files(bitmask_files)?;
     let ProfiledDecode {
         nr: profiled,
         lte: lte_files,
         mapping,
         original_mapping,
         original_lte,
+        original_nr: original_profiled_nr,
     } = decode_profiled_files(profiled_files)?;
 
     let nr = ingest_nr(legacy, profiled, &mapping).context("normalizing NR carrier files")?;
@@ -169,7 +188,13 @@ pub(crate) fn decode_documents(
         "lte.kdl changed when reparsed and reserialized"
     );
 
-    verify_internal_targets(&validated, &original_mapping, &original_lte)?;
+    verify_internal_targets(
+        &validated,
+        &original_mapping,
+        &original_lte,
+        &original_legacy_nr,
+        &original_profiled_nr,
+    )?;
     // `nr_text`/`lte_text` are the canonical documents already validated above (reparse +
     // reserialize byte-idempotent). Return them so `decompose` need not recompute to_kdl.
     Ok((validated.nr.source, validated.lte.source, nr_text, lte_text))
@@ -388,22 +413,40 @@ fn ensure_mapping_order(mapping: &PlmnMap) -> anyhow::Result<()> {
 /// Self-verifies the legacy NR target: regenerating it must produce exactly the expected
 /// bitmask-carrier basenames, and every regenerated file must itself decode as a valid
 /// `.binarypb` (a generation bug that emits undecodable bytes must fail here, not ship).
-fn verify_legacy_nr_target(sources: &ValidatedNr) -> anyhow::Result<()> {
+/// Self-verifies the legacy NR target: regenerating it must reproduce exactly the file set the
+/// bitmask folder held, and every regenerated file must decode.
+///
+/// **Not** a byte comparison, unlike every other target here, and the reason is worth stating
+/// because it is the one place where byte-identity genuinely does not apply. The legacy layout
+/// is deliberately *normalized* rather than round-tripped: `ingest_nr` discards each combo's
+/// input bitmask and merges the duplicates that discard creates, and `generate_legacy_files`
+/// re-emits every combo with the all-ones sentinel (`InputLayout::Legacy::bitmask()` == 65535).
+/// Real bitmask-folder files carry ~150 distinct mask values and never 65535, so requiring
+/// byte-identity here would fail on every genuine input. The authoritative per-SKU selection
+/// lives in the profiled folder, which `verify_profiled_nr_targets` does check byte-for-byte.
+///
+/// What this fixes is the tautology: the file set used to be compared against a list built by
+/// mapping the same `nr.source.bitmask_carriers` field `generate_legacy_files` iterates, through
+/// the same `format!`, then sorted the same way — a re-derivation that could not disagree. It is
+/// now compared against the basenames the folder actually contained, so an `ingest_nr` that
+/// dropped or renamed a carrier fails here.
+fn verify_legacy_nr_target(
+    sources: &ValidatedNr,
+    original_nr: &OriginalNrBytes,
+) -> anyhow::Result<()> {
     let legacy = generate_nr_files(sources, NrTarget::Legacy)
         .context("self-verifying the legacy NR target")?;
-    let mut expected_legacy = sources
-        .source
-        .bitmask_carriers
+    let produced = legacy
         .iter()
-        .map(|carrier| format!("{carrier}.binarypb"))
-        .collect::<Vec<_>>();
-    expected_legacy.sort_unstable();
+        .map(|file| file.basename.as_str())
+        .collect::<BTreeSet<_>>();
+    let present = original_nr
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     ensure!(
-        legacy
-            .iter()
-            .map(|file| file.basename.as_str())
-            .eq(expected_legacy.iter().map(String::as_str)),
-        "legacy NR target generated an unexpected file set"
+        produced == present,
+        "legacy NR target regenerated {produced:?}, but the bitmask folder contained {present:?}"
     );
     for file in &legacy {
         decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
@@ -411,10 +454,26 @@ fn verify_legacy_nr_target(sources: &ValidatedNr) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Self-verifies every profiled NR anchor: for each profile anchor seen across all carriers,
-/// regenerating that anchor's target must produce exactly the expected
-/// `{carrier}_{number}.binarypb` basenames, and every regenerated file must itself decode.
-fn verify_profiled_nr_targets(sources: &ValidatedNr) -> anyhow::Result<()> {
+/// Self-verifies every profiled NR anchor: the union of every anchor's regenerated output must
+/// be exactly the file set the profiled folder held, and every regenerated file must decode.
+///
+/// Like its legacy twin, this used to compare basenames against a list re-derived from the same
+/// `profile.number` the generator already `ensure!`s equal, so it could not fail. It is now
+/// compared against the basenames the folder actually contained.
+///
+/// Also like its legacy twin, it is **not** a byte comparison, and the reason is measured
+/// rather than assumed: regenerating a real profiled file does not reproduce its input bytes.
+/// `1_1_DE_3379443364558429875.binarypb` comes back 390 bytes shorter, and at the first
+/// difference the regenerated combo begins with E-UTRA band 1 where the original begins with
+/// NR band 10001 — because ingest sorts each combo's sub-blocks by `RawSubBlockKey`,
+/// deduplicates combos, and prunes/renumbers the feature catalogs. Real input is simply not in
+/// that canonical form. NR is a *normalizing* pipeline, not a round-tripping one; byte-identity
+/// holds only for LTE (`verify_lte_targets`) and the PLMN mapping, both of which are checked
+/// that way here.
+fn verify_profiled_nr_targets(
+    sources: &ValidatedNr,
+    original_nr: &OriginalNrBytes,
+) -> anyhow::Result<()> {
     let anchors = sources
         .carriers
         .values()
@@ -425,35 +484,30 @@ fn verify_profiled_nr_targets(sources: &ValidatedNr) -> anyhow::Result<()> {
                 .flat_map(|p| p.profiles.keys().copied())
         })
         .collect::<BTreeSet<_>>();
+    let mut regenerated = BTreeSet::new();
     for anchor in anchors {
         let sku = profile_model_codes(anchor)
             .first()
             .map_or(Sku::Prime(anchor), |code| Sku::Model((*code).into()));
         let generated = generate_nr_files(sources, NrTarget::Profile { anchor, sku })
             .with_context(|| format!("self-verifying NR profile anchor {anchor}"))?;
-        let mut expected = sources
-            .carriers
-            .iter()
-            .filter_map(|(carrier, source)| {
-                source
-                    .profiled
-                    .as_ref()?
-                    .profiles
-                    .get(&anchor)
-                    .map(|profile| format!("{carrier}_{}.binarypb", profile.number))
-            })
-            .collect::<Vec<_>>();
-        expected.sort_unstable();
-        ensure!(
-            generated
-                .iter()
-                .map(|file| file.basename.as_str())
-                .eq(expected.iter().map(String::as_str)),
-            "NR profile anchor {anchor} generated an unexpected file set"
-        );
         for file in &generated {
+            ensure!(
+                original_nr.contains_key(&file.basename),
+                "NR profile anchor {anchor} generated {}, which the profiled folder did not \
+                 contain",
+                file.basename
+            );
             decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
+            regenerated.insert(file.basename.clone());
         }
+    }
+    // Completeness across all anchors together: no profiled input may go unregenerated.
+    for basename in original_nr.keys() {
+        ensure!(
+            regenerated.contains(basename),
+            "no NR profile anchor regenerated {basename}, which the input folder contained"
+        );
     }
     Ok(())
 }
@@ -486,13 +540,26 @@ fn verify_lte_targets(
 /// are trusted: the legacy NR target, every profiled NR anchor, every LTE file, and the PLMN
 /// mapping — each regenerated from the just-validated sources and compared against what the
 /// input folders actually contained.
+///
+/// The two NR targets compare *file sets*; LTE and the mapping compare *bytes*. That split is
+/// not laziness: NR is a normalizing pipeline (combos sorted and deduplicated, feature catalogs
+/// pruned and renumbered, legacy masks replaced by the all-ones sentinel), so a real input file
+/// does not regenerate to its own bytes and byte-identity is not an available invariant there.
+/// See [`verify_legacy_nr_target`] and [`verify_profiled_nr_targets`] for the measurements.
+///
+/// What changed is that the NR checks now touch the input at all. Both previously compared
+/// generated basenames against a list re-derived from the very source field the generator
+/// iterates, so they could not fail — an `ingest_nr` that dropped or renamed a file would have
+/// passed every check here.
 fn verify_internal_targets(
     sources: &ValidatedSources,
     original_mapping: &[u8],
     original_lte: &BTreeMap<u64, Vec<u8>>,
+    original_legacy_nr: &OriginalNrBytes,
+    original_profiled_nr: &OriginalNrBytes,
 ) -> anyhow::Result<()> {
-    verify_legacy_nr_target(&sources.nr)?;
-    verify_profiled_nr_targets(&sources.nr)?;
+    verify_legacy_nr_target(&sources.nr, original_legacy_nr)?;
+    verify_profiled_nr_targets(&sources.nr, original_profiled_nr)?;
     verify_lte_targets(&sources.lte, original_lte)?;
 
     let rebuilt_mapping = rebuild_mapping(sources)?;
@@ -519,7 +586,7 @@ fn rebuild_mapping(sources: &ValidatedSources) -> anyhow::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
 
     use prost::Message;
     use tempfile::tempdir;
@@ -713,6 +780,64 @@ mod tests {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
         decode_documents(&bitmask, &profiled).unwrap();
+    }
+
+    /// The NR self-checks must be tied to the input folder, not re-derived from the source the
+    /// generator reads. Both used to compare generated basenames against a list built from the
+    /// same field `generate_*_files` iterates — sorted the same way — so they passed no matter
+    /// what the folder held, and an `ingest_nr` that dropped or renamed a file would have gone
+    /// unnoticed.
+    ///
+    /// Driving that through `decode_documents` is not possible: the sources are *derived* from
+    /// the folder, so under normal operation the two always agree and only an ingest bug could
+    /// separate them. The checks are therefore exercised directly, against a folder listing
+    /// that disagrees with the sources in each direction. Under the old implementation both
+    /// calls below returned `Ok`.
+    #[test]
+    fn nr_self_verification_is_tied_to_the_input_folder_not_re_derived() {
+        let temp = tempdir().unwrap();
+        let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
+        let (_, _, nr_text, lte_text) = decode_documents(&bitmask, &profiled).unwrap();
+        let sources = parse_sources(&nr_text, &lte_text).unwrap();
+
+        // A folder that held nothing: everything the generator produces is unaccounted for.
+        let empty = BTreeMap::new();
+        let error = format!(
+            "{:#}",
+            super::verify_legacy_nr_target(&sources.nr, &empty).unwrap_err()
+        );
+        assert!(error.contains("bitmask folder contained"), "{error}");
+
+        let error = format!(
+            "{:#}",
+            super::verify_profiled_nr_targets(&sources.nr, &empty).unwrap_err()
+        );
+        assert!(
+            error.contains("which the profiled folder did not contain"),
+            "{error}"
+        );
+
+        // The real profiled NR listing must of course pass.
+        let mut actual: BTreeMap<String, Vec<u8>> = fs::read_dir(&profiled)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| {
+                name.ends_with(".binarypb")
+                    && !name.starts_with("lte_")
+                    && name != "ap_plmn_mapping.binarypb"
+            })
+            .map(|name| (name, Vec::new()))
+            .collect();
+        super::verify_profiled_nr_targets(&sources.nr, &actual)
+            .expect("the folder the sources were built from must verify");
+
+        // The other direction: a folder holding a file no anchor regenerates.
+        actual.insert("GHOST_12345.binarypb".to_string(), Vec::new());
+        let error = format!(
+            "{:#}",
+            super::verify_profiled_nr_targets(&sources.nr, &actual).unwrap_err()
+        );
+        assert!(error.contains("GHOST_12345.binarypb"), "{error}");
     }
 
     #[test]

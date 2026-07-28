@@ -40,6 +40,9 @@ impl Fixture {
             &nr_caps(715_188_856, Some(7), 0, 10_041, Some(29)),
         );
         let mut profiled_caps = nr_caps(862_505_271, None, 11, 10_078, Some(0));
+        // Two catalog entries, only the second referenced, so the pipeline's prune-and-renumber
+        // is exercised end to end: the assertions below require the provisioned module to carry
+        // a one-entry catalog with the selector renumbered to 1.
         profiled_caps.dl_feature_per_cc_list = vec![
             ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(1),
@@ -55,6 +58,11 @@ impl Fixture {
         // resolve (an out-of-range trailing byte, e.g. `[2, 99]`, now stays raw instead
         // of resolving on the in-range prefix).
         profiled_caps.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids = Some(vec![2]);
+        // NR derives field 4 from the resolved feature set and ingest rejects a stored value
+        // that disagrees. Catalog entry 2 has `max_scs: Some(3)`, and `derive_nr_dl_index`
+        // maps any `scs < 4` to 1 — so this must be 1, not the 0 that `nr_caps` writes for the
+        // all-zero-placeholder case.
+        profiled_caps.combo_groups[0].combo[0].sub_blocks[0].dl_feature_index = Some(1);
         write_message(
             &profiled.join(format!("ALPHA_{NR_ANCHOR}.binarypb")),
             &profiled_caps,
@@ -159,6 +167,10 @@ fn nr_caps(
                     // `cc_count == 1` for class 1, so one all-zero placeholder byte each.
                     dl_feature_per_cc_ids: Some(vec![0]),
                     ul_feature_per_cc_ids: Some(vec![0]),
+                    // Never absent in a real file, and NR generation always emits them; the
+                    // all-zero placeholder resolves to nothing, so the derived index is 0.
+                    dl_feature_index: Some(0),
+                    ul_feature_index: Some(0),
                     ..Default::default()
                 }],
                 bitmask,
