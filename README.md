@@ -95,22 +95,22 @@ versions, malformed references, and lossy values are rejected. A small valid
 `nr.kdl` has this shape:
 
 ```kdl
-version 1
-bitmask-carriers VZW
+version 2
+bc VZW
 
-bitmask-fingerprint 715188856 {
-    carriers VZW
+bf 715188856 {
+    c VZW
 }
 
-carrier VZW bitmask-id=1 profiled-id=0 mapping-id=1 signature=1 tier=main {
-    plmn mcc=311 mnc=480
-    profile "66813533" multiplier=66813533 unknown=0
+cr VZW bi=1 pi=0 mi=1 sg=1 t=main {
+    p mcc=311 mnc=480
+    pf "66813533" x=66813533 u=0
 }
 
-dl-feature max-scs=3 max-mimo=2 max-bw=100
+df s=3 m=2 b=100
 ```
 
-`bitmask-carriers` is the exact legacy output whitelist, and the fingerprint
+Keys are abbreviated — see the table below. `bc` (bitmask-carriers) is the exact legacy output whitelist, and the fingerprint
 groups must form a disjoint, complete partition of it. A carrier's `profile`
 children are the exact whitelist for that carrier/anchor output. A profile's key
 (the anchor number) is a quoted string argument — KDL requires quoting because it's
@@ -134,9 +134,9 @@ significant and preserved.
 Top-level `dl-feature` and `ul-feature` nodes are canonical global catalogs for
 compiler source. A band+CA-bandwidth-class entry (an `nr`/`lte` node) can carry more than
 one component carrier (CC) — the count is fixed by its bandwidth class, e.g. `n78` class C
-= 2 CCs — and each CC has its own feature reference, so a sub-block's `dl-feature` and
-`ul-feature` properties are **repeated**, one 1-based catalog position per CC in CC order
-(a single-CC sub-block still emits exactly one `dl-feature=N`, identical to before). Decompose
+= 2 CCs — and each CC has its own feature reference, so a sub-block's `d=`/`u=` value carries a
+comma-separated list, one 1-based catalog position per CC in CC order (a single-CC sub-block
+carries exactly one, e.g. `d=A3`). Decompose
 prunes unreferenced wire records, then sorts and deduplicates the retained records by their
 complete raw values. Provision filters those catalogs into a compact, independently numbered
 subset for each generated carrier/SKU file, so a file never contains a record used only by
@@ -167,19 +167,19 @@ The matching `lte.kdl` stores the exact LTE file whitelist and byte-preserving
 payloads:
 
 ```kdl
-version 1
+version 2
 
-file "400907661" fingerprint=862505271 bitmask=1645725906
+f "400907661" fp=862505271 bm=1645725906
 
-combo bcs=0 unknown1=0 unknown2=0 {
-    selection {
-        skus G2YBB
+c b=0 u1=0 u2=0 {
+    s {
+        m G2YBB
     }
-    subblock 1 dl-bw-class-mimo=32768 ul-bw-class-mimo=0
+    B1 dm=A2 um=off
 }
 ```
 
-A `file` node's quoted key argument is the modem firmware's exact `lte_file_id`
+An `f` (file) node's quoted key argument is the modem firmware's exact `lte_file_id`
 value (quoted because it's numeric-leading), not a hash. File-level `fingerprint`
 and `bitmask` remain stored because the compiler has no independent derivation for
 them. For optional protobuf fields, omission means absent and an explicit `0` means
@@ -414,6 +414,44 @@ carrier,1002739,196911437,2912407,3347,3539,688679,8969,Pixel 10 Pro Fold,Pixel 
 **Read:** a spreadsheet-friendly overview of the whole dump — at a glance, which
 profiles each carrier provides and the exact selector numbers. Scans the same files
 as `check`; non-carrier files (the legend, `lte_*`) are ignored.
+
+## Reading the source format
+
+`decompose` writes a compact vocabulary. Keys are abbreviated because the per-combo lines repeat
+tens of thousands of times — the real corpus is 7.6 MB of KDL, down from 12.7 MB with the long
+names. Per-carrier keys that appear a handful of times (`mcc`, `mnc`) are left spelled out.
+
+```kdl
+c bn=1 be=0 ie=1 {
+    s { c VZW; m legacy GUL82 }
+    n257 d=G30,30 u=A1
+    B66  d=C2
+}
+```
+
+A sub-block's **node name is its 3GPP band**: `n257` is NR band n257, `B66` is E-UTRA band 66.
+
+`d` and `u` are the DL and UL directions. Each is a **CA bandwidth-class letter** followed by an
+optional comma-separated list of per-CC feature references — one per component carrier, pointing
+1-based into the `df`/`uf` catalogs at the top of the file.
+
+- `d=G30,30` — class G, two CCs, both using catalog entry 30
+- `d=A3` — class A, one CC, entry 3
+- `d=A` — class A with no features (the common placeholder)
+- no `u` at all — UL disabled
+
+The letter is worth learning: it is the 3GPP class, so it tells you the aggregation directly.
+`A` is 1 CC, `B` and `C` are 2, and `G` through `M` are the FR2 (mmWave) classes running 2 to 8
+CCs. So `n257 d=G30,30` reads as "mmWave band n257, two aggregated carriers".
+
+`lte.kdl` sub-blocks use `dm`/`um` instead, which pack the class *and* the MIMO width: `dm=A4`
+is class A with 4x4 MIMO, `dm=A2` is 2x2, and `um=off` means UL disabled.
+
+Other keys, in rough order of how often you will meet them: `c` combo (and, inside `s`,
+carriers), `s` selection, `m` skus, `cr` carrier, `pf` profile, `bc` bitmask-carriers,
+`bf` bitmask-fingerprint, `p`/`ps` plmn/plmns, `f` file, `df`/`uf` the feature catalogs.
+`version` is never abbreviated, so a file from an older build fails with a message telling you
+to re-run `decompose`.
 
 ## A note on what the tools will refuse
 

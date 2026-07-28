@@ -69,7 +69,9 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fp_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
-| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`/`push_repeated_int_prop`), the shared `plmn_to_node`/`read_plmn` PLMN codec, and the `cckind_to_str`/`str_to_cckind` (`SubBlockKind`↔`nr`/`lte`) codec (`str_to_cckind` takes a `what:` label so each caller keeps its own error phrasing) — consumed solely by the compiler's `nr.kdl`/`lte.kdl` (de)serializers now that the combo patch and the mapping legend's own KDL layer are both gone. |
+| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's `nr.kdl`/`lte.kdl` (de)serializers. |
+| `src/compiler/kdl_keys.rs` | Every KDL node name and property key, grouped by scope, consumed by both the reader and the writer; a structural test rejects two keys sharing a spelling within one scope. |
+| `src/compiler/kdl_direction.rs` | The composite `d=`/`u=` value (bandwidth-class letter + per-CC index list) and `lte.kdl`'s `dm`/`um` class+MIMO bitfield codec. |
 | `src/wire.rs` | Recursive modeled-field/wire-type validation and strict decoders for `UeCaps`, `LteCaps`, and `PlmnMap`. |
 | `src/compiler/mod.rs` | Public folder-compiler `decompose`/`provision` entry points, generated-file type, and module boundary. |
 | `src/compiler/selection.rs` | Finite NR/LTE eligibility domains, SKU tokens, expanded applicability relations, validation, and canonical rectangle serialization. |
@@ -241,9 +243,9 @@ rest".
    equals the universe; see
    [Applicability relation and canonical rectangles](#applicability-relation-and-canonical-rectangles))
    and each resolved CC rewritten as a repeated 1-based global catalog reference
-   (`dl-feature=`/`ul-feature=`, one per CC; a component with no resolved feature set carries
-   nothing — the all-zero placeholder is re-derived on provision, and the raw `dl-cc-id=`/`ul-cc-id=`
-   selector fallback was removed). LTE: the ID-keyed file whitelist with stored
+   (the comma-separated list inside `d=`/`u=`, one per CC; a component with no resolved feature
+   set carries just the class letter — the all-zero placeholder is re-derived on provision, and
+   the raw selector fallback was removed). LTE: the ID-keyed file whitelist with stored
    `fingerprint`/`bitmask`, plus the step-6 global combo order.
 8. **Serialize, reparse, require a fixed point.** The assembled documents pass through
    `validate_documents` — the same cross-reference validation a hand-edited `provision` source
@@ -281,25 +283,100 @@ grammar and the PLMN legend's own separate KDL encoding are both gone; the legen
 protobuf now) and follows this section's pattern. `serde` and `toml` are deliberately absent
 from `Cargo.toml` entirely.
 
-`nr.kdl`/`lte.kdl` are KDL v2 documents (the `kdl` crate, pinned to `6.7.1` in `Cargo.toml`),
-(de)serialized by hand-written mapping in `src/compiler/kdl_source.rs` — **not** `serde`. Each
-document type has one `_to_kdl`/`_from_kdl` pair (`nr_to_kdl`/`nr_from_kdl`,
-`lte_to_kdl`/`lte_from_kdl`, re-exported `pub(crate)` from `compiler/mod.rs`), built over a small
-set of `NodeReader` combinators in the crate-wide `src/kdl_support/` module (named
-`kdl_support`, **not** `kdl`, because a crate-root module named `kdl` collides with the external
-`kdl` crate); the compiler's own `nr`/`lte` (de)serializers are its only consumers now that
-the combo patch and the mapping legend's KDL layer are both gone: `key_str`/`key_int` read the
-leading positional argument (a record's key or identifying value); `req_int`/`opt_str`/`opt_int`/`opt_bool` read properties;
-`rest_strings` drains a list node's remaining positional args;
-`repeated_int`/`push_repeated_int_prop` read/write every occurrence of a same-named property in
-document order (an **`nr`** sub-block's per-CC catalog refs `dl-feature=`/`ul-feature=` are
-**repeated numeric properties**, one entry per CC — see the
-per-CC feature model below; on an **`lte`** sub-block `dl-feature=`/`ul-feature=` are instead
-single-valued — the scalar proto-4/5 index, since LTE carries no per-CC list — see the
-`dl/ul_feature_index` bullet under On-disk formats); `children`/`opt_child` fetch nested nodes; and `finish()` errors on
-any argument, property, or child node left unconsumed — the structural replacement for serde's
+`nr.kdl`/`lte.kdl` are KDL v2 documents (the `kdl` crate), (de)serialized by hand-written
+mapping in `src/compiler/kdl_source.rs` — **not** `serde`. Each document type has one
+`_to_kdl`/`_from_kdl` pair (`nr_to_kdl`/`nr_from_kdl`, `lte_to_kdl`/`lte_from_kdl`, re-exported
+`pub(crate)` from `compiler/mod.rs`), built over a small set of `NodeReader` combinators in the
+crate-wide `src/kdl_support/` module (named `kdl_support`, **not** `kdl`, because a crate-root
+module named `kdl` collides with the external `kdl` crate): `key_str`/`key_int` read the leading
+positional argument; `req_int`/`opt_str`/`opt_int`/`opt_bool` read properties;
+`rest_strings` drains a list node's remaining positional args; `children`/`opt_child` fetch
+nested nodes by name and `children_matching` by predicate (sub-block node names are computed —
+see below); and `finish()` errors on any argument, property, or child node left unconsumed, and
+on any property set more than once — the structural replacement for serde's
 `deny_unknown_fields`. `src/kdl_support/` also hosts the shared `plmn_to_node`/`read_plmn` PLMN
 codec (below).
+
+**Every key spelling lives in `src/compiler/kdl_keys.rs`**, grouped by scope, consumed by both
+the reader and the writer. They used to be spelled independently at 121 sites, so a mismatched
+pair only failed if a test happened to exercise that key. The grouping is load-bearing: two keys
+may share a spelling only if they are never siblings, and a structural test enforces exactly
+that, so a key added to the wrong group fails the suite instead of silently shadowing one.
+
+#### The short vocabulary
+
+Keys are abbreviated. The measured effect on the real corpus is 12.69 MB → 7.65 MB (39.7%
+smaller) and a 10.4% faster `decompose`. Per-carrier keys that appear a handful of times
+(`mcc`, `mnc`) stay spelled out; the per-combo keys that repeat tens of thousands of times do
+not.
+
+| scope | keys |
+|---|---|
+| `nr.kdl` document | `version` (**not** abbreviated — see below), `bc` bitmask-carriers, `bf` bitmask-fingerprint, `cr` carrier, `df`/`uf` feature catalogs, `c` combo |
+| `bf` | `c` carriers |
+| `cr` props | `bi` bitmask-id, `pi` profiled-id, `mi` mapping-id, `sg` signature, `t` tier |
+| `cr` children | `p` plmn, `ps` plmns, `pf` profile |
+| `p` props | `mcc`, `mnc`, `mnc-digits` — unchanged |
+| `pf` props | `x` multiplier, `u` unknown |
+| `c` props | `pc` power-class, `bn` bcs-nr, `bi` bcs-intra-endc, `be` bcs-eutra, `ie` intra-band-en-dc-support |
+| `c` children | `s` selection, sub-blocks `n<band>` / `B<band>` |
+| `s` | `c` carriers, `m` skus |
+| sub-block props | `d` DL, `u` UL, `st` srs-tx-switch |
+| `df`/`uf` catalog props | `s` max-scs, `m` max-mimo(-cb), `b` max-bw, `o` max-mod-order, `w` bw-90mhz-supported, `nc` max-mimo-non-cb |
+| `lte.kdl` document | `version`, `f` file, `c` combo |
+| `f` props | `fp` fingerprint, `bm` bitmask |
+| `c` props | `b` bcs, `u1`/`u2` unknown1/2 |
+| `c` children | `s` selection, `B<band>` sub-block |
+| `B` props | `dm`/`um` class+MIMO |
+
+`c` means combo at document level and carriers inside `s`; `bi` means bitmask-id on a `cr` and
+bcs-intra-endc on a `c`. Both are legal because the pairs are never siblings.
+
+**`version` is deliberately never abbreviated.** The marker announcing the format version cannot
+be renamed by the change it describes: a version-1 document fed to this build would be rejected
+as having an unknown top-level node *before* reaching the version check that exists to diagnose
+exactly that. `schema::SOURCE_FORMAT_VERSION` is the single source of the number, and the
+mismatch error names the remedy.
+
+**A key spelling is not a diagnostic.** Error messages say "carrier", "profile", "bitmask" —
+words, not KDL keys. A mechanical rename that rewrites both leaves the suite green while
+user-facing errors degrade into abbreviations, which is exactly what happened during this
+change and had to be undone.
+
+#### Sub-block syntax
+
+The band is the node name's suffix, so a source line reads as the 3GPP band designation it
+describes, and an E-UTRA sub-block is spelled the same way in both documents:
+
+```kdl
+n257 d=H30,30,30 u=G26,26     NR n257, DL class H (FR2, 3 CC), UL class G (2 CC)
+B66  d=C2                      E-UTRA B66, class C, feature index 2
+```
+
+`d`/`u` are one value per direction: the 3GPP CA bandwidth-class **letter** followed by an
+optional comma-separated per-CC index list. The letter is the plain index into the 3GPP letters,
+`'A' + class - 1`, which the corpus confirms — E-UTRA classes 1..=5 are A..=E with CC counts
+1, 2, 2, 3, 4, matching 3GPP 36.101 including B and C both being 2 CC. NR classes 7..=13 (G..=M)
+are FR2-only: every occurrence is on n257/n258/n260/n261 at 120 kHz with a 100 MHz channel.
+
+| form | meaning |
+|---|---|
+| `d=H30,30,30` | class H, three per-CC catalog references |
+| `d=A3` | class A, one reference |
+| `d=A` | class A, no list — the all-zero placeholder, re-derived on read |
+| *(`d` absent)* | no DL class at all |
+| *(`u` absent)* | UL class **0** — disabled |
+
+Arity is kind-dependent and checked: on `n` the list length must equal `cc_count(class)`, which
+makes the per-CC invariant syntactic; on `B` the index is a single `parseLteFeatureIndex` value
+regardless of class. A `0` index is invalid as an NR catalog reference (1-based) but legitimate
+as an E-UTRA MIMO code, so that rule lives in the reader, which knows the kind — not in the
+value codec, which only knows syntax.
+
+`lte.kdl`'s `dm`/`um` are a third encoding: an inverted bitfield where 32768 is A and 1024 is F,
+with the low bit selecting 4x4, rendered `A4`. UL-disabled is `off` — spelled as a word because
+KDL quotes a string `0` and parses a bare `0` as an integer. An unrecognised bitfield fails
+closed rather than guessing a letter.
 
 **Do not re-attempt the `kdl`-crate `serde` route** (`kdl`'s own `serde` feature, intentionally
 not enabled here). It was evaluated on a throwaway spike over real schema-shaped structs and
@@ -320,9 +397,10 @@ separators. Autoformat is deterministic, so a given `kdl` version's output is by
 exact bare-vs-quoted and spacing rules belong to the crate, not to us, so **a `kdl` version bump can
 change formatting**. `kdl` is version-pinned in `Cargo.toml` for this reason; if it's ever bumped,
 treat a golden/corpus byte-diff as expected and regenerate the fixtures rather than chase it as a
-regression. That byte-stability includes preserving *repeated* same-name properties in document
-order (the per-CC `dl-feature=`/`ul-feature=` format relies on this) — an autoformat-stability test in
-`src/kdl_support/` guards it, so a `kdl` bump could break that format specifically, not just spacing.
+regression. That byte-stability includes keeping a node's sole leading positional argument leading
+(`carrier <name>`, `bitmask-fingerprint <n>`, `profile "<n>"`, `file "<n>"`) — an
+autoformat-stability test in `src/kdl_support/` guards it. Sub-blocks no longer rely on it:
+their band is part of the node name.
 
 **Naming rule: a plain, kind-less node name when the file/document already fixes the radio kind;
 explicit `nr`/`lte` node names only where a single combo can mix both.** The compiler's `lte.kdl` is
@@ -332,14 +410,12 @@ components (an EN-DC combo), the radio kind **is** the node name (`nr 78 …` / 
 that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field is gone).
 The naming rule is uniform across every KDL surface: NR-carrier/EN-DC combos (compiler `nr.kdl`)
 spell the kind as the node name; uniformly-LTE combos (compiler `lte.kdl`) use plain `subblock`
-with no kind tag. `band` is the sole leading positional argument on
-`nr`/`lte`/`subblock` in the compiler's documents — written via
-`KdlEntry::new` and read via `NodeReader::key_int`, before any property. **Direction-paired
-properties lead with the direction** — the `dl-`/`ul-` prefix is uniform (`dl-bw-class`/`ul-bw-class`,
-`dl-feature`/`ul-feature`, `dl-bw-class-mimo`/`ul-bw-class-mimo`), never a `-dl`/`-ul` suffix — and a
-sub-block emits all its DL properties before its UL ones (`dl-bw-class dl-feature… ul-bw-class
-ul-feature…`), with the direction-agnostic `srs-tx-switch` last. Readers are property-keyed, so this
-order is an emit convention only; re-spelling or reordering is a surface change with no wire effect.
+with no kind tag. A sub-block's band is part of its **node name** (`n257`, `B66`), parsed by
+`parse_sub_block_name` and matched by `NodeReader::children_matching`, not a positional argument.
+**Direction-paired properties lead with the direction** — `d`/`u` on a sub-block, `dm`/`um` on an
+`lte.kdl` one, never a `-dl`/`-ul` suffix — and a sub-block emits DL before UL, with the
+direction-agnostic `st` last. Readers are property-keyed, so this order is an emit convention
+only; re-spelling or reordering is a surface change with no wire effect.
 
 **PLMN representation: one `plmn mcc=… mnc=…` node per entry.** The compiler `nr.kdl` carrier
 PLMN list is the only place a PLMN appears in KDL now (the legend's own KDL round-trip is gone;
@@ -474,15 +550,13 @@ run proves only that its environment-variable guard works.
 
 Every source DTO is validated by `kdl_source.rs`'s `NodeReader::finish()`, which rejects any
 unconsumed argument, property, or child node (the structural replacement for
-`#[serde(deny_unknown_fields)]`), and requires `version = 1`. One strictness nuance: a *repeated
-property* on a node is **last-wins**, not rejected (`node.get` returns the last value), so a
-hand-edited `nr 78 dl-bw-class=1 dl-bw-class=2` silently takes `dl-bw-class=2`; repeated *map-key
-child nodes* (`carrier`/`profile`/`file`) **are** rejected via explicit guards. The per-CC catalog
-refs (`dl-feature=`/`ul-feature=`) are a
-deliberate, explicit **exception** to last-wins: `NodeReader::repeated_int` (`src/kdl_support/mod.rs`)
-collects *every* occurrence of the named property in document order instead of collapsing to the last
-one, because each occurrence is one CC's value, not an accidental duplicate — every other property
-keeps last-wins. This only affects hand-edited `provision` input — `decompose` never emits duplicates and its
+`#[serde(deny_unknown_fields)]`), and requires the current `SOURCE_FORMAT_VERSION`. A *repeated property* on a node is
+**rejected**, unconditionally: `node.get` returns the last value, so last-wins would silently
+discard a hand-edit, and the shadowed entry is never even type-checked (`mcc="oops" mcc=310`
+once parsed clean). Repeated *map-key child nodes* (`cr`/`pf`/`f`) are likewise rejected via
+explicit guards. The rule needs no exception now that no property is multi-valued — the per-CC
+catalog references that once used repeated `dl-feature=` entries are one comma-separated value
+inside `d=`/`u=`. This only affects hand-edited `provision` input — `decompose` never emits duplicates and its
 reparse/idempotence self-check guards that path. Carrier names and selection tokens are
 case-sensitive canonical identifiers in source; only CLI model lookup trims and uppercases input.
 Filename factors and opaque filename-related `u64` values are native KDL integers (i128-backed, so
@@ -576,9 +650,9 @@ be stored:
   bytes. Decompose then deduplicates and sorts each catalog by complete raw field
   identity. A referenced all-absent record remains a real identity; every unreferenced
   input record is ignored, whether default, explicit-zero/false, or value-bearing. A
-  sub-block node's `dl-feature`/`ul-feature` properties are **repeated**, one canonical
-  1-based global position per CC, in CC order (a single-CC sub-block still emits exactly
-  one `dl-feature=N`). The raw `dl-cc-id=`/`ul-cc-id=` selector fallback for unresolved
+  sub-block node's `d=`/`u=` value carries a comma-separated list, one canonical 1-based
+  global position per CC, in CC order (a single-CC sub-block carries exactly one, e.g.
+  `d=A3`). The raw selector fallback for unresolved
   components was removed (proto field 6/7 is still carried in the model): a component with
   no resolved feature set surfaces nothing for that direction.
 - **LTE placeholder per-CC ids are omitted, not stored — and not modeled.** An LTE
@@ -590,7 +664,7 @@ be stored:
   field.** `NrSourceSubBlock` (`src/compiler/features.rs`) holds only catalog *references*,
   and `NrSourceSubBlock::resolve` — the single boundary that turns source into a
   `RawSubBlock` bound for the binary — materializes `[0; cc_count]` via `placeholder_ids`
-  when a direction's `dl-feature=`/`ul-feature=` list is empty. `ul_bw_class == 0` (UL
+  when a direction's index list is empty (`d=A` with no list). `ul_bw_class == 0` (UL
   disabled) short-circuits the UL side to no data at all, never a derived placeholder.
   Deriving at `resolve` rather than at parse is what keeps the three per-direction
   encodings from coexisting on one type: a source sub-block can hold the LTE scalar index
@@ -778,9 +852,9 @@ features are alternatives, and a flat struct let all three sit side by side:
 
 - **A `SubBlock` is one band+CA-bandwidth-class entry, not one component carrier** — it contains `cc_count(kind, bw_class)` physical CCs (e.g. band 78 class C = `n78C` = 2 CCs; this is how a Pixel expresses `7C-3A`, not just `7A-3A`). `cc_count(kind, bw_class)` (`src/raw_nr.rs`) is a fail-closed lookup over the Samsung Shannon `bw_class` enumeration; NR and LTE tables (`NR_CC_COUNTS`/`LTE_CC_COUNTS`) are distinct and non-monotonic relative to each other (NR class 2/3/7 all count 2; LTE class 2/3 both count 2 — the class carries strictly more information than the CC count, which is why `bw_class` is never derived from it), and an unknown class errors rather than mis-deriving a length (the tables are corpus-validated with zero exceptions across all **3.46M sub-blocks**). `RawSubBlock::validate` fails closed (checked on both source parse and regenerated output) if a stored per-CC list's length doesn't equal `cc_count` for its `bw_class`, and separately if the sub-block's CCs would derive disagreeing `dl_feature_index`/`ul_feature_index` values (physically you cannot mix FR1+FR2 or mixed MIMO-presence within one band+class entry).
 - **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
-- **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — spelled `dl-feature`/`ul-feature` in KDL, dropping the `-index` suffix (LTE-only — an
-`nr` node carries no feature index in source at all), with `ul-feature=0` omitted per the
-omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl`) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `SourceNrSubBlock` (the `nr.kdl` shape) has none either, and `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on decompose/provision. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from` and `LocalFeaturePlan::reconstruct_sub_block` both read the index through the same `dl_feature_index()`/`ul_feature_index()` accessors, so dedup and generation cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
+- **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — carried as the single index inside `d=`/`u=` on a `B` sub-block (E-UTRA-only — an `n` node
+carries no feature index in source at all), with a `u` index of 0 omitted per the omit-when-0
+rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl`) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `SourceNrSubBlock` (the `nr.kdl` shape) has none either, and `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on decompose/provision. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from` and `LocalFeaturePlan::reconstruct_sub_block` both read the index through the same `dl_feature_index()`/`ul_feature_index()` accessors, so dedup and generation cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
   - *Corpus scope behind the "0 mismatches" claim:* 1,487 files (9 non-`UeCaps` decode skips), **1,715,899 NR components** and **1,741,849 LTE components**. 0 of the 1.74M LTE components carry a field-6/7 per-CC selector; every NR component carries a DL one and ~60% carry a UL one.
   - *Why these keys (rejected hypotheses):* DL keys off `max_scs` (FR1/FR2), **not** `max_mimo` — a cross-tab against `max_mimo` looked noisy precisely because MIMO is not the key. UL keys off `max_mimo_cb`; `max_mimo_non_cb` moves in lockstep in the data but `max_mimo_cb` is the definitional key.
   - *LTE `parseLteFeatureIndex` cross-check* (for the record; the LTE index is kept explicit, not derived): DL `count = ceil(fi/2)` (fi 1/2→1CC, 3/6→2CC, 7/8→4CC, 9/10→5CC), even fi = 2-layer MIMO, odd = 1-layer, with 5/6 the special B/C 2-CC case; UL only ever `0` or `2` in this corpus.
@@ -796,7 +870,7 @@ omit-when-0 rule below. NR: a value fully **derived** from the per-CC feature se
   (`ul_bw_class == Some(0)`) therefore carries no `ul-bw-class=` at all in `nr.kdl`.
   A sixth, **kind-scoped** omit-when-0 applies on `lte` sub-blocks only: `ul_feature_index` is
   corpus-verified always-`Some` on LTE (1.74M sub-blocks; `Some(0)` ⟺ no UL, ≈59%), so `lte`
-  writers omit `ul-feature=0` and `lte` readers default an absent `ul-feature` back to `Some(0)`.
+  writers omit a `u` index of 0 and `B` readers default an absent one back to `Some(0)`.
   It is *not* applied on `nr` (which carries no index in source at all — it always derives on
   provision), and it
   does not extend to `dl_feature_index` (never `0` on LTE — the rule would be dead code). Unlike
