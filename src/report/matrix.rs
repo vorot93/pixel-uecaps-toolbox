@@ -6,7 +6,7 @@ use crate::{
     outcome::Outcome,
 };
 use anyhow::Context;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 /// The column header for a profile: its known Pixel model, else the anchor prime.
 fn header_for(p: &Profile) -> String {
@@ -98,9 +98,11 @@ pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
 
     let csv = build_csv(&sorted_columns(), &cells)?;
     match out {
-        Some(path) => {
-            fs::write(path, csv).with_context(|| format!("cannot write {}", path.display()))?
-        }
+        // Through the crate's atomic writer like every other file output, so a failure part-way
+        // cannot leave a truncated CSV in place of a previously good one, and replacing an
+        // existing file keeps its mode.
+        Some(path) => crate::atomic::write_bytes_atomic(path, csv.as_bytes())
+            .with_context(|| format!("cannot write {}", path.display()))?,
         None => print!("{csv}"),
     }
     Ok((collisions > 0).into())

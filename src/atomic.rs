@@ -6,6 +6,78 @@ use std::{
 use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
 
+/// The mode `File::create` yields here, i.e. `0o666 & !umask` — what `fs::write` would have
+/// produced for a brand-new output.
+///
+/// Measured once, in a private temp dir that is removed immediately, rather than read from
+/// `umask(2)`: that syscall would mean a `libc` dependency for a single number, and the whole
+/// point is to match what the standard library already does. Falls back to `0o644` if the probe
+/// fails for any reason, which is the conventional result under the usual `022` umask.
+#[cfg(unix)]
+fn default_file_mode() -> u32 {
+    use std::{os::unix::fs::PermissionsExt, sync::OnceLock};
+
+    static MODE: OnceLock<u32> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        let probe = || -> Option<u32> {
+            let dir = tempfile::tempdir().ok()?;
+            let file = std::fs::File::create(dir.path().join("probe")).ok()?;
+            Some(file.metadata().ok()?.permissions().mode() & 0o777)
+        };
+        probe().unwrap_or(0o644)
+    })
+}
+
+/// Give the not-yet-persisted temporary the mode its destination should end up with.
+///
+/// `NamedTempFile` hardcodes 0600 (correct for a temp file), and `persist` is a bare rename, so
+/// without this every atomic write silently narrowed the permissions of whatever it replaced —
+/// `provision -o module.zip` over a world-readable ZIP made it owner-only, and `decompose`'s
+/// `nr.kdl`/`lte.kdl` ignored the umask entirely.
+#[cfg(unix)]
+fn adopt_destination_mode(temporary: &NamedTempFile, path: &Path) -> Result<()> {
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+
+    let mode = match std::fs::metadata(path) {
+        // Replacing an existing output: keep exactly the mode it already had.
+        Ok(metadata) => metadata.permissions().mode() & 0o777,
+        Err(_) => default_file_mode(),
+    };
+    temporary
+        .as_file()
+        .set_permissions(Permissions::from_mode(mode))
+        .with_context(|| format!("set permissions for output {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn adopt_destination_mode(_temporary: &NamedTempFile, _path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Flush the rename itself to disk. Without this the directory entry can be lost on a crash even
+/// though the file's contents were already `sync_all`ed — the durability
+/// [`PreparedSiblingAtomic`] documents was stronger than what it delivered.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let parent = parent_dir(path);
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("sync parent directory of output {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// The directory an output lives in, treating a bare filename as the current directory.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
 /// A fully written, flushed, and synchronized temporary sibling whose final path has not yet
 /// been replaced.
 pub(crate) struct PreparedSiblingAtomic {
@@ -24,7 +96,7 @@ impl PreparedSiblingAtomic {
             .map_err(|error| error.error)
             .with_context(|| format!("persist temporary file as output {}", path.display()))?;
         drop(persisted);
-        Ok(())
+        sync_parent_dir(&path)
     }
 }
 
@@ -34,16 +106,13 @@ pub(crate) fn prepare_sibling_atomic(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<PreparedSiblingAtomic> {
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let mut temporary = NamedTempFile::new_in(parent).with_context(|| {
+    let mut temporary = NamedTempFile::new_in(parent_dir(path)).with_context(|| {
         format!(
             "create sibling temporary file for output {}",
             path.display()
         )
     })?;
+    adopt_destination_mode(&temporary, path)?;
 
     write(&mut temporary)
         .with_context(|| format!("write temporary file for output {}", path.display()))?;
@@ -111,6 +180,45 @@ mod tests {
 
         assert_eq!(fs::read(&output).unwrap(), b"version 1\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// `NamedTempFile` creates with mode 0600 for security, and `persist` is a bare rename, so
+    /// those bits landed on the destination — silently making a world-readable output
+    /// owner-only. `provision -o module.zip` over an existing 0644 ZIP broke any second
+    /// account, container user, or CI step that reads the artifact.
+    #[test]
+    fn preserves_the_replaced_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("module.zip");
+        fs::write(&output, b"original").unwrap();
+        fs::set_permissions(&output, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_bytes_atomic(&output, b"replacement").unwrap();
+
+        let mode = fs::metadata(&output).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "replacing a file must not narrow its mode");
+    }
+
+    /// A brand-new output should look like `fs::write` created it, not like a temp file.
+    #[test]
+    fn a_new_file_gets_the_conventional_mode_not_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let reference = dir.path().join("reference");
+        fs::write(&reference, b"x").unwrap();
+        let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
+        let output = dir.path().join("nr.kdl");
+        write_bytes_atomic(&output, b"version 1\n").unwrap();
+
+        let mode = fs::metadata(&output).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, expected,
+            "a new atomic output must match what fs::write would produce"
+        );
     }
 
     #[test]
