@@ -19,12 +19,15 @@ use crate::{
 
 /// The source-document format version both `nr.kdl` and `lte.kdl` carry.
 ///
-/// Bumped to 2 by the short-vocabulary rename: a version-1 document uses spellings this build
-/// does not know, so it must be rejected with a remedy rather than a confusing unknown-node
-/// error. That is also why `kdl_keys::nr_doc::VERSION` is the one key left unabbreviated — the
-/// marker announcing the version cannot be renamed by the change it describes, or the check
-/// below would be unreachable for exactly the documents it exists to diagnose.
-pub(crate) const SOURCE_FORMAT_VERSION: u32 = 2;
+/// This number identifies *the* format, not a count of revisions — it is reset rather than
+/// advanced when a format change lands in an unpublished series, because this repo's history is
+/// squashable and a reader at HEAD must see one coherent state. The check below is an
+/// inequality, not an ordering, so a reset still rejects a tree from any build that emitted a
+/// different number. That is also why `kdl_keys::nr_doc::VERSION` is the one key left
+/// unabbreviated — the marker announcing the version cannot be renamed by the change it
+/// describes, or the check below would be unreachable for exactly the documents it exists to
+/// diagnose.
+pub(crate) const SOURCE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DecimalU64(pub(crate) u64);
@@ -883,7 +886,7 @@ mod tests {
     use super::{LteSourceCombo, parse_sources, to_kdl};
 
     const MINIMAL_NR: &str = r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {
@@ -892,7 +895,7 @@ bf 715188856 {
 "#;
 
     const MINIMAL_LTE: &str = r#"
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=4082165014
 "#;
@@ -900,7 +903,7 @@ f "400907661" fp=862505271 bm=4082165014
     fn profiled_nr(profile_key: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -917,7 +920,7 @@ cr "PROFILED" pi=7 sg=1 t="main" {{
     fn lte_with_file_key(file_key: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 
 f "{file_key}" fp=862505271 bm=4082165014
 "#
@@ -927,7 +930,7 @@ f "{file_key}" fp=862505271 bm=4082165014
     fn nr_with_carrier_sections(sections: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -956,7 +959,7 @@ cr "MAPPING" mi=8 {
 
     fn lte_with_complete_domain() -> String {
         r#"
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=1
 f "564260317" fp=874888686 bm=2
@@ -1106,26 +1109,26 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
 
     #[test]
     fn versions_are_required_and_only_the_current_one_is_supported() {
-        let missing = MINIMAL_NR.replacen("version 2\n", "", 1);
+        let missing = MINIMAL_NR.replacen("version 1\n", "", 1);
         assert!(parse_sources(&missing, MINIMAL_LTE).is_err());
 
-        let unsupported_nr = MINIMAL_NR.replacen("\nversion 2", "\nversion 3", 1);
+        let unsupported_nr = MINIMAL_NR.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
             parse_sources(&unsupported_nr, MINIMAL_LTE)
                 .unwrap_err()
                 .to_string()
-                .contains("source-format version 3")
+                .contains("source-format version 2")
         );
 
-        let missing = MINIMAL_LTE.replacen("version 2\n", "", 1);
+        let missing = MINIMAL_LTE.replacen("version 1\n", "", 1);
         assert!(parse_sources(MINIMAL_NR, &missing).is_err());
 
-        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 2", "\nversion 3", 1);
+        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
             parse_sources(MINIMAL_NR, &unsupported_lte)
                 .unwrap_err()
                 .to_string()
-                .contains("source-format version 3")
+                .contains("source-format version 2")
         );
     }
 
@@ -1166,7 +1169,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
     fn fingerprint_groups_are_nonempty_disjoint_and_exhaustive() {
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c
@@ -1177,7 +1180,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1191,7 +1194,7 @@ bf 2 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1202,7 +1205,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c "A" "B"
@@ -1213,7 +1216,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "A"
 bf 1 {
     c "A"
@@ -1224,7 +1227,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c "A"

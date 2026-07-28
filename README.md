@@ -95,7 +95,7 @@ versions, malformed references, and lossy values are rejected. A small valid
 `nr.kdl` has this shape:
 
 ```kdl
-version 2
+version 1
 bc VZW
 
 bf 715188856 {
@@ -167,7 +167,7 @@ The matching `lte.kdl` stores the exact LTE file whitelist and byte-preserving
 payloads:
 
 ```kdl
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=1645725906
 

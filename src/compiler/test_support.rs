@@ -16,7 +16,7 @@ pub(crate) const SYNTHETIC_ANCHOR: u64 = 8_969;
 pub(crate) const FIRST_LTE_ID: u64 = 400_907_661;
 pub(crate) const SECOND_LTE_ID: u64 = 92;
 
-const EXPECTED_NR_KDL: &str = r#"version 2
+const EXPECTED_NR_KDL: &str = r#"version 1
 bc ALPHA BETA
 bf 702152537 {
     c BETA
@@ -57,7 +57,7 @@ c {
 }
 "#;
 
-const EXPECTED_LTE_KDL: &str = r#"version 2
+const EXPECTED_LTE_KDL: &str = r#"version 1
 f "400907661" fp=101 bm=201
 f "92" fp=102 bm=202
 c b=0 u1=0 u2=0 {

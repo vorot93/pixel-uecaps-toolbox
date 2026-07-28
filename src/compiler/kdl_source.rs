@@ -1074,7 +1074,7 @@ mod nr_tests {
         // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
         // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
         // point.
-        let text = "version 2\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
@@ -1095,7 +1095,7 @@ mod nr_tests {
         // On an `lte` node the proto-4/5 index is spelled `dl-feature`/`ul-feature` (no
         // `-index`), single-valued; `ul-feature=0` is omitted and re-defaults to `Some(0)`.
         // No per-CC list is read on LTE. Byte-identical fixed point.
-        let text = "version 2\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
@@ -1168,7 +1168,7 @@ mod nr_tests {
         // pre-migration `plmns "a" "b"` list node — this writer's old shape, and something
         // a hand-editor could still type — must be a hard parse error, never a silent
         // `Some(vec![])` that drops the listed PLMNs.
-        let text = "version 2\nbc \"LEGACY\"\ncr \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
+        let text = "version 1\nbc \"LEGACY\"\ncr \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
         let err = format!("{:#}", nr_from_kdl(text).unwrap_err());
         assert!(err.contains("ps"), "{err}");
     }
@@ -1188,7 +1188,7 @@ mod nr_tests {
     /// which carries one `parseLteFeatureIndex` scalar whatever its class.
     #[test]
     fn lte_sub_block_rejects_a_repeated_feature_property() {
-        let text = "version 2\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
 
         let error = nr_from_kdl(text).unwrap_err().to_string();
 
@@ -1200,7 +1200,7 @@ mod nr_tests {
     /// designation — the same convention `SubBlockKind::band_label` uses everywhere else.
     #[test]
     fn sub_block_node_name_carries_the_band() {
-        let text = "version 2\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
 
         let doc = nr_from_kdl(text).expect("bands parse out of the node name");
         let combo = &doc.combo[0];
@@ -1220,7 +1220,7 @@ mod nr_tests {
     #[test]
     fn malformed_sub_block_node_names_are_rejected() {
         for bad in ["nr", "n257x", "nrfoo", "lte", "x99", "n99999999"] {
-            let text = format!("version 2\nbc ATT\nc {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
+            let text = format!("version 1\nbc ATT\nc {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
             assert!(
                 nr_from_kdl(&text).is_err(),
                 "`{bad}` must not parse as a sub-block"
@@ -1238,7 +1238,7 @@ mod nr_tests {
             "dl-cc-id=1",
             "ul-cc-id=1",
         ] {
-            let text = format!("version 2\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
+            let text = format!("version 1\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
             let err = nr_from_kdl(&text).unwrap_err().to_string();
             assert!(
                 err.contains("unknown property"),
@@ -1273,14 +1273,14 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_missing_version() {
-        let text = nr_to_kdl(&sample()).unwrap().replacen("version 2\n", "", 1);
+        let text = nr_to_kdl(&sample()).unwrap().replacen("version 1\n", "", 1);
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
 
     #[test]
     fn nr_rejects_duplicate_version() {
-        let text = format!("version 2\n{}", nr_to_kdl(&sample()).unwrap());
+        let text = format!("version 1\n{}", nr_to_kdl(&sample()).unwrap());
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("duplicate `version`"), "{err}");
     }
@@ -1372,7 +1372,7 @@ mod nr_tests {
     #[test]
     fn bw_class_is_direction_first_and_old_spelling_rejected() {
         // New direction-first spelling round-trips byte-identically.
-        let text = "version 2\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse new spelling");
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
@@ -1381,7 +1381,7 @@ mod nr_tests {
         );
 
         // The old suffix spelling is now an unknown property (strict reader, no alias).
-        let old = "version 2\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
+        let old = "version 1\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
         let err = nr_from_kdl(old).unwrap_err().to_string();
         assert!(
             err.contains("unknown property") && err.contains("bw-class-dl"),
@@ -1393,7 +1393,7 @@ mod nr_tests {
     /// Property order is load-bearing for byte-identity. The merge collapsed each direction's
     /// class and feature list into one property, so what remains to pin is that DL precedes UL.
     fn nr_emits_direction_grouped_order() {
-        let text = "version 2\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let out = nr_to_kdl(&doc).unwrap();
         let dl = out.find("d=A2").expect("DL property present");
@@ -1492,7 +1492,7 @@ mod lte_tests {
     fn lte_rejects_missing_version() {
         let text = lte_to_kdl(&sample())
             .unwrap()
-            .replacen("version 2\n", "", 1);
+            .replacen("version 1\n", "", 1);
         let err = format!("{:#}", lte_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
