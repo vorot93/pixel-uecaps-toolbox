@@ -1,10 +1,14 @@
 //! LTE-only fallback (`lte_*.binarypb`) decoding + rendering for `inspect`.
 
 use super::{
-    combos::{bw_letter, render_component},
+    combos::{bw_letter, render_known_component},
     detail::Detail,
 };
-use crate::proto::{LteCaps, LteCombo, LteComponent};
+use crate::{
+    proto::{LteCaps, LteCombo, LteComponent},
+    raw_nr::SubBlockKind,
+};
+use compact_str::CompactString;
 
 /// A Shannon class/MIMO value -> (carrier class index `A=1..F=6`, MIMO branches 2/4).
 /// `value == 0` -> `(None, 0)` (that direction disabled). An out-of-table nonzero base
@@ -26,6 +30,14 @@ const fn lte_class(value: i32) -> (Option<i32>, i32) {
     (idx, mimo)
 }
 
+/// This module is statically single-kind, so every band it prints is an E-UTRA band — including
+/// one at or above `NR_BAND_OFFSET`, which is an out-of-range E-UTRA band rather than an NR one.
+/// Going through the kind-known method keeps that true everywhere here; the inferring free
+/// `report::combos::band_label` would render such a band as NR.
+fn eutra(band: i32) -> CompactString {
+    SubBlockKind::Lte.band_label(band)
+}
+
 /// True when a nonzero class value has no entry in the bandwidth-class table —
 /// it fell outside the known set and should render defensively.
 const fn out_of_table(value: i32, idx: Option<i32>) -> bool {
@@ -38,13 +50,19 @@ fn component_label(c: &LteComponent) -> String {
     let ul = c.ul_bw_class_mimo.unwrap_or(0);
     let (dl_idx, _) = lte_class(c.dl_bw_class_mimo);
     if out_of_table(c.dl_bw_class_mimo, dl_idx) {
-        return format!("B{}[{}]", c.band, c.dl_bw_class_mimo);
+        return format!("{}[{}]", eutra(c.band), c.dl_bw_class_mimo);
     }
     let (ul_idx, _) = lte_class(ul);
     if out_of_table(ul, ul_idx) {
-        return format!("B{}{}/[{}]", c.band, bw_letter(dl_idx), ul);
+        return format!("{}{}/[{}]", eutra(c.band), bw_letter(dl_idx), ul);
     }
-    render_component(c.band, dl_idx, ul_idx)
+    // The kind is statically E-UTRA here, so the label comes from `SubBlockKind::Lte`, not from
+    // the free `report::combos::band_label`, which *infers* the kind from the raw band. That
+    // inference reads any band >= NR_BAND_OFFSET as NR, so a crafted `lte_*.binarypb` carrying
+    // band 10078 rendered as `n78A↓` on the combo line while the `--full` per-CC line below
+    // printed `B10078` — two contradictory labels for one component in one report. This module
+    // exists to render foreign files defensively, so that is exactly its case.
+    render_known_component(SubBlockKind::Lte, c.band, dl_idx, ul_idx)
 }
 
 /// A combo's components joined ` + `, e.g. `B1A↓ + B5A`.
@@ -115,7 +133,7 @@ pub(crate) fn print_lte_combos(caps: &LteCaps, detail: Detail) {
         println!("  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
         if detail.is_full() {
             for c in &combo.components {
-                println!("       {:<5} {}", format!("B{}", c.band), cc_detail(c));
+                println!("       {:<5} {}", eutra(c.band), cc_detail(c));
             }
             println!("       bcs {}", combo.bcs.unwrap_or(0));
         }
@@ -178,6 +196,31 @@ mod tests {
             unknown2: Some(0),
         };
         assert_eq!(combo_bands(&combo), "B1A↓ + B5A");
+    }
+
+    /// An `lte_*.binarypb` is statically single-kind, so a band at or above `NR_BAND_OFFSET` is
+    /// an out-of-range E-UTRA band — not an NR band. Routing it through the kind-*inferring*
+    /// `band_label` rendered it `n78A↓` on the combo line while the `--full` per-CC line below
+    /// printed `B10078` for the same component: two contradictory labels in one report. This
+    /// module renders crafted/foreign files defensively, so the case is reachable.
+    #[test]
+    fn an_out_of_range_eutra_band_still_renders_as_eutra() {
+        let combo = LteCombo {
+            components: vec![comp(10_078, 32768, 0)],
+            bcs: Some(0),
+            unknown1: Some(0),
+            unknown2: Some(0),
+        };
+
+        let label = combo_bands(&combo);
+
+        assert_eq!(label, "B10078A↓");
+        assert!(
+            !label.contains('n'),
+            "an E-UTRA component must not read as NR"
+        );
+        // The `--full` per-CC line agrees, which is the contradiction that existed before.
+        assert!(format!("B{}", combo.components[0].band).starts_with("B10078"));
     }
 
     #[test]

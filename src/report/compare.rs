@@ -66,7 +66,7 @@ fn combo_signature(combo: &Combo) -> Signature {
 /// `bcs_*`, intra-band EN-DC, and the per-combo `bit_mask`.
 fn header_signature(combo: &Combo) -> String {
     format!(
-        "pc={:?} bcs_nr={:?} bcs_intra_endc={:?} bcs_eutra={:?} intra_endc={:?} mask={}",
+        "pc={:?} bcs_nr={:?} bcs_intra_endc={:?} bcs_eutra={:?} intra_endc={:?} mask={:?}",
         combo.power_class,
         combo.bcs_nr,
         combo.bcs_intra_endc,
@@ -563,10 +563,29 @@ mod tests {
     fn bitmask_change_is_detected() {
         // Per-combo bit_mask is part of a combo's identity; compare must agree.
         let mut a = combo(vec![nr_cc(78, 1, 2)]);
-        a.bit_mask = 1;
-        let b = combo(vec![nr_cc(78, 1, 2)]); // bit_mask 0
+        a.bit_mask = Some(1);
+        let b = combo(vec![nr_cc(78, 1, 2)]); // bit_mask absent
         let d = diff_combos(&[a], &[b]);
         assert!(d.has_differences(), "bit_mask change must be detected");
+    }
+
+    /// `proto::Combo::bitmask` is `optional` specifically because real files carry an explicit
+    /// zero that a bare proto3 scalar would drop on re-encode. The report DTO used to flatten
+    /// that with `unwrap_or(0)`, so two files differing only in whether field 2 is present
+    /// compared as identical — `compare`, whose entire job is diffing capability files, was
+    /// blind to a byte-level difference the schema exists to preserve.
+    #[test]
+    fn absent_and_explicit_zero_bitmasks_are_distinguished() {
+        let mut explicit_zero = combo(vec![nr_cc(78, 1, 2)]);
+        explicit_zero.bit_mask = Some(0);
+        let absent = combo(vec![nr_cc(78, 1, 2)]); // bit_mask: None
+
+        let d = diff_combos(&[explicit_zero], &[absent]);
+
+        assert!(
+            d.has_differences(),
+            "an explicit zero bitmask differs from an absent one"
+        );
     }
 
     #[test]

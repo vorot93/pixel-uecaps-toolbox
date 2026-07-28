@@ -154,22 +154,30 @@ pub(crate) fn tier_profile_count(tier: Tier) -> usize {
 
 /// The single profile whose anchor prime divides `number` (the normal case).
 ///
-/// Returns `None` for `0` even though `0.is_multiple_of(x)` is true for every nonzero `x`:
-/// `<CARRIER>_0.binarypb` is a degenerate filename that belongs to no profile, and without
-/// this guard `identify_profile(0)` would spuriously return the *first* profile.
+/// `None` for `0`, which [`matching_profiles`] handles for both callers: `0.is_multiple_of(x)`
+/// is true for every nonzero `x`, so an unguarded search would spuriously return the *first*
+/// profile and an unguarded filter would return all of them.
 pub(crate) fn identify_profile(number: u64) -> Option<&'static Profile> {
-    if number == 0 {
-        return None;
-    }
-    PROFILES.iter().find(|p| number.is_multiple_of(p.anchor))
+    matching_profiles(number).next()
 }
 
 /// Every profile whose anchor divides `number` (>1 means an ambiguous file).
 pub(crate) fn matching_anchors(number: u64) -> Vec<&'static Profile> {
+    matching_profiles(number).collect()
+}
+
+/// The single rule both of the above ask: which profiles' anchor primes divide `number`.
+///
+/// Sharing it is the point. `identify_profile` carried the `number == 0` guard and
+/// `matching_anchors` did not, so the two disagreed about the same input: `0` is a multiple of
+/// every nonzero anchor, and `matching_anchors(0)` returned all 16 profiles. A
+/// `<CARRIER>_0.binarypb` was therefore reported as "ambiguous: divisible by 16 anchors" by
+/// `check`/`inspect` and given a wholly fabricated 16-column row by `matrix`, instead of being
+/// recognized as the degenerate filename that belongs to no profile.
+fn matching_profiles(number: u64) -> impl Iterator<Item = &'static Profile> {
     PROFILES
         .iter()
-        .filter(|p| number.is_multiple_of(p.anchor))
-        .collect()
+        .filter(move |p| number != 0 && number.is_multiple_of(p.anchor))
 }
 
 /// The "ambiguous SKU" message shared by the `check` and `inspect` report paths: a number
@@ -1000,6 +1008,42 @@ mod tests {
             vec![874_888_686, 862_505_271]
         );
         assert_eq!(tier_fingerprints(Tier::Alt), vec![707_802_847, 627_223_094]);
+    }
+
+    /// `identify_profile` guards `number == 0` with a comment explaining exactly why; its
+    /// sibling did not, so `matching_anchors(0)` returned every profile — `0` is a multiple of
+    /// everything. A `<CARRIER>_0.binarypb` was reported as "ambiguous: divisible by 16
+    /// anchors" and given a full row of 16 present-marks in `matrix`, all fabricated.
+    #[test]
+    fn matching_anchors_rejects_zero_like_identify_profile() {
+        assert!(identify_profile(0).is_none());
+        assert!(
+            matching_anchors(0).is_empty(),
+            "0 belongs to no profile, so no anchor may match it"
+        );
+        // A real number still matches, so the guard is not over-broad.
+        assert!(!matching_anchors(PROFILES[0].anchor).is_empty());
+    }
+
+    /// The two functions must agree about every input, not just zero — they are the same
+    /// question asked two ways.
+    #[test]
+    fn identify_profile_agrees_with_matching_anchors() {
+        for number in [0u64, 1, 167, 8969, 98_659, 3_347, 6_694] {
+            let single = identify_profile(number).map(|p| p.anchor);
+            let all = matching_anchors(number);
+            match single {
+                None => assert!(
+                    all.is_empty(),
+                    "{number}: identify_profile found none but matching_anchors found {}",
+                    all.len()
+                ),
+                Some(anchor) => assert!(
+                    all.iter().any(|p| p.anchor == anchor),
+                    "{number}: matching_anchors omitted the anchor identify_profile chose"
+                ),
+            }
+        }
     }
 
     #[test]

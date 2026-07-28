@@ -55,9 +55,23 @@ fn is_nr_band(label: &str) -> bool {
     label.starts_with('n')
 }
 
-/// Render one component as `n<band><class>` (NR) / `B<band><class>` (E-UTRA).
+/// Render one component as `n<band><class>` (NR) / `B<band><class>` (E-UTRA), **inferring** the
+/// kind from the raw protobuf band. Only for callers that genuinely do not know the kind; a
+/// caller that does must use [`render_known_component`], since inference reads any band at or
+/// above [`NR_BAND_OFFSET`] as NR and would mislabel an out-of-range value.
 pub(crate) fn render_component(band: i32, dl: Option<i32>, ul: Option<i32>) -> String {
     format!("{}{}", band_label(band), cc_class(dl, ul))
+}
+
+/// [`render_component`] for a caller that already knows the component's kind — the plain band
+/// number is labelled as that kind, whatever its magnitude.
+pub(crate) fn render_known_component(
+    kind: SubBlockKind,
+    band: i32,
+    dl: Option<i32>,
+    ul: Option<i32>,
+) -> String {
+    format!("{}{}", kind.band_label(band), cc_class(dl, ul))
 }
 
 /// Band+class label for a component, e.g. `n78A` / `B1` — the same per-component
@@ -178,7 +192,12 @@ pub(crate) struct Combo {
     pub(crate) bcs_intra_endc: Option<u32>,
     pub(crate) bcs_eutra: Option<u32>,
     pub(crate) intra_band_en_dc_support: Option<i32>,
-    pub(crate) bit_mask: u32,
+    /// The per-combo bitmask exactly as the file carries it, **including its presence**.
+    /// `proto::Combo::bitmask` is `optional` precisely because real files carry an explicit
+    /// zero that a bare proto3 scalar would drop on re-encode; flattening `None` and `Some(0)`
+    /// to `0` here made `compare` — whose entire job is diffing capability files — blind to a
+    /// byte-level difference the schema goes out of its way to model.
+    pub(crate) bit_mask: Option<u32>,
     pub(crate) sub_blocks: Vec<SubBlock>,
 }
 
@@ -238,7 +257,7 @@ pub(crate) fn build_combos_with_bitmasks(caps: &UeCaps) -> Vec<(Combo, Option<u3
                     bcs_intra_endc: h.and_then(|x| x.bcs_intra_endc),
                     bcs_eutra: h.and_then(|x| x.bcs_eutra),
                     intra_band_en_dc_support: h.and_then(|x| x.intra_band_en_dc_support),
-                    bit_mask: c.bitmask.unwrap_or(0),
+                    bit_mask: c.bitmask,
                     sub_blocks,
                 },
                 c.bitmask,
