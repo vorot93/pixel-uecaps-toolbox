@@ -16,7 +16,7 @@ use crate::{
         },
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
-            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
+            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION,
         },
         selection::SelectionRect,
     },
@@ -677,6 +677,28 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
     Ok(v)
 }
 
+/// Read and check the format version before any other node is mapped.
+///
+/// The ordering is the whole point. The mapping that follows is what rejects an unknown
+/// vocabulary (`unknown property`, `missing required property`), and every format change so far
+/// has also changed the vocabulary — so a stale source tree used to die there, unhelpfully, while
+/// the check that exists to diagnose exactly that case sat downstream in `validate_documents` and
+/// never ran. Scanning for the marker up front is also order-independent, so the diagnosis holds
+/// for a hand-written document that puts `version` somewhere other than the top.
+fn checked_version(doc: &KdlDocument, file: &str, key: &str) -> Result<u32> {
+    let mut found: Option<u32> = None;
+    for node in doc.nodes().iter().filter(|node| node.name().value() == key) {
+        found = Some(read_version(node, found)?);
+    }
+    let version = found.ok_or_else(|| anyhow!("{file} missing `{key}`"))?;
+    ensure!(
+        version == SOURCE_FORMAT_VERSION,
+        "{file} is source-format version {version} but this build reads version \
+         {SOURCE_FORMAT_VERSION}; re-run `decompose` to regenerate it"
+    );
+    Ok(version)
+}
+
 /// Parses `bitmask-carriers`, or errors if it already appeared once — same duplicate-before-
 /// parse order as `read_version`.
 fn read_bitmask_carriers(node: &KdlNode, existing: Option<&[String]>) -> Result<Vec<String>> {
@@ -699,7 +721,7 @@ fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, 
 
 pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
     let doc: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
-    let mut version: Option<u32> = None;
+    let version = checked_version(&doc, "nr.kdl", nr_doc::VERSION)?;
     let mut bitmask_carriers: Option<Vec<String>> = None;
     let mut bitmask_fingerprints = Vec::new();
     let mut carriers = BTreeMap::new();
@@ -711,7 +733,7 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
         // constants, which are not valid `match` patterns.
         let name = node.name().value();
         if name == nr_doc::VERSION {
-            version = Some(read_version(node, version)?);
+            // Already read, duplicate-checked, and version-checked by `checked_version` above.
         } else if name == nr_doc::BITMASK_CARRIERS {
             bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
         } else if name == nr_doc::BITMASK_FINGERPRINT {
@@ -729,7 +751,7 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
         }
     }
     Ok(NrDocument {
-        version: version.ok_or_else(|| anyhow!("nr.kdl missing `version`"))?,
+        version,
         bitmask_carriers: bitmask_carriers
             .ok_or_else(|| anyhow!("nr.kdl missing `bitmask-carriers`"))?,
         bitmask_fingerprints,
@@ -846,14 +868,14 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
 
 pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
     let doc: KdlDocument = text.parse().context("lte.kdl is not valid KDL")?;
-    let mut version: Option<u32> = None;
+    let version = checked_version(&doc, "lte.kdl", lte_doc::VERSION)?;
     let mut files = BTreeMap::new();
     let mut combo = Vec::new();
     for node in doc.nodes() {
         // See the `nr_from_kdl` twin: constants are not valid `match` patterns.
         let name = node.name().value();
         if name == lte_doc::VERSION {
-            version = Some(read_version(node, version)?);
+            // Already read, duplicate-checked, and version-checked by `checked_version` above.
         } else if name == lte_doc::FILE {
             insert_unique(&mut files, lte_doc::FILE, read_file(node)?)?;
         } else if name == lte_doc::COMBO {
@@ -863,7 +885,7 @@ pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
         }
     }
     Ok(LteDocument {
-        version: version.ok_or_else(|| anyhow!("lte.kdl missing `version`"))?,
+        version,
         files,
         combo,
     })

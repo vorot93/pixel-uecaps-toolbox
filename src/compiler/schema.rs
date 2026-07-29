@@ -285,18 +285,11 @@ pub(crate) fn validate_documents(
     nr: NrDocument,
     lte: LteDocument,
 ) -> anyhow::Result<ValidatedSources> {
-    ensure!(
-        nr.version == SOURCE_FORMAT_VERSION,
-        "nr.kdl is source-format version {} but this build reads version {SOURCE_FORMAT_VERSION}; \
-         re-run `decompose` to regenerate it",
-        nr.version
-    );
-    ensure!(
-        lte.version == SOURCE_FORMAT_VERSION,
-        "lte.kdl is source-format version {} but this build reads version {SOURCE_FORMAT_VERSION}; \
-         re-run `decompose` to regenerate it",
-        lte.version
-    );
+    // The version check lives in the readers (`kdl_source::checked_version`), not here. It has to
+    // run before the document body is mapped: a stale tree fails the *vocabulary* first, so a
+    // check at this point only ever saw documents that had already mapped cleanly. `decompose`
+    // reaches here with freshly-ingested documents whose version is `SOURCE_FORMAT_VERSION` by
+    // construction, so nothing is left for a check here to catch.
     let bitmask_fingerprints = validate_fingerprint_partition(&nr)?;
     let carriers = validate_carriers(&nr)?;
     validate_mapping_projection(&carriers)?;
@@ -1112,12 +1105,18 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         let missing = MINIMAL_NR.replacen("version 1\n", "", 1);
         assert!(parse_sources(&missing, MINIMAL_LTE).is_err());
 
+        // `{:#}`, not bare `to_string()`: since the version check moved into the readers
+        // (`kdl_source::checked_version`), this error now comes from inside `nr_from_kdl`, which
+        // `parse_sources` wraps in a "parsing nr.kdl" context. Plain `Display` would show only
+        // that outer layer; see `a_stale_vocabulary_reports_the_version_not_the_unknown_property`
+        // below for the same point made explicitly.
         let unsupported_nr = MINIMAL_NR.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
-            parse_sources(&unsupported_nr, MINIMAL_LTE)
-                .unwrap_err()
-                .to_string()
-                .contains("source-format version 2")
+            format!(
+                "{:#}",
+                parse_sources(&unsupported_nr, MINIMAL_LTE).unwrap_err()
+            )
+            .contains("source-format version 2")
         );
 
         let missing = MINIMAL_LTE.replacen("version 1\n", "", 1);
@@ -1125,11 +1124,36 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
 
         let unsupported_lte = MINIMAL_LTE.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
-            parse_sources(MINIMAL_NR, &unsupported_lte)
-                .unwrap_err()
-                .to_string()
-                .contains("source-format version 2")
+            format!(
+                "{:#}",
+                parse_sources(MINIMAL_NR, &unsupported_lte).unwrap_err()
+            )
+            .contains("source-format version 2")
         );
+    }
+
+    /// The regression the reader-side check exists for. A real stale tree differs in **both** the
+    /// version marker and the vocabulary; before the check moved into the reader, the vocabulary
+    /// failed first and the remedy sentence never printed.
+    ///
+    /// `{:#}`, not bare `to_string()`: `parse_sources` wraps every `nr_from_kdl`/`lte_from_kdl`
+    /// error in a "parsing lte.kdl" context (see `assert_nr_error` above), so plain `Display` only
+    /// ever shows that outer layer, never the version text underneath — regardless of which error
+    /// produced it. `main.rs` prints top-level errors with `{:#}` too, so this is also the
+    /// reader's-eye view of the fix, not just a test-visibility workaround.
+    #[test]
+    fn a_stale_vocabulary_reports_the_version_not_the_unknown_property() {
+        let stale = format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4 um=off\n}}\n").replacen(
+            "\nversion 1",
+            "\nversion 2",
+            1,
+        );
+        let error = format!("{:#}", parse_sources(MINIMAL_NR, &stale).unwrap_err());
+        assert!(
+            error.contains("source-format version 2") && error.contains("re-run `decompose`"),
+            "{error}"
+        );
+        assert!(!error.contains("missing required property"), "{error}");
     }
 
     #[test]
