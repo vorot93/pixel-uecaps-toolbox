@@ -9,6 +9,7 @@ use kdl::{KdlDocument, KdlEntry, KdlNode};
 use crate::{
     compiler::{
         features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
+        kdl_bcs::{format_bcs, parse_bcs},
         kdl_direction::{format_class_mimo, format_direction, parse_class_mimo, parse_direction},
         kdl_keys::{
             carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, nr_doc, profile,
@@ -229,7 +230,11 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
         combo::POWER_CLASS,
         combo.power_class.filter(|&v| v != 0),
     );
-    opt_int_prop(&mut node, combo::BCS_NR, combo.bcs_nr.filter(|&v| v != 0));
+    opt_str_prop(
+        &mut node,
+        combo::BCS_NR,
+        combo.bcs_nr.filter(|&v| v != 0).map(format_bcs).as_deref(),
+    );
     // Task 2: `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
     // exactly when it advertises that mode (`intra-band-en-dc-support == 1`). Derive the
     // common `Some(0)` from that flag and omit it; write only the ~20 exceptional zeros
@@ -252,10 +257,14 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
                 .collect::<Vec<_>>()
         ),
     }
-    opt_int_prop(
+    opt_str_prop(
         &mut node,
         combo::BCS_EUTRA,
-        combo.bcs_eutra.filter(|&v| v != 0),
+        combo
+            .bcs_eutra
+            .filter(|&v| v != 0)
+            .map(format_bcs)
+            .as_deref(),
     );
     opt_int_prop(
         &mut node,
@@ -618,6 +627,24 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     Ok(cc)
 }
 
+/// Read a BCS property whose zero is spelled by omitting it.
+///
+/// An explicit empty value is refused rather than accepted as zero: omission already spells
+/// that value, and a format with two spellings for one value cannot round-trip byte-stably.
+/// The writer never emits one — `emit_nr_combo` filters `Some(0)` out first — so this guards
+/// a hand-edited document.
+fn read_omitted_zero_bcs(r: &mut NodeReader<'_>, key: &'static str) -> Result<Option<u32>> {
+    let Some(raw) = r.opt_str(key)? else {
+        return Ok(None);
+    };
+    ensure!(
+        !raw.is_empty(),
+        "property `{key}` is empty; the empty BCS set is spelled by omitting the property, so \
+         an explicit empty value would give one value two spellings"
+    );
+    Ok(Some(parse_bcs(&raw, key)?))
+}
+
 fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     let mut r = NodeReader::new(node);
     // `power-class`/`bcs-nr`/`bcs-eutra`/`intra-band-en-dc-support` are corpus-verified
@@ -625,8 +652,8 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // defaults back to `Some(0)`. `bcs-intra-endc` derives from `intra-band-en-dc-support` —
     // see below.
     let power_class = r.opt_int::<i32>(combo::POWER_CLASS)?.or(Some(0));
-    let bcs_nr = r.opt_int::<u32>(combo::BCS_NR)?.or(Some(0));
-    let bcs_eutra = r.opt_int::<u32>(combo::BCS_EUTRA)?.or(Some(0));
+    let bcs_nr = read_omitted_zero_bcs(&mut r, combo::BCS_NR)?.or(Some(0));
+    let bcs_eutra = read_omitted_zero_bcs(&mut r, combo::BCS_EUTRA)?.or(Some(0));
     let intra_band_en_dc_support = r
         .opt_int::<i32>(combo::INTRA_BAND_EN_DC_SUPPORT)?
         .or(Some(0));
@@ -1418,6 +1445,33 @@ mod nr_tests {
             format!("{err:#}").contains("cannot be represented"),
             "{err:#}"
         );
+    }
+
+    /// `bn`/`be` spell their zero by omitting the property, so an explicit empty value would
+    /// be a second spelling of the same value and is refused with the remedy.
+    #[test]
+    fn bcs_nr_and_eutra_round_trip_as_index_lists() {
+        let text = "version 1\nbc ATT\nc bn=b0,1 be=b0 {\n    n78 A\n}\n";
+        let doc = nr_from_kdl(text).expect("parse");
+        assert_eq!(doc.combo[0].bcs_nr, Some(3_221_225_472));
+        assert_eq!(doc.combo[0].bcs_eutra, Some(2_147_483_648));
+        assert_eq!(
+            nr_to_kdl(&doc).unwrap(),
+            text,
+            "index lists are a fixed point"
+        );
+
+        // An omitted property is the zero, and stays omitted on the way back out.
+        let zero = "version 1\nbc ATT\nc {\n    n78 A\n}\n";
+        let doc = nr_from_kdl(zero).expect("parse");
+        assert_eq!(doc.combo[0].bcs_nr, Some(0));
+        assert_eq!(nr_to_kdl(&doc).unwrap(), zero);
+
+        for key in ["bn", "be"] {
+            let text = format!("version 1\nbc ATT\nc {key}=\"\" {{\n    n78 A\n}}\n");
+            let error = nr_from_kdl(&text).unwrap_err().to_string();
+            assert!(error.contains("omitting the property"), "{error}");
+        }
     }
 
     #[test]
