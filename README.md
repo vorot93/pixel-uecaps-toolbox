@@ -131,12 +131,12 @@ excludes that carrier from the rebuilt profiled legend, while a bare, childless
 above) deliberately emits an entry with no PLMNs. PLMN order and duplicates are
 significant and preserved.
 
-Top-level `dl-feature` and `ul-feature` nodes are canonical global catalogs for
+Top-level `df` and `uf` nodes are canonical global catalogs for
 compiler source. A band+CA-bandwidth-class entry (an `nr`/`lte` node) can carry more than
 one component carrier (CC) — the count is fixed by its bandwidth class, e.g. `n78` class C
-= 2 CCs — and each CC has its own feature reference, so a sub-block's `d=`/`u=` value carries a
+= 2 CCs — and each CC has its own feature reference, so a sub-block's direction argument carries a
 comma-separated list, one 1-based catalog position per CC in CC order (a single-CC sub-block
-carries exactly one, e.g. `d=A3`). Decompose
+carries exactly one, e.g. `n78 A3`). Decompose
 prunes unreferenced wire records, then sorts and deduplicates the retained records by their
 complete raw values. Provision filters those catalogs into a compact, independently numbered
 subset for each generated carrier/SKU file, so a file never contains a record used only by
@@ -145,7 +145,7 @@ most 255 DL records and, independently, at most 255 UL records.
 
 The raw `dl-cc-id`/`ul-cc-id` selector fallback for unresolved bytes was removed: a component
 with no resolved feature set surfaces no per-CC property at all (the all-zero placeholder is
-re-derived from `bw-class`/`cc_count` on read). Old inline compiler
+re-derived from the bandwidth class and its CC count on read). Old inline compiler
 `dl-max-*`/`ul-max-*` properties are rejected in `nr.kdl`; regenerate canonical
 source with `decompose` instead of hand-migrating feature indexes.
 
@@ -154,14 +154,16 @@ the component's per-CC feature set on provision (DL from the subcarrier-spacing 
 MIMO presence). The old `dl-feature-index`/`ul-feature-index` override was removed — a decoded NR
 index that contradicts the derivation is now a hard decode error rather than a carried override
 (the proto field is still materialized on provision/decompose). LTE components keep the value explicit
-but spell it `dl-feature`/`ul-feature` (dropping the `-index` suffix; the LTE MIMO × CC-count
-encoding, which is not derivable); `ul-feature` is omitted when it is `0` — the common "no UL"
-default — and re-defaults to `0` on read.
+(the LTE MIMO × CC-count encoding, which is not derivable), but it is not a property — it is the
+single trailing number in the sub-block's positional direction argument (`B66 C2` is class C,
+feature index 2); an omitted UL argument means feature index `0` — the common "no UL" default —
+and re-defaults to `0` on read.
 
-A combo header's `bcs-intra-endc=0` is likewise omitted from `nr.kdl` when it is derivable: an
-absent value re-derives to `0` when the same combo's `intra-band-en-dc-support=1`, so a surviving
-explicit `bcs-intra-endc=0` marks one of the exceptional combos where `intra-band-en-dc-support`
-is not `1`. Every nonzero `bcs-intra-endc` stays explicit.
+A combo header's `bi` (bcs-intra-endc) is likewise omitted from `nr.kdl` when it is derivable: an
+absent value re-derives to the empty bandwidth-combination-set when the same combo's `ie`
+(intra-band-en-dc-support) is `1`, so a surviving explicit `bi=""` marks one of the exceptional
+combos where `ie` is not `1`. Spelling out the derivable value is rejected — omit it instead.
+Every nonempty `bi` stays explicit.
 
 The matching `lte.kdl` stores the exact LTE file whitelist and byte-preserving
 payloads:
@@ -171,11 +173,11 @@ version 1
 
 f "400907661" fp=862505271 bm=1645725906
 
-c b=0 u1=0 u2=0 {
+c b="" u1=0 u2=0 {
     s {
         m G2YBB
     }
-    B1 d=A2
+    B1 A2
 }
 ```
 
@@ -183,8 +185,11 @@ An `f` (file) node's quoted key argument is the modem firmware's exact `lte_file
 value (quoted because it's numeric-leading), not a hash. File-level `fingerprint`
 and `bitmask` remain stored because the compiler has no independent derivation for
 them. For optional protobuf fields, omission means absent and an explicit `0` means
-present-zero — with one deliberate exception: a sub-block's `u`, where omission means the
-explicit zero (uplink disabled) and a genuinely absent uplink class is rejected outright.
+present-zero — with one deliberate exception: a sub-block's UL argument, where omission means the
+explicit zero (uplink disabled) and a genuinely absent uplink class is rejected outright. The
+DL argument is required; without keys, an omitted one would shift UL into its place.
+A combo's `b` (bcs) is a bandwidth combination set, so it reads as an index list too — `b=""` is
+the empty set, present but not emitted on the air, and an omitted `b` is a genuinely absent field.
 LTE component order is significant.
 
 In either document, a combo's `selection` is zero or more child `selection { … }`
@@ -325,8 +330,11 @@ LTE band combinations (1053)
 
 **Read:** `lte_*.binarypb` files carry LTE-only carrier aggregation combinations (no NR). Each
 line is one combination — band + CA bandwidth class, `↓` marks a downlink-only component (UL
-disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. These files sit
-outside the 16/14 SKU-profile scheme (no anchor prime divides their
+disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. That `bcs` prints the
+raw stored decimal (e.g. `2147483648`), not the `b`-prefixed index-list spelling `lte.kdl` uses
+for the same value — deliberately, since this report is a decode-side view of the protobuf; see
+DESIGN.md's [BCS: a 3GPP bit string, not an opaque number](DESIGN.md#bcs-a-3gpp-bit-string-not-an-opaque-number)
+for why. These files sit outside the 16/14 SKU-profile scheme (no anchor prime divides their
 number). The `LTE config` line names the modem's selection-table family (and the Pixel model where
 confirmed); the modem picks the file by hardware/SKU category — burned into the Shannon firmware —
 not by SIM or MCC.
@@ -420,38 +428,46 @@ as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 ## Reading the source format
 
 `decompose` writes a compact vocabulary. Keys are abbreviated because the per-combo lines repeat
-tens of thousands of times — the real corpus is 7.6 MB of KDL, down from 12.7 MB with the long
+tens of thousands of times — the real corpus is 7.0 MB of KDL, down from 12.7 MB with the long
 names. Per-carrier keys that appear a handful of times (`mcc`, `mnc`) are left spelled out.
 
 ```kdl
-c bn=1 be=0 ie=1 {
+c bn=b0,1 ie=1 {
     s { c VZW; m legacy GUL82 }
-    n257 d=G30,30 u=A1
-    B66  d=C2
+    n257 G30,30 A1
+    B66  C2
 }
 ```
 
 A sub-block's **node name is its 3GPP band**: `n257` is NR band n257, `B66` is E-UTRA band 66.
 
-`d` and `u` are the DL and UL directions. Each is a **CA bandwidth-class letter** followed by an
-optional comma-separated list of per-CC feature references — one per component carrier, pointing
-1-based into the `df`/`uf` catalogs at the top of the file.
+**The two values after the band are the directions, DL first and UL second.** They are positional,
+not named, because every sub-block has a DL value and a UL value only ever appears after one — so
+the old `d=`/`u=` keys told you nothing the order didn't. Each is a **CA bandwidth-class letter**
+followed by an optional comma-separated list of per-CC feature references — one per component
+carrier, pointing 1-based into the `df`/`uf` catalogs at the top of the file.
 
-- `d=G30,30` — class G, two CCs, both using catalog entry 30
-- `d=A3` — class A, one CC, entry 3
-- `d=A` — class A with no features (the common placeholder)
-- no `u` at all — UL disabled
+- `G30,30` — class G, two CCs, both using catalog entry 30
+- `A3` — class A, one CC, entry 3
+- `A` — class A with no features (the common placeholder)
+- no second value at all — UL disabled
 
 The letter is worth learning: it is the 3GPP class, so it tells you the aggregation directly.
 `A` is 1 CC, `B` and `C` are 2, and `G` through `M` are the FR2 (mmWave) classes running 2 to 8
-CCs. So `n257 d=G30,30` reads as "mmWave band n257, two aggregated carriers".
+CCs. So `n257 G30,30` reads as "mmWave band n257, two aggregated carriers".
 
-`lte.kdl` sub-blocks spell their directions `d`/`u` too, but the *value* is a different encoding:
-it packs the class and the MIMO width into one bitfield. `d=A4` is class A with 4x4 MIMO, `d=A2`
-is 2x2, and an absent `u` means UL disabled. So the same text means different things in the two
-files — `B66 d=C2` is "class C, feature index 2" in `nr.kdl` and "class C, 2x2 MIMO" in
+`lte.kdl` sub-blocks put their directions in the same two positions, but the *value* is a different
+encoding: it packs the class and the MIMO width into one bitfield. `A4` is class A with 4x4 MIMO,
+`A2` is 2x2, and an absent second value means UL disabled. So the same text means different things
+in the two files — `B66 C2` is "class C, feature index 2" in `nr.kdl` and "class C, 2x2 MIMO" in
 `lte.kdl`. Which file you are reading settles it, the same way a sub-block node name carries no
 radio-kind tag when the document already does.
+
+`bn`, `bi` and `be` on a combo (and `b` in `lte.kdl`) are **bandwidth combination sets**, written
+as a `b` followed by the ascending 3GPP set indices: `bn=b0,1` means sets 0 and 1 are supported.
+`b` prefixes the list only so KDL leaves it unquoted — a value starting with a digit gets quotes.
+`""` is the empty set, which means the field is not sent over the air at all, and on `bn`/`be` you
+spell that by leaving the property out entirely.
 
 Other keys, in rough order of how often you will meet them: `c` combo (and, inside `s`,
 carriers), `s` selection, `m` skus, `cr` carrier, `pf` profile, `bc` bitmask-carriers,

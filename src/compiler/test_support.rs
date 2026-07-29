@@ -39,41 +39,41 @@ c {
     s {
         m prime:8969
     }
-    n3 d=A u=A
+    n3 A A
 }
 c {
     s {
         c BETA
         m legacy G2YBB
     }
-    n41 d=A u=A
+    n41 A A
 }
 c {
     s {
         c ALPHA
         m legacy G2YBB
     }
-    n78 d=A u=A
+    n78 A A
 }
 "#;
 
 const EXPECTED_LTE_KDL: &str = r#"version 1
 f "400907661" fp=101 bm=201
 f "92" fp=102 bm=202
-c b=0 u1=0 u2=0 {
+c b="" u1=0 u2=0 {
     s {
         m G2YBB GGX8B GR83Y
     }
-    B1 d=A4
+    B1 A4
 }
-c b=0 u1=0 u2=0 {
-    B3 d=A4
+c b="" u1=0 u2=0 {
+    B3 A4
 }
-c b=0 u1=0 u2=0 {
+c b="" u1=0 u2=0 {
     s {
         m lte:92
     }
-    B5 d=A4
+    B5 A4
 }
 "#;
 

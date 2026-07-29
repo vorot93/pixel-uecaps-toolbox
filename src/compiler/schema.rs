@@ -565,7 +565,7 @@ fn validate_lte_combos(
             ensure!(
                 component.ul_bw_class_mimo.is_some(),
                 "LTE combo {} band {} omits ul_bw_class_mimo; the source format cannot represent \
-                 an absent uplink class (an omitted property means the explicit zero)",
+                 an absent uplink class (an omitted argument means the explicit zero)",
                 index + 1,
                 component.band
             );
@@ -1035,8 +1035,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
              df s=1\n\
              df s=3\n\
              uf s=9\n\
-             c {{\n    n77 d=A1\n}}\n\
-             c {{\n    n78 d=A3\n}}\n"
+             c {{\n    n77 A1\n}}\n\
+             c {{\n    n78 A3\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
@@ -1046,7 +1046,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         assert!(canonical.contains("df s=3"), "{canonical}");
         assert!(!canonical.contains("s=1"), "{canonical}");
         assert!(!canonical.contains("ul-feature"), "{canonical}");
-        assert!(canonical.contains("d=A1"), "{canonical}");
+        assert!(canonical.contains("n77 A1"), "{canonical}");
     }
 
     #[test]
@@ -1055,8 +1055,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
             "{MINIMAL_NR}\n\
              df\n\
              df s=0\n\
-             c {{\n    n77 d=A2\n}}\n\
-             c {{\n    n78 d=A1\n}}\n"
+             c {{\n    n77 A2\n}}\n\
+             c {{\n    n78 A1\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
@@ -1073,10 +1073,10 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         // an out-of-range one is still caught at validation against the catalog length — the
         // reader knows references are 1-based, but not how long the catalog is.
         for (cc_line, expected) in [
-            ("n78 d=A0", "1-based"),
-            ("n78 d=A2", "exceeds the dl catalog length 1"),
-            ("n78 u=A0", "1-based"),
-            ("n78 u=A2", "exceeds the ul catalog length 1"),
+            ("n78 A0", "1-based"),
+            ("n78 A2", "exceeds the dl catalog length 1"),
+            ("n78 A1 A0", "1-based"),
+            ("n78 A1 A2", "exceeds the ul catalog length 1"),
         ] {
             let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nc {{\n    {cc_line}\n}}\n");
             // `{:#}` for the whole chain: a parse-time rejection is wrapped in
@@ -1094,7 +1094,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
             nr.push_str(&format!("\ndf b={value}\n"));
-            nr.push_str(&format!("\nc {{\n    n{value} d=A{value}\n}}\n"));
+            nr.push_str(&format!("\nc {{\n    n{value} A{value}\n}}\n"));
         }
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 300);
@@ -1465,11 +1465,11 @@ cr "MAPPING" mi=7 {
     #[test]
     fn selections_are_resolved_and_cached_during_validation() {
         let nr = format!(
-            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78\n}}\n",
+            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 d=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 A4\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1492,15 +1492,31 @@ cr "MAPPING" mi=7 {
 
     #[test]
     fn nr_payloads_require_valid_components_and_canonicalize_them() {
-        for (catalog, combo_body) in [("", ""), ("", "n0\n"), ("", "B1 st=5\n")] {
-            let nr = format!("{MINIMAL_NR}\n{catalog}combo {{\n{combo_body}}}\n");
+        // Each case is rejected for its own distinct reason, not just "some error occurred":
+        // an empty combo has no components at all. `n0 A`'s bare class letter (no per-CC
+        // list) is the all-zero placeholder, a complete DL argument on its own, so it clears
+        // the mandatory-DL-argument check and reaches per-component validation, where band 0
+        // fails (it has no 3GPP meaning). `B1 A st=5` similarly supplies a complete DL
+        // argument but still leaves `st` (`srs-tx-switch`) unconsumed, since that property is
+        // NR-only and this sub-block is E-UTRA.
+        for (combo_body, expected) in [
+            ("", "must contain at least one component"),
+            ("n0 A\n", "band must be positive"),
+            ("B1 A st=5\n", "unknown property `st`"),
+        ] {
+            let nr = format!("{MINIMAL_NR}\nc {{\n{combo_body}}}\n");
+            // `{:#}` for the whole chain: the third case is rejected while still inside
+            // `nr_from_kdl` (wrapped in "parsing nr.kdl"), while the first two are rejected by
+            // `validate_documents`, downstream and unwrapped. The alternate format finds the
+            // substring either way, matching `assert_nr_error` elsewhere in this module.
+            let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
             assert!(
-                parse_sources(&nr, MINIMAL_LTE).is_err(),
-                "accepted {combo_body:?}"
+                error.contains(expected),
+                "body {combo_body:?} expected {expected:?} in {error:?}"
             );
         }
 
-        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\n");
+        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\n");
         let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
@@ -1513,7 +1529,7 @@ cr "MAPPING" mi=7 {
     #[test]
     fn duplicate_canonical_nr_payload_records_are_rejected() {
         let nr = format!(
-            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\nc {{\n    B1\n    n78 d=A2\n}}\n"
+            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\nc {{\n    B1 A\n    n78 A2\n}}\n"
         );
         assert_nr_error(&nr, "duplicate canonical NR payload");
     }
@@ -1523,7 +1539,7 @@ cr "MAPPING" mi=7 {
         let empty = format!("{MINIMAL_LTE}\nc {{\n}}\n");
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
-        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc {{\n    B1 d=A4\n}}\n");
+        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc {{\n    B1 A4\n}}\n");
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
                 .unwrap_err()
@@ -1532,29 +1548,29 @@ cr "MAPPING" mi=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\nc {{\n    B1 d=A4\n    B3 d=A4\n}}\nc {{\n    B3 d=A4\n    B1 d=A4\n}}\n"
+            "{MINIMAL_LTE}\nc {{\n    B1 A4\n    B3 A4\n}}\nc {{\n    B3 A4\n    B1 A4\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
-        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=0` is `Some(0)`.
-        // It is also what keeps these two combos distinct under `RawLteCombo`, now that their
-        // components are identical.
+        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=""` is
+        // `Some(0)`. It is also what keeps these two combos distinct under `RawLteCombo`, now
+        // that their components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc b=0 {{\n    B1 d=A4\n}}\n");
+            format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc b=\"\" {{\n    B1 A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
         assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
-        // An omitted `u` is the explicit zero, not an absent field — in both combos.
+        // An omitted UL argument is the explicit zero, not an absent field — in both combos.
         for combo in &sources.lte.combo {
             assert_eq!(combo.source.components[0].ul_bw_class_mimo, Some(0));
         }
     }
 
-    /// The source format spells UL-disabled by omitting the property, so `None` has no spelling
+    /// The source format spells UL-disabled by omitting the argument, so `None` has no spelling
     /// left; and with `off` gone, neither does a disabled DL. Both are corpus-absent (0 of 12 159
     /// sub-blocks), so this rejects rather than silently normalising — a foreign file gets a loud
     /// error instead of a quiet re-encode.
@@ -1630,11 +1646,11 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
     #[test]
     fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
         let nr_text = format!(
-            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 d=A1\n    B1\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3\n}}\n",
+            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 A1\n    B1 A\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 d=A4\n    B1 d=A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 d=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();

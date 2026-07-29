@@ -1,4 +1,4 @@
-//! The composite `dl=`/`ul=` value: a 3GPP CA bandwidth-class letter followed by an optional
+//! A sub-block's positional direction value: a 3GPP CA bandwidth-class letter followed by an optional
 //! comma-separated per-CC index list.
 //!
 //! ```text
@@ -16,10 +16,18 @@
 //! same strictness by hand: every rejection below has its own message and its own test. The 464
 //! non-uniform per-CC lists in the corpus are exactly the rows an earlier CC0-only projection
 //! dropped silently, so a parser that collapses a list is the failure mode to guard against.
+//!
+//! **The same text means different things in the two documents.** `B66 C2` is a bandwidth
+//! class plus a per-CC feature index in `nr.kdl` and a class+MIMO bitfield in `lte.kdl`. That
+//! is a deliberate trade, not an oversight: the *document* fixes the interpretation, the same
+//! way a sub-block node name carries no radio-kind tag. `format_direction`/`parse_direction`
+//! serve the first, `format_class_mimo`/`parse_class_mimo` the second, and
+//! `identical_d_equals_text_means_different_things_in_each_document` in `kdl_source.rs` is
+//! where the trade is meant to be learned before anyone "unifies" the two codecs.
 
 use anyhow::{Context, Result, bail, ensure};
 
-/// A parsed `dl=`/`ul=` value.
+/// A parsed DL or UL positional direction argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Direction {
     pub(crate) bw_class: u8,
@@ -48,15 +56,17 @@ pub(crate) fn format_direction(bw_class: u8, indices: &[u16]) -> Result<String> 
     Ok(out)
 }
 
-/// Parse a class plus its per-CC list. `key` names the property in diagnostics.
-pub(crate) fn parse_direction(raw: &str, key: &str) -> Result<Direction> {
+/// Parse a class plus its per-CC list. `label` names the positional direction argument
+/// (`DL`/`UL`) in diagnostics.
+pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
-        .with_context(|| format!("property `{key}` is empty"))?;
+        .with_context(|| format!("{label} positional argument is empty"))?;
     ensure!(
         letter.is_ascii_uppercase(),
-        "property `{key}` value `{raw}` must begin with an uppercase bandwidth-class letter"
+        "{label} positional argument value `{raw}` must begin with an uppercase bandwidth-class \
+         letter"
     );
     let bw_class = (letter as u8) - b'A' + 1;
 
@@ -72,15 +82,23 @@ pub(crate) fn parse_direction(raw: &str, key: &str) -> Result<Direction> {
     for part in rest.split(',') {
         ensure!(
             !part.is_empty(),
-            "property `{key}` value `{raw}` has an empty index"
+            "{label} positional argument value `{raw}` has an empty index"
         );
         ensure!(
             part.bytes().all(|b| b.is_ascii_digit()),
-            "property `{key}` index `{part}` is not a decimal number"
+            "{label} positional argument index `{part}` is not a decimal number"
         );
-        let index: u16 = part
-            .parse()
-            .with_context(|| format!("property `{key}` index `{part}` is out of range"))?;
+        // Same rule `parse_bcs` enforces: `A03` and `A3` must not both parse, or the round
+        // trip stops being byte-stable. Index 0 is a legitimate E-UTRA
+        // `parseLteFeatureIndex` value spelled `0`, so only PADDED zeros are refused.
+        ensure!(
+            part == "0" || !part.starts_with('0'),
+            "{label} positional argument index `{part}` has a leading zero; each index has \
+             exactly one spelling, so write it without padding"
+        );
+        let index: u16 = part.parse().with_context(|| {
+            format!("{label} positional argument index `{part}` is out of range")
+        })?;
         // NOT rejected here: index 0. On an NR sub-block a catalog reference is 1-based and 0
         // is invalid, but on an E-UTRA sub-block the index is a `parseLteFeatureIndex` MIMO
         // code for which 0 is a legitimate value. That distinction is kind semantics, and the
@@ -107,7 +125,7 @@ const CLASS_MIMO_BASES: [(i32, char); 6] = [
 /// Render the class+MIMO bitfield as `<letter><mimo>`, e.g. 32769 → `A4`.
 ///
 /// Fails closed on an unobserved value rather than inventing a letter — including 0, which is
-/// UL-disabled. `lte.kdl` spells that by *omitting* the property, so 0 has no rendering here and
+/// UL-disabled. `lte.kdl` spells that by *omitting* the argument, so 0 has no rendering here and
 /// no value has two spellings. A 0 reaching this function is a disabled downlink, which
 /// `validate_lte_combos` rejects first with a message naming the combo and band.
 pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
@@ -120,33 +138,36 @@ pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
     Ok(format!("{letter}{mimo}"))
 }
 
-/// The inverse of [`format_class_mimo`]. `key` names the property in diagnostics.
+/// The inverse of [`format_class_mimo`]. `label` names the positional direction argument
+/// (`DL`/`UL`) in diagnostics.
 ///
 /// Never returns 0: every result is `base + low` with `base >= 1024`. The only route to a zero UL
-/// class is an omitted property, which the reader defaults — so the source format has exactly one
+/// class is an omitted argument, which the reader defaults — so the source format has exactly one
 /// spelling per value and the round trip stays byte-stable without a uniqueness check.
-pub(crate) fn parse_class_mimo(raw: &str, key: &str) -> Result<i32> {
+pub(crate) fn parse_class_mimo(raw: &str, label: &str) -> Result<i32> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
-        .with_context(|| format!("property `{key}` is empty"))?;
+        .with_context(|| format!("{label} positional argument is empty"))?;
     let mimo = chars
         .next()
-        .with_context(|| format!("property `{key}` value `{raw}` has no MIMO width"))?;
+        .with_context(|| format!("{label} positional argument value `{raw}` has no MIMO width"))?;
     ensure!(
         chars.next().is_none(),
-        "property `{key}` value `{raw}` has trailing characters"
+        "{label} positional argument value `{raw}` has trailing characters"
     );
     let (base, _) = CLASS_MIMO_BASES
         .iter()
         .find(|(_, candidate)| *candidate == letter)
         .with_context(|| {
-            format!("property `{key}` bandwidth-class letter `{letter}` is not one of A..F")
+            format!(
+                "{label} positional argument bandwidth-class letter `{letter}` is not one of A..F"
+            )
         })?;
     let low = match mimo {
         '2' => 0,
         '4' => 1,
-        other => bail!("property `{key}` MIMO width `{other}` must be 2 or 4"),
+        other => bail!("{label} positional argument MIMO width `{other}` must be 2 or 4"),
     };
     Ok(base + low)
 }
@@ -165,7 +186,7 @@ mod tests {
             (13, vec![1, 2, 3, 4, 5, 6, 7, 8], "M1,2,3,4,5,6,7,8"),
         ] {
             assert_eq!(format_direction(class, &indices).unwrap(), text);
-            let parsed = parse_direction(text, "dl").unwrap();
+            let parsed = parse_direction(text, "DL").unwrap();
             assert_eq!(parsed.bw_class, class);
             assert_eq!(parsed.indices, indices);
         }
@@ -175,7 +196,7 @@ mod tests {
     /// and its absence means one number.
     #[test]
     fn a_multi_digit_index_is_one_index() {
-        let parsed = parse_direction("A12", "dl").unwrap();
+        let parsed = parse_direction("A12", "DL").unwrap();
         assert_eq!(parsed.indices, vec![12]);
     }
 
@@ -183,7 +204,7 @@ mod tests {
     /// satisfy a length check on a uniform one.
     #[test]
     fn distinct_per_cc_indices_survive() {
-        let parsed = parse_direction("G22,23", "dl").unwrap();
+        let parsed = parse_direction("G22,23", "DL").unwrap();
         assert_eq!(parsed.indices, vec![22, 23]);
         assert_ne!(parsed.indices[0], parsed.indices[1]);
     }
@@ -199,7 +220,7 @@ mod tests {
             ("A3,x", "decimal"),
             ("A99999999", "out of range"),
         ] {
-            let error = parse_direction(bad, "dl").unwrap_err().to_string();
+            let error = parse_direction(bad, "DL").unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -211,7 +232,25 @@ mod tests {
     /// `parseLteFeatureIndex` value, so only the reader — which knows the kind — can judge it.
     #[test]
     fn index_zero_parses_and_is_left_to_the_reader() {
-        assert_eq!(parse_direction("A0", "dl").unwrap().indices, vec![0]);
+        assert_eq!(parse_direction("A0", "DL").unwrap().indices, vec![0]);
+    }
+
+    /// `A03` and `A3` must not both parse to the same index, or the round trip stops being
+    /// byte-stable — the same rule `kdl_bcs::parse_bcs` enforces for its own index list. Plain
+    /// `0` is exempt: it is a legitimate value, not padding.
+    #[test]
+    fn rejects_anything_with_a_second_spelling() {
+        for (bad, expect) in [
+            ("A03", "leading zero"),
+            ("A01", "leading zero"),
+            ("G22,023", "leading zero"),
+        ] {
+            let error = parse_direction(bad, "DL").unwrap_err().to_string();
+            assert!(
+                error.contains(expect),
+                "`{bad}` should mention `{expect}`, got: {error}"
+            );
+        }
     }
 
     #[test]
@@ -239,19 +278,19 @@ mod tests {
             (1025, "F4"),
         ] {
             assert_eq!(format_class_mimo(value).unwrap(), text);
-            assert_eq!(parse_class_mimo(text, "d").unwrap(), value);
+            assert_eq!(parse_class_mimo(text, "DL").unwrap(), value);
         }
     }
 
     #[test]
     fn class_mimo_fails_closed_on_an_unknown_bitfield() {
         assert!(format_class_mimo(999).is_err());
-        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the property.
+        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the argument.
         assert!(format_class_mimo(0).is_err());
-        assert!(parse_class_mimo("Z2", "d").is_err());
-        assert!(parse_class_mimo("A3", "d").is_err());
-        assert!(parse_class_mimo("A", "d").is_err());
+        assert!(parse_class_mimo("Z2", "DL").is_err());
+        assert!(parse_class_mimo("A3", "DL").is_err());
+        assert!(parse_class_mimo("A", "DL").is_err());
         // The superseded `off` spelling is not accepted back.
-        assert!(parse_class_mimo("off", "u").is_err());
+        assert!(parse_class_mimo("off", "UL").is_err());
     }
 }

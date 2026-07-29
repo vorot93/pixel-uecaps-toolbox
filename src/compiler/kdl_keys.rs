@@ -79,15 +79,14 @@ pub(crate) mod selection {
     pub(crate) const SKUS: &str = "m";
 }
 
-/// Properties of an `nr.kdl` sub-block. `DL`/`UL` each carry the bandwidth-class letter and the
-/// per-CC index list in one value — see `compiler::kdl_direction`.
+/// Properties of an `nr.kdl` sub-block. The two directions are **positional arguments**, not
+/// properties — DL first, UL second — so `srs-tx-switch` is all that is left here. See
+/// `compiler::kdl_direction` for the value format.
 pub(crate) mod sub_block {
-    pub(crate) const DL: &str = "d";
-    pub(crate) const UL: &str = "u";
     pub(crate) const SRS_TX_SWITCH: &str = "st";
 }
 
-/// Properties of a `dl-feature` catalog node.
+/// Properties of a `df` catalog node.
 pub(crate) mod dl_catalog {
     pub(crate) const MAX_SCS: &str = "s";
     pub(crate) const MAX_MIMO: &str = "m";
@@ -96,7 +95,7 @@ pub(crate) mod dl_catalog {
     pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
 }
 
-/// Properties of a `ul-feature` catalog node.
+/// Properties of a `uf` catalog node.
 pub(crate) mod ul_catalog {
     pub(crate) const MAX_SCS: &str = "s";
     pub(crate) const MAX_MIMO_CB: &str = "m";
@@ -130,17 +129,6 @@ pub(crate) mod lte_combo {
     pub(crate) const SUB_BLOCK_PREFIX: &str = "B";
 }
 
-/// Properties of an `lte.kdl` sub-block: the class+MIMO bitfield as `<letter><mimo>`.
-///
-/// Spelled `d`/`u` like the `nr.kdl` sub-block's, because the document already fixes which
-/// encoding applies — the same rule that lets a sub-block node name carry no radio-kind tag.
-/// The Rust constants keep `_MIMO` precisely *because* the KDL spelling no longer distinguishes
-/// them: `B66 d=C2` is a per-CC feature index in `nr.kdl` and a class+MIMO bitfield here.
-pub(crate) mod lte_sub_block {
-    pub(crate) const DL_MIMO: &str = "d";
-    pub(crate) const UL_MIMO: &str = "u";
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -148,8 +136,8 @@ mod tests {
     /// One scope's keys. Two keys may share a spelling across scopes but never within one.
     fn scopes() -> Vec<(&'static str, Vec<&'static str>)> {
         use super::{
-            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, lte_sub_block,
-            nr_doc, plmn, profile, selection, sub_block, ul_catalog,
+            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, nr_doc, plmn,
+            profile, selection, sub_block, ul_catalog,
         };
         vec![
             (
@@ -194,10 +182,7 @@ mod tests {
                 ],
             ),
             ("selection", vec![selection::CARRIERS, selection::SKUS]),
-            (
-                "sub_block",
-                vec![sub_block::DL, sub_block::UL, sub_block::SRS_TX_SWITCH],
-            ),
+            ("sub_block", vec![sub_block::SRS_TX_SWITCH]),
             (
                 "dl_catalog",
                 vec![
@@ -233,10 +218,6 @@ mod tests {
                     lte_combo::SELECTION,
                     lte_combo::SUB_BLOCK_PREFIX,
                 ],
-            ),
-            (
-                "lte_sub_block",
-                vec![lte_sub_block::DL_MIMO, lte_sub_block::UL_MIMO],
             ),
         ]
     }
