@@ -401,13 +401,27 @@ the most common (every UE supports BCS 0) but not proven from local material. No
 implementation depends on the naming — only the rendered digits would shift.
 
 **`0` means "the field is not emitted on the air interface".** An all-zero bit string appears
-**zero** times across every decoded capture (the smallest on-air value is `'1'B(1)` = {0}),
-ASN.1 `BIT STRING (SIZE (1..32))` cannot be zero-length, and the 3GPP field is `OPTIONAL`. So a
-stored `0` is the modem's encoding of *"omit `supportedBandwidthCombinationSet` from the UE
-capability message"*, not "supports no bandwidth combination set". That is why the omit-when-zero
-rule below was kept rather than inverted: **a property omitted in the source corresponds to a
-field omitted on the air**, and that mirror is worth more than the 28,587 bytes (0.38%)
-inverting it would have saved.
+**zero** times across every decoded capture, ASN.1 `BIT STRING (SIZE (1..32))` cannot be
+zero-length, and the 3GPP field is `OPTIONAL`. So a stored `0` is the modem's encoding of
+*"omit `supportedBandwidthCombinationSet` from the UE capability message"*, not "supports no
+bandwidth combination set". That is why the omit-when-zero rule below was kept rather than
+inverted: **a property omitted in the source corresponds to a field omitted on the air**, and
+that mirror is worth more than the 28,587 bytes (0.38%) inverting it would have saved.
+
+The smallest value each side actually emits differs, and conflating the two understates the LTE
+case. On the **NR** side the decoder prints trimmed bits and a single-bit {0} is ordinary —
+`'1'B(1)`, 58 occurrences. On the **LTE** side (`-r10`/`-r13`, printed full-width) the field
+takes only four values across all 80 captures, **every one with at least two bits set**:
+
+| on-air value | set | occurrences |
+|---|---|---|
+| 3221225472 | {0,1} | 208 |
+| 3758096384 | {0,1,2} | 58 |
+| 4026531840 | {0,1,2,3} | 20 |
+| 4227858432 | {0,1,2,3,4,5} | 4 |
+| 2147483648 | {0} | **0** |
+
+A single-bit {0} never reaches the LTE air interface at all.
 
 The four fields differ only in what omission means — unchanged by the change of spelling:
 
@@ -416,7 +430,7 @@ The four fields differ only in what omission means — unchanged by the change o
 | `bn` (`bcs_nr`, `u32`) | `Some(0)` — not emitted on air | **rejected**; omission already spells it |
 | `be` (`bcs_eutra`, `u32`) | `Some(0)` | **rejected**; omission already spells it |
 | `bi` (`bcs_intra_endc`, `u32`) | derived from `ie` — see the derivation rule below | accepted → `Some(0)` when `ie != 1` (20 occurrences); **rejected** when `ie == 1`, since omission already spells that derived value |
-| `lte.kdl` `b` (`LteCombo.bcs`, `u64`) | `None` | accepted → `Some(0)` (39 occurrences) |
+| `lte.kdl` `b` (`LteCombo.bcs`, `u64`) | `None` — **0 occurrences and structurally unreachable**, see the parallel-list subsection below | accepted → `Some(0)` (39 occurrences) |
 
 `bn=""` and `be=""` are rejected because omission already spells that value on those two
 fields, and a format with two spellings for one value cannot round-trip byte-stably. The writer
@@ -435,11 +449,64 @@ across the corpus against 228,111 quoted. The list must be ascending and duplica
 value has exactly one spelling: `parse_bcs` rejects a descending or repeating list rather than
 normalising it, the same byte-stability rule `parse_class_mimo` keeps for its own encoding.
 
+The prefix has one cost worth naming, because it has already misled a reader: **`b0` looks like
+"zero" but is set {0} = 2147483648**, the largest single-bit value in the field, since index 0 is
+the most significant bit. The all-zero bit string is `""`. `b=b0` is also the most common LTE
+spelling by far (3,414 of 3,878), so a glance down `lte.kdl` reads as a column of zeros when it is
+the opposite. `kdl_bcs::tests::the_empty_set_and_set_zero_stay_distinct` pins the two apart.
+
 Two spellings were measured and rejected, so that they are not re-proposed: letters A–F
 (`bn=ABE`) is the smallest output (−327,103 bytes) but hides the 3GPP index and would be a
 *third* letter alphabet in a file already reading A–M as an NR bandwidth class and A–F as an LTE
 class+MIMO; a literal bit string (`bn=b11001`, −283,290) mirrors the decoder exactly but reads
 further from the 3GPP term than the index list does.
+
+##### The LTE BCS lives in a parallel list, which is why `lte.kdl` `b` has three source states
+
+The LTE BCS is not carried inside a band combination. It lives in
+`supportedBandCombinationExt-r10`, a list **positionally parallel** to
+`supportedBandCombination-r10` — index *n* of one describes index *n* of the other. Each Ext
+entry is a SEQUENCE whose `supportedBandwidthCombinationSet-r10` is `OPTIONAL`, so an entry can
+be present and empty. Verified in `lte_information.txt`: **51 entries in each list**, of which 19
+carry a bit string and **32 are present-but-empty**.
+
+A combo that exists therefore has exactly two on-air renderings, and `LteCombo.bcs` spells them:
+
+| config | on air |
+|---|---|
+| `Some(bits)` → `b=b0,1` | Ext entry carrying the bit string |
+| `Some(0)` → `b=""` | Ext entry present, BCS field absent |
+
+**This is why `bcs = None` occurs 0 times in 3,878 corpus combos.** The parallel list makes an Ext
+entry mandatory for every combination that exists, so the config always has a value for the
+field; a genuinely absent proto field is a state the air interface cannot express for a live
+combo. `lte.kdl` keeps omission mapped to `None` regardless — the LTE round trip is bit-for-bit,
+so present-zero and absent are different bytes and collapsing them would be unsound for a
+hand-edited or future document — but that branch does not fire on corpus input.
+
+**`b=b0` and `b=""` most likely mean the same thing on the air.** The config asks for exactly {0}
+on 3,414 of 3,878 combos (88%), the captures are Pixels running these configs, and a single-bit
+{0} appears in none of them — so the modem renders `bcs = {0}` as an empty Ext entry, the same
+output as `bcs = 0`. Proven: LTE never emits single-bit {0}, and empty entries are routine.
+Inferred: the collapse happens in the modem. Either way the two **must** stay distinct in source,
+because they are different config bytes and LTE is bit-for-bit. Do not fold one into the other.
+
+**What decides which spelling a combo gets**, measured so the 39 `b=""` combos are not mistaken
+for noise:
+
+- It is a function of the component list. Across 3,371 distinct lists, **zero** carry both `b=""`
+  and a nonzero BCS.
+- It is not per-carrier: the 39 spread across all 18 SKUs plus `lte:1534561764`.
+- It is not `u1`/`u2`: `(u1=1, u2=768)` occurs 22 times with `b=""` and 22 times with `b=b0`.
+- The 39 partition exactly: **22 repeat B41**, **17 include B32**.
+- One exact rule holds: a repeated B41 with at least 3 entries is always `b=""` (22 of 22, no
+  exceptions). The 2-entry `[B41 A4, B41 A4 A2]` does carry `b=b0,1`.
+- The B32 family does **not** reduce: 265 other combos have B32 with at least 3 entries and carry
+  a BCS.
+
+The residual discriminator is the specific CA configuration — a TS 36.101 fact about which
+configurations have a defined bandwidth-combination-set table — and is not derivable from the
+corpus. Do not over-fit a rule to those 17.
 
 #### Sub-block syntax
 
@@ -851,6 +918,11 @@ whitelist. The ID is the firmware's hardcoded `lte_file_id`, not derived from co
 Per-file `fingerprint` and `bitmask` are stored because this model has no independent
 derivation for them. A profiled target requires the registry-selected ID to be present
 and emits exactly that one LTE file.
+
+Every one of the 3,878 corpus combos has **exactly one UL-capable component** — the other
+components carry a DL class only (`ul_bw_class_mimo == 0`, spelled by omitting the second
+positional argument). LTE uplink CA is never advertised. Nothing depends on this, so it is not
+enforced; it is recorded so a reader does not mistake the one-UL shape for a modelling limit.
 
 An LTE payload's identity includes component **order** plus optional presence for
 `ul_bw_class_mimo`, `bcs`, `unknown1`, and `unknown2`; explicit zero is distinct from

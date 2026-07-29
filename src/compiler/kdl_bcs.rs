@@ -18,6 +18,10 @@
 //!
 //! The `b` prefix earns its byte: KDL quotes any value beginning with a digit, so a bare
 //! `bn=0,1,4` would be written `bn="0,1,4"`. One prefix character replaces two quotes.
+//!
+//! It also reads deceptively: `b0` looks like "zero" but is set {0} = 2147483648, the *largest*
+//! single-bit value here, because index 0 is the most significant bit. Zero is `""`. See
+//! [`tests::the_empty_set_and_set_zero_stay_distinct`].
 
 use anyhow::{Context, Result, ensure};
 

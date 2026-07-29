@@ -907,8 +907,12 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
 
 fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
     let mut r = NodeReader::new(node);
-    // An omitted `b` is a genuinely absent field; an explicit `""` is the all-zero bit
-    // string. Both occur, and the LTE round trip needs them kept apart.
+    // `""` is the all-zero bit string; a `b`-list is the bit string itself. Those are the only
+    // two states a live combo has — an omitted `b` means a genuinely absent proto field, which
+    // no corpus combo has and which the air interface cannot express for a combo that exists
+    // (`supportedBandCombinationExt-r10` is positionally parallel to the band-combination list,
+    // so every combo has an entry; see DESIGN.md). It stays representable because the LTE round
+    // trip is bit-for-bit: present-zero and absent are different bytes.
     let bcs = r
         .opt_str(lte_combo::BCS)?
         .map(|raw| parse_bcs(&raw, "bcs").map(u64::from))
