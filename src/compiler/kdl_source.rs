@@ -244,7 +244,10 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     let derived_bcs_intra_endc = derive_bcs_intra_endc(combo.intra_band_en_dc_support);
     match combo.bcs_intra_endc {
         actual if actual == derived_bcs_intra_endc => {} // omit: derivable zeros + every None
-        Some(v) => opt_int_prop(&mut node, combo::BCS_INTRA_ENDC, Some(i128::from(v))),
+        Some(v) => {
+            let spelling = format_bcs(v);
+            opt_str_prop(&mut node, combo::BCS_INTRA_ENDC, Some(spelling.as_str()));
+        }
         None => bail!(
             "bcs_intra_endc=None with ie=1 cannot be represented by \
              omission (would re-derive as Some(0)); this combo is unexpected \
@@ -660,8 +663,20 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // An absent `bcs-intra-endc` re-derives via the shared `derive_bcs_intra_endc` — the
     // inverse of the omit rule in `emit_nr_combo`. Kept AFTER `intra-band-en-dc-support`,
     // the field it depends on.
-    let bcs_intra_endc = match r.opt_int::<u32>(combo::BCS_INTRA_ENDC)? {
-        Some(v) => Some(v),
+    let bcs_intra_endc = match r.opt_str(combo::BCS_INTRA_ENDC)? {
+        Some(raw) => {
+            let value = parse_bcs(&raw, combo::BCS_INTRA_ENDC)?;
+            // Spelling out the derived value would give it two spellings. `emit_nr_combo`
+            // omits exactly this case, so a document containing it was hand-edited.
+            ensure!(
+                Some(value) != derive_bcs_intra_endc(intra_band_en_dc_support),
+                "property `{}` states the value already derived from `{}`; omit it, so that \
+                 each value has one spelling",
+                combo::BCS_INTRA_ENDC,
+                combo::INTRA_BAND_EN_DC_SUPPORT
+            );
+            Some(value)
+        }
         None => derive_bcs_intra_endc(intra_band_en_dc_support),
     };
     let mut selection = Vec::new();
@@ -1409,10 +1424,11 @@ mod nr_tests {
 
     #[test]
     fn bcs_intra_endc_exceptional_zero_stays_explicit() {
-        // Some(0) + intra=0: derived is None → the zero is written explicitly (the ~20).
+        // Some(0) + intra=0: derived is None → the zero is written explicitly (the ~20),
+        // spelled as the empty BCS index list.
         let node = emit_nr_combo(&combo_with(Some(0), Some(0))).unwrap();
         let text = node.to_string();
-        assert!(text.contains("bi=0"), "exception zero explicit: {text}");
+        assert!(text.contains("bi=\"\""), "exception zero explicit: {text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.bcs_intra_endc, Some(0));
         assert_eq!(back.intra_band_en_dc_support, Some(0));
@@ -1422,7 +1438,7 @@ mod nr_tests {
     fn bcs_intra_endc_nonzero_stays_explicit() {
         let node = emit_nr_combo(&combo_with(Some(7), Some(1))).unwrap();
         let text = node.to_string();
-        assert!(text.contains("bi=7"), "{text}");
+        assert!(text.contains("bi=b29,30,31"), "{text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.bcs_intra_endc, Some(7));
     }
@@ -1472,6 +1488,35 @@ mod nr_tests {
             let error = nr_from_kdl(&text).unwrap_err().to_string();
             assert!(error.contains("omitting the property"), "{error}");
         }
+    }
+
+    /// `bi` is derived-and-omitted when it matches, so the only values written are the
+    /// exceptions — including the explicit empty set, which `""` spells.
+    #[test]
+    fn bcs_intra_endc_round_trips_as_an_index_list() {
+        // Nonzero, written explicitly.
+        let text = "version 1\nbc ATT\nc bi=b0,1 ie=1 {\n    n78 A\n}\n";
+        let doc = nr_from_kdl(text).expect("parse");
+        assert_eq!(doc.combo[0].bcs_intra_endc, Some(3_221_225_472));
+        assert_eq!(nr_to_kdl(&doc).unwrap(), text);
+
+        // The exceptional zero: `ie` is not 1, so `Some(0)` is NOT derivable and must be
+        // spelled. The empty set is `""`.
+        let text = "version 1\nbc ATT\nc bi=\"\" {\n    n78 A\n}\n";
+        let doc = nr_from_kdl(text).expect("parse");
+        assert_eq!(doc.combo[0].bcs_intra_endc, Some(0));
+        assert_eq!(nr_to_kdl(&doc).unwrap(), text);
+    }
+
+    /// Stating the value the reader would derive anyway gives that value two spellings. The
+    /// writer never emits one; this refuses a hand-edited document that does.
+    #[test]
+    fn an_explicitly_derivable_bcs_intra_endc_is_rejected() {
+        // `ie=1` derives `Some(0)`, so an explicit empty value is the redundant spelling.
+        let error = nr_from_kdl("version 1\nbc ATT\nc bi=\"\" ie=1 {\n    n78 A\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("omit"), "{error}");
     }
 
     #[test]
