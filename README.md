@@ -330,8 +330,11 @@ LTE band combinations (1053)
 
 **Read:** `lte_*.binarypb` files carry LTE-only carrier aggregation combinations (no NR). Each
 line is one combination — band + CA bandwidth class, `↓` marks a downlink-only component (UL
-disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. These files sit
-outside the 16/14 SKU-profile scheme (no anchor prime divides their
+disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. That `bcs` prints the
+raw stored decimal (e.g. `2147483648`), not the `b`-prefixed index-list spelling `lte.kdl` uses
+for the same value — deliberately, since this report is a decode-side view of the protobuf; see
+DESIGN.md's [BCS: a 3GPP bit string, not an opaque number](DESIGN.md#bcs-a-3gpp-bit-string-not-an-opaque-number)
+for why. These files sit outside the 16/14 SKU-profile scheme (no anchor prime divides their
 number). The `LTE config` line names the modem's selection-table family (and the Pixel model where
 confirmed); the modem picks the file by hardware/SKU category — burned into the Shannon firmware —
 not by SIM or MCC.

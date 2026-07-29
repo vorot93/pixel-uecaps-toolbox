@@ -415,7 +415,7 @@ The four fields differ only in what omission means — unchanged by the change o
 |---|---|---|
 | `bn` (`bcs_nr`, `u32`) | `Some(0)` — not emitted on air | **rejected**; omission already spells it |
 | `be` (`bcs_eutra`, `u32`) | `Some(0)` | **rejected**; omission already spells it |
-| `bi` (`bcs_intra_endc`, `u32`) | derived from `ie` — see the derivation rule below | accepted → `Some(0)` (20 occurrences) |
+| `bi` (`bcs_intra_endc`, `u32`) | derived from `ie` — see the derivation rule below | accepted → `Some(0)` when `ie != 1` (20 occurrences); **rejected** when `ie == 1`, since omission already spells that derived value |
 | `lte.kdl` `b` (`LteCombo.bcs`, `u64`) | `None` | accepted → `Some(0)` (39 occurrences) |
 
 `bn=""` and `be=""` are rejected because omission already spells that value on those two
