@@ -1492,11 +1492,27 @@ cr "MAPPING" mi=7 {
 
     #[test]
     fn nr_payloads_require_valid_components_and_canonicalize_them() {
-        for (catalog, combo_body) in [("", ""), ("", "n0\n"), ("", "B1 st=5\n")] {
-            let nr = format!("{MINIMAL_NR}\n{catalog}combo {{\n{combo_body}}}\n");
+        // Each case is rejected for its own distinct reason, not just "some error occurred":
+        // an empty combo has no components at all. `n0 A`'s bare class letter (no per-CC
+        // list) is the all-zero placeholder, a complete DL argument on its own, so it clears
+        // the mandatory-DL-argument check and reaches per-component validation, where band 0
+        // fails (it has no 3GPP meaning). `B1 A st=5` similarly supplies a complete DL
+        // argument but still leaves `st` (`srs-tx-switch`) unconsumed, since that property is
+        // NR-only and this sub-block is E-UTRA.
+        for (combo_body, expected) in [
+            ("", "must contain at least one component"),
+            ("n0 A\n", "band must be positive"),
+            ("B1 A st=5\n", "unknown property `st`"),
+        ] {
+            let nr = format!("{MINIMAL_NR}\nc {{\n{combo_body}}}\n");
+            // `{:#}` for the whole chain: the third case is rejected while still inside
+            // `nr_from_kdl` (wrapped in "parsing nr.kdl"), while the first two are rejected by
+            // `validate_documents`, downstream and unwrapped. The alternate format finds the
+            // substring either way, matching `assert_nr_error` elsewhere in this module.
+            let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
             assert!(
-                parse_sources(&nr, MINIMAL_LTE).is_err(),
-                "accepted {combo_body:?}"
+                error.contains(expected),
+                "body {combo_body:?} expected {expected:?} in {error:?}"
             );
         }
 
