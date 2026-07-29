@@ -72,6 +72,14 @@ pub(crate) fn parse_bcs(raw: &str, key: &str) -> Result<u32> {
             part.bytes().all(|b| b.is_ascii_digit()),
             "property `{key}` BCS index `{part}` is not a decimal number"
         );
+        // `b00` and `b0` must not both parse: one value, one spelling, or the round trip
+        // stops being byte-stable. Index 0 is legitimately spelled `0`, so only PADDED
+        // zeros are refused.
+        ensure!(
+            part == "0" || !part.starts_with('0'),
+            "property `{key}` BCS index `{part}` has a leading zero; each index has exactly \
+             one spelling, so write it without padding"
+        );
         let index: u32 = part
             .parse()
             .with_context(|| format!("property `{key}` BCS index `{part}` is out of range"))?;
@@ -129,7 +137,14 @@ mod tests {
     /// repeating list is refused rather than normalised.
     #[test]
     fn rejects_anything_with_a_second_spelling() {
-        for (bad, expect) in [("b1,0", "ascend"), ("b0,0", "ascend"), ("b4,1", "ascend")] {
+        for (bad, expect) in [
+            ("b1,0", "ascend"),
+            ("b0,0", "ascend"),
+            ("b4,1", "ascend"),
+            ("b00", "leading zero"),
+            ("b01", "leading zero"),
+            ("b0,01", "leading zero"),
+        ] {
             let error = parse_bcs(bad, "bn").unwrap_err().to_string();
             assert!(
                 error.contains(expect),
