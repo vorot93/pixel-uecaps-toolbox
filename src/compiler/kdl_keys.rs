@@ -79,11 +79,10 @@ pub(crate) mod selection {
     pub(crate) const SKUS: &str = "m";
 }
 
-/// Properties of an `nr.kdl` sub-block. `DL`/`UL` each carry the bandwidth-class letter and the
-/// per-CC index list in one value — see `compiler::kdl_direction`.
+/// Properties of an `nr.kdl` sub-block. The two directions are **positional arguments**, not
+/// properties — DL first, UL second — so `srs-tx-switch` is all that is left here. See
+/// `compiler::kdl_direction` for the value format.
 pub(crate) mod sub_block {
-    pub(crate) const DL: &str = "d";
-    pub(crate) const UL: &str = "u";
     pub(crate) const SRS_TX_SWITCH: &str = "st";
 }
 
@@ -194,10 +193,7 @@ mod tests {
                 ],
             ),
             ("selection", vec![selection::CARRIERS, selection::SKUS]),
-            (
-                "sub_block",
-                vec![sub_block::DL, sub_block::UL, sub_block::SRS_TX_SWITCH],
-            ),
+            ("sub_block", vec![sub_block::SRS_TX_SWITCH]),
             (
                 "dl_catalog",
                 vec![

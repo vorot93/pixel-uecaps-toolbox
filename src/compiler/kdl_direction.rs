@@ -1,4 +1,4 @@
-//! The composite `dl=`/`ul=` value: a 3GPP CA bandwidth-class letter followed by an optional
+//! A sub-block's positional direction value: a 3GPP CA bandwidth-class letter followed by an optional
 //! comma-separated per-CC index list.
 //!
 //! ```text
@@ -16,6 +16,14 @@
 //! same strictness by hand: every rejection below has its own message and its own test. The 464
 //! non-uniform per-CC lists in the corpus are exactly the rows an earlier CC0-only projection
 //! dropped silently, so a parser that collapses a list is the failure mode to guard against.
+//!
+//! **The same text means different things in the two documents.** `B66 C2` is a bandwidth
+//! class plus a per-CC feature index in `nr.kdl` and a class+MIMO bitfield in `lte.kdl`. That
+//! is a deliberate trade, not an oversight: the *document* fixes the interpretation, the same
+//! way a sub-block node name carries no radio-kind tag. `format_direction`/`parse_direction`
+//! serve the first, `format_class_mimo`/`parse_class_mimo` the second, and
+//! `identical_d_equals_text_means_different_things_in_each_document` in `kdl_source.rs` is
+//! where the trade is meant to be learned before anyone "unifies" the two codecs.
 
 use anyhow::{Context, Result, bail, ensure};
 

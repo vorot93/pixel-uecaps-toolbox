@@ -200,10 +200,11 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     let nr_source = fs::read_to_string(fixture.source.join("nr.kdl")).unwrap();
     assert!(nr_source.contains("mi=7"), "{nr_source}");
     assert!(!nr_source.contains("pi="), "{nr_source}");
-    // The catalog NODE keeps its name; only the sub-block *reference* merged into `dl=`.
+    // The catalog NODE keeps its name; only the sub-block's DL reference became the
+    // node's first positional argument.
     assert!(nr_source.contains("df s=3"), "{nr_source}");
     assert!(!nr_source.contains("s=1"), "{nr_source}");
-    assert!(nr_source.contains("d=A1"), "{nr_source}");
+    assert!(nr_source.contains(" A1"), "{nr_source}");
 
     let provisioned = fixture.provision(MODEL);
     assert!(provisioned.status.success(), "{}", stderr(&provisioned));

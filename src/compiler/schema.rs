@@ -1035,8 +1035,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
              df s=1\n\
              df s=3\n\
              uf s=9\n\
-             c {{\n    n77 d=A1\n}}\n\
-             c {{\n    n78 d=A3\n}}\n"
+             c {{\n    n77 A1\n}}\n\
+             c {{\n    n78 A3\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
@@ -1046,7 +1046,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         assert!(canonical.contains("df s=3"), "{canonical}");
         assert!(!canonical.contains("s=1"), "{canonical}");
         assert!(!canonical.contains("ul-feature"), "{canonical}");
-        assert!(canonical.contains("d=A1"), "{canonical}");
+        assert!(canonical.contains("n77 A1"), "{canonical}");
     }
 
     #[test]
@@ -1055,8 +1055,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
             "{MINIMAL_NR}\n\
              df\n\
              df s=0\n\
-             c {{\n    n77 d=A2\n}}\n\
-             c {{\n    n78 d=A1\n}}\n"
+             c {{\n    n77 A2\n}}\n\
+             c {{\n    n78 A1\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
@@ -1073,10 +1073,10 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         // an out-of-range one is still caught at validation against the catalog length — the
         // reader knows references are 1-based, but not how long the catalog is.
         for (cc_line, expected) in [
-            ("n78 d=A0", "1-based"),
-            ("n78 d=A2", "exceeds the dl catalog length 1"),
-            ("n78 u=A0", "1-based"),
-            ("n78 u=A2", "exceeds the ul catalog length 1"),
+            ("n78 A0", "1-based"),
+            ("n78 A2", "exceeds the dl catalog length 1"),
+            ("n78 A1 A0", "1-based"),
+            ("n78 A1 A2", "exceeds the ul catalog length 1"),
         ] {
             let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nc {{\n    {cc_line}\n}}\n");
             // `{:#}` for the whole chain: a parse-time rejection is wrapped in
@@ -1094,7 +1094,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
             nr.push_str(&format!("\ndf b={value}\n"));
-            nr.push_str(&format!("\nc {{\n    n{value} d=A{value}\n}}\n"));
+            nr.push_str(&format!("\nc {{\n    n{value} A{value}\n}}\n"));
         }
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 300);
@@ -1465,7 +1465,7 @@ cr "MAPPING" mi=7 {
     #[test]
     fn selections_are_resolved_and_cached_during_validation() {
         let nr = format!(
-            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78\n}}\n",
+            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte = format!(
@@ -1500,7 +1500,7 @@ cr "MAPPING" mi=7 {
             );
         }
 
-        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\n");
+        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\n");
         let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
@@ -1513,7 +1513,7 @@ cr "MAPPING" mi=7 {
     #[test]
     fn duplicate_canonical_nr_payload_records_are_rejected() {
         let nr = format!(
-            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 d=A1\n    B1\n}}\nc {{\n    B1\n    n78 d=A2\n}}\n"
+            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\nc {{\n    B1 A\n    n78 A2\n}}\n"
         );
         assert_nr_error(&nr, "duplicate canonical NR payload");
     }
@@ -1630,7 +1630,7 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
     #[test]
     fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
         let nr_text = format!(
-            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 d=A1\n    B1\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3\n}}\n",
+            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 A1\n    B1 A\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte_text = format!(

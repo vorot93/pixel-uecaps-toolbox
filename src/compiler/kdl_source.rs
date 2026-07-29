@@ -113,20 +113,29 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
         ),
     };
 
-    // Class and per-CC list are one value per direction: `dl=G30,30`. An empty list is the
-    // all-zero placeholder, which the source omits and `resolve` re-materialises.
-    if let Some(class) = cc.dl_bw_class() {
-        node.push(KdlEntry::new_prop(
-            sub_block::DL,
-            format_direction(class, &dl_features)?.as_str(),
-        ));
-    }
-    // `ul-bw-class` is corpus-verified always `Some` on a real sub-block, so `Some(0)` is
+    // Class and per-CC list are one value per direction, and both are positional:
+    // `n78 G30,30 A5`. An empty list is the all-zero placeholder, which the source omits and
+    // `resolve` re-materialises.
+    //
+    // DL is required. With the keys gone there is nothing to distinguish the two arguments
+    // but their order, so an omitted DL would shift UL into first place and silently change
+    // the sub-block's meaning. `Some(0)` already fails inside `format_direction`; this
+    // catches the `None` that would otherwise vanish. Corpus: 0 of 93,679 sub-blocks.
+    let dl_class = cc.dl_bw_class().with_context(|| {
+        format!(
+            "sub-block band {} omits its DL bandwidth class; the source format spells DL as the \
+             first positional argument and cannot represent its absence",
+            cc.band()
+        )
+    })?;
+    node.push(KdlEntry::new(
+        format_direction(dl_class, &dl_features)?.as_str(),
+    ));
+    // `ul_bw_class` is corpus-verified always `Some` on a real sub-block, so `Some(0)` is
     // omitted here and re-defaulted to `Some(0)` by `read_sub_block` (omit-when-0) — a
-    // value-faithful round trip, not a lossy one. Absent `ul` therefore means class 0.
+    // value-faithful round trip, not a lossy one. An absent second argument means class 0.
     if let Some(class) = cc.ul_bw_class().filter(|&v| v != 0) {
-        node.push(KdlEntry::new_prop(
-            sub_block::UL,
+        node.push(KdlEntry::new(
             format_direction(class, &ul_features)?.as_str(),
         ));
     }
@@ -524,19 +533,22 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
         )
     };
     let mut r = NodeReader::new(node);
-    let dl = r
-        .opt_str(sub_block::DL)?
-        .map(|raw| parse_direction(&raw, sub_block::DL))
-        .transpose()?;
+    // DL then UL, positional. `key_str` errors when the argument is missing, which is what
+    // makes an argument-free sub-block a hard failure rather than a silently classless one.
+    let dl = Some(parse_direction(
+        &r.key_str()
+            .with_context(|| format!("`{name}` is missing its DL bandwidth class"))?,
+        "DL",
+    )?);
     let ul = r
-        .opt_str(sub_block::UL)?
-        .map(|raw| parse_direction(&raw, sub_block::UL))
+        .opt_arg_str()?
+        .map(|raw| parse_direction(&raw, "UL"))
         .transpose()?;
 
     // Arity depends on the kind. NR indices are one per CC and must match `cc_count`; an
     // E-UTRA sub-block carries a single `parseLteFeatureIndex` value regardless of class. An
     // empty list is the all-zero placeholder and is checked by neither.
-    for (label, parsed) in [(sub_block::DL, dl.as_ref()), (sub_block::UL, ul.as_ref())] {
+    for (label, parsed) in [("DL", dl.as_ref()), ("UL", ul.as_ref())] {
         let Some(parsed) = parsed else { continue };
         if parsed.indices.is_empty() {
             continue;
@@ -547,13 +559,13 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
                 // `parseLteFeatureIndex` MIMO code, where 0 is legitimate.)
                 ensure!(
                     parsed.indices.iter().all(|&index| index >= 1),
-                    "`{name}` property `{label}` has a 0 index; NR per-CC catalog references \
+                    "`{name}` {label} has a 0 index; NR per-CC catalog references \
                      are 1-based"
                 );
                 let expected = cc_count(SubBlockKind::Nr, parsed.bw_class)?;
                 ensure!(
                     parsed.indices.len() == expected,
-                    "`{name}` property `{label}` has {} per-CC index/indices but bandwidth class \
+                    "`{name}` {label} has {} per-CC index/indices but bandwidth class \
                      {} implies {expected}",
                     parsed.indices.len(),
                     (b'A' + parsed.bw_class - 1) as char
@@ -561,7 +573,7 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
             }
             SubBlockKind::Lte => ensure!(
                 parsed.indices.len() == 1,
-                "`{name}` property `{label}` takes at most one index on an E-UTRA sub-block, \
+                "`{name}` {label} takes at most one index on an E-UTRA sub-block, \
                  found {}",
                 parsed.indices.len()
             ),
@@ -1087,7 +1099,7 @@ mod nr_tests {
         assert!(text.contains("pf \"66813533\" x=66813533 u=0"), "{text}");
         assert!(text.contains("n78"), "{text}");
         assert!(
-            text.contains("d=A1"),
+            text.contains("n78 A1"),
             "class and per-CC list merge into one value: {text}"
         );
         assert!(
@@ -1106,7 +1118,7 @@ mod nr_tests {
         // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
         // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
         // point.
-        let text = "version 1\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n48 B5,8\n    B66 A\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
@@ -1127,7 +1139,7 @@ mod nr_tests {
         // On an `lte` node the proto-4/5 index is spelled `dl-feature`/`ul-feature` (no
         // `-index`), single-valued; `ul-feature=0` is omitted and re-defaults to `Some(0)`.
         // No per-CC list is read on LTE. Byte-identical fixed point.
-        let text = "version 1\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B7 B1 A2\n    B66 A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
@@ -1220,7 +1232,7 @@ mod nr_tests {
     /// which carries one `parseLteFeatureIndex` scalar whatever its class.
     #[test]
     fn lte_sub_block_rejects_a_repeated_feature_property() {
-        let text = "version 1\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B66 B3,4\n}\n";
 
         let error = nr_from_kdl(text).unwrap_err().to_string();
 
@@ -1232,7 +1244,7 @@ mod nr_tests {
     /// designation — the same convention `SubBlockKind::band_label` uses everywhere else.
     #[test]
     fn sub_block_node_name_carries_the_band() {
-        let text = "version 1\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n257 G1,1 A1\n    B66 A2\n}\n";
 
         let doc = nr_from_kdl(text).expect("bands parse out of the node name");
         let combo = &doc.combo[0];
@@ -1270,7 +1282,7 @@ mod nr_tests {
             "dl-cc-id=1",
             "ul-cc-id=1",
         ] {
-            let text = format!("version 1\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
+            let text = format!("version 1\nbc ATT\nc {{\n    n78 A {key}\n}}\n");
             let err = nr_from_kdl(&text).unwrap_err().to_string();
             assert!(
                 err.contains("unknown property"),
@@ -1417,34 +1429,63 @@ mod nr_tests {
 
     #[test]
     fn bw_class_is_direction_first_and_old_spelling_rejected() {
-        // New direction-first spelling round-trips byte-identically.
-        let text = "version 1\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse new spelling");
+        // Directions are positional, DL then UL, and round-trip byte-identically.
+        let text = "version 1\nbc ATT\nc {\n    n78 A A\n}\n";
+        let doc = nr_from_kdl(text).expect("parse positional spelling");
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
             text,
-            "new spelling is a fixed point"
+            "positional spelling is a fixed point"
         );
 
-        // The old suffix spelling is now an unknown property (strict reader, no alias).
-        let old = "version 1\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
-        let err = nr_from_kdl(old).unwrap_err().to_string();
-        assert!(
-            err.contains("unknown property") && err.contains("bw-class-dl"),
-            "old spelling must be rejected, got: {err}"
-        );
+        // A superseded spelling leaves the node with NO positional argument, so the reader
+        // stops at the missing DL and never reaches the unknown-property check. That is the
+        // diagnostic a stale document actually gets.
+        for old in [
+            "version 1\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n",
+            "version 1\nbc ATT\nc {\n    n78 d=A u=A\n}\n",
+        ] {
+            let err = nr_from_kdl(old).unwrap_err().to_string();
+            assert!(err.contains("missing its DL"), "got: {err}");
+        }
+
+        // Once a DL argument is present, a leftover key is reported as the unknown property
+        // it is — the strict reader still has no alias for it.
+        let err = nr_from_kdl("version 1\nbc ATT\nc {\n    n78 A d=A\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown property `d`"), "got: {err}");
     }
 
     #[test]
-    /// Property order is load-bearing for byte-identity. The merge collapsed each direction's
-    /// class and feature list into one property, so what remains to pin is that DL precedes UL.
+    /// Argument order is load-bearing for byte-identity: the first positional is DL, the
+    /// second UL. Nothing else distinguishes them, so this is the only thing pinning it.
     fn nr_emits_direction_grouped_order() {
-        let text = "version 1\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n78 A2 A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let out = nr_to_kdl(&doc).unwrap();
-        let dl = out.find("d=A2").expect("DL property present");
-        let ul = out.find("u=A3").expect("UL property present");
+        let dl = out.find("A2").expect("DL argument present");
+        let ul = out.find("A3").expect("UL argument present");
         assert!(dl < ul, "expected dl before ul:\n{out}");
+    }
+
+    /// An absent DL would shift UL into the first argument and silently change the
+    /// sub-block's meaning, so the reader refuses a sub-block with no arguments at all.
+    #[test]
+    fn a_sub_block_without_a_dl_argument_is_rejected() {
+        let error = nr_from_kdl("version 1\nbc ATT\nc {\n    n78\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing"), "{error}");
+    }
+
+    /// A third argument has no meaning and must not be silently dropped.
+    #[test]
+    fn a_sub_block_with_a_third_argument_is_rejected() {
+        let error = nr_from_kdl("version 1\nbc ATT\nc {\n    n78 A2 A3 A4\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("extra argument"), "{error}");
     }
 
     /// `d=`/`u=` mean different things depending on which document reads them: in `nr.kdl` a
@@ -1458,7 +1499,7 @@ mod nr_tests {
     #[test]
     fn identical_d_equals_text_means_different_things_in_each_document() {
         // The exact same property text, `d=C2`, fed to each document's reader.
-        let nr_text = "version 1\nbc ATT\nc {\n    B66 d=C2\n}\n";
+        let nr_text = "version 1\nbc ATT\nc {\n    B66 C2\n}\n";
         let lte_text = "version 1\nc {\n    B66 d=C2\n}\n";
 
         // nr.kdl: `d=C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
@@ -1491,11 +1532,11 @@ mod nr_tests {
              decodings of the same `d=C2` text — if they ever match, the two codecs have merged"
         );
 
-        // `B66 d=A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
+        // `B66 A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
         // placeholder that `features::resolve` re-materializes later. The resulting
         // `dl_feature` is incidental to this test's point and deliberately not pinned here.
-        let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nc {\n    B66 d=A\n}\n")
-            .expect("`d=A` parses as a class with no per-CC list");
+        let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nc {\n    B66 A\n}\n")
+            .expect("`A` parses as a class with no per-CC list");
         let NrSourceSubBlock::Lte(placeholder_sub_block) = &nr_placeholder.combo[0].sub_blocks[0]
         else {
             panic!("still a `B66`/`Lte` sub-block")

@@ -39,21 +39,21 @@ c {
     s {
         m prime:8969
     }
-    n3 d=A u=A
+    n3 A A
 }
 c {
     s {
         c BETA
         m legacy G2YBB
     }
-    n41 d=A u=A
+    n41 A A
 }
 c {
     s {
         c ALPHA
         m legacy G2YBB
     }
-    n78 d=A u=A
+    n78 A A
 }
 "#;
 

@@ -116,6 +116,24 @@ impl<'a> NodeReader<'a> {
         T::try_from(i).map_err(|_| anyhow!("`{name}` argument {i} out of range"))
     }
 
+    /// The next positional arg as an owned string, or `None` when the node has no more.
+    ///
+    /// The optional counterpart of [`key_str`](Self::key_str), for a node whose trailing
+    /// argument is omitted rather than defaulted — a sub-block's UL direction, say, where
+    /// absence means bandwidth class 0.
+    pub(crate) fn opt_arg_str(&mut self) -> Result<Option<String>> {
+        let Some(value) = self.positional().get(self.args_used).copied() else {
+            return Ok(None);
+        };
+        self.args_used += 1;
+        Ok(Some(
+            value
+                .as_string()
+                .ok_or_else(|| anyhow!("`{}` argument must be a string", self.node.name().value()))?
+                .to_string(),
+        ))
+    }
+
     /// All remaining positional args as strings (consumes them). For list nodes.
     fn rest_strings(&mut self) -> Result<Vec<String>> {
         let args = self.positional();
