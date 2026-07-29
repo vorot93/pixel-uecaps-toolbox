@@ -27,7 +27,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 
-/// A parsed `dl=`/`ul=` value.
+/// A parsed DL or UL positional direction argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Direction {
     pub(crate) bw_class: u8,
@@ -56,15 +56,17 @@ pub(crate) fn format_direction(bw_class: u8, indices: &[u16]) -> Result<String> 
     Ok(out)
 }
 
-/// Parse a class plus its per-CC list. `key` names the property in diagnostics.
-pub(crate) fn parse_direction(raw: &str, key: &str) -> Result<Direction> {
+/// Parse a class plus its per-CC list. `label` names the positional direction argument
+/// (`DL`/`UL`) in diagnostics.
+pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
-        .with_context(|| format!("property `{key}` is empty"))?;
+        .with_context(|| format!("{label} positional argument is empty"))?;
     ensure!(
         letter.is_ascii_uppercase(),
-        "property `{key}` value `{raw}` must begin with an uppercase bandwidth-class letter"
+        "{label} positional argument value `{raw}` must begin with an uppercase bandwidth-class \
+         letter"
     );
     let bw_class = (letter as u8) - b'A' + 1;
 
@@ -80,15 +82,15 @@ pub(crate) fn parse_direction(raw: &str, key: &str) -> Result<Direction> {
     for part in rest.split(',') {
         ensure!(
             !part.is_empty(),
-            "property `{key}` value `{raw}` has an empty index"
+            "{label} positional argument value `{raw}` has an empty index"
         );
         ensure!(
             part.bytes().all(|b| b.is_ascii_digit()),
-            "property `{key}` index `{part}` is not a decimal number"
+            "{label} positional argument index `{part}` is not a decimal number"
         );
-        let index: u16 = part
-            .parse()
-            .with_context(|| format!("property `{key}` index `{part}` is out of range"))?;
+        let index: u16 = part.parse().with_context(|| {
+            format!("{label} positional argument index `{part}` is out of range")
+        })?;
         // NOT rejected here: index 0. On an NR sub-block a catalog reference is 1-based and 0
         // is invalid, but on an E-UTRA sub-block the index is a `parseLteFeatureIndex` MIMO
         // code for which 0 is a legitimate value. That distinction is kind semantics, and the
@@ -173,7 +175,7 @@ mod tests {
             (13, vec![1, 2, 3, 4, 5, 6, 7, 8], "M1,2,3,4,5,6,7,8"),
         ] {
             assert_eq!(format_direction(class, &indices).unwrap(), text);
-            let parsed = parse_direction(text, "dl").unwrap();
+            let parsed = parse_direction(text, "DL").unwrap();
             assert_eq!(parsed.bw_class, class);
             assert_eq!(parsed.indices, indices);
         }
@@ -183,7 +185,7 @@ mod tests {
     /// and its absence means one number.
     #[test]
     fn a_multi_digit_index_is_one_index() {
-        let parsed = parse_direction("A12", "dl").unwrap();
+        let parsed = parse_direction("A12", "DL").unwrap();
         assert_eq!(parsed.indices, vec![12]);
     }
 
@@ -191,7 +193,7 @@ mod tests {
     /// satisfy a length check on a uniform one.
     #[test]
     fn distinct_per_cc_indices_survive() {
-        let parsed = parse_direction("G22,23", "dl").unwrap();
+        let parsed = parse_direction("G22,23", "DL").unwrap();
         assert_eq!(parsed.indices, vec![22, 23]);
         assert_ne!(parsed.indices[0], parsed.indices[1]);
     }
@@ -207,7 +209,7 @@ mod tests {
             ("A3,x", "decimal"),
             ("A99999999", "out of range"),
         ] {
-            let error = parse_direction(bad, "dl").unwrap_err().to_string();
+            let error = parse_direction(bad, "DL").unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -219,7 +221,7 @@ mod tests {
     /// `parseLteFeatureIndex` value, so only the reader — which knows the kind — can judge it.
     #[test]
     fn index_zero_parses_and_is_left_to_the_reader() {
-        assert_eq!(parse_direction("A0", "dl").unwrap().indices, vec![0]);
+        assert_eq!(parse_direction("A0", "DL").unwrap().indices, vec![0]);
     }
 
     #[test]
