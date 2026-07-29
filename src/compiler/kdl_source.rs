@@ -1410,6 +1410,68 @@ mod nr_tests {
         let ul = out.find("u=A3").expect("UL property present");
         assert!(dl < ul, "expected dl before ul:\n{out}");
     }
+
+    /// `d=`/`u=` mean different things depending on which document reads them: in `nr.kdl` a
+    /// bandwidth class plus a per-CC feature-index list (`parse_direction`); in `lte.kdl` a
+    /// bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing else in the
+    /// suite ties the two codecs together, so an editor who noticed the shared spelling and
+    /// "unified" them would break nothing visible here — only every real `lte.kdl` combo,
+    /// silently. The collision is a deliberate trade, not an oversight: the *document* fixes
+    /// the interpretation, the same way a sub-block node name carries no radio-kind tag. This
+    /// test is where that trade is meant to be learned before anyone "fixes" it.
+    #[test]
+    fn identical_d_equals_text_means_different_things_in_each_document() {
+        // The exact same property text, `d=C2`, fed to each document's reader.
+        let nr_text = "version 1\nbc ATT\nc {\n    B66 d=C2\n}\n";
+        let lte_text = "version 1\nc {\n    B66 d=C2\n}\n";
+
+        // nr.kdl: `d=C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
+        // always parses to the `Lte` variant of `NrSourceSubBlock`.
+        let nr_doc = nr_from_kdl(nr_text).expect("nr.kdl parses");
+        let NrSourceSubBlock::Lte(sub_block) = &nr_doc.combo[0].sub_blocks[0] else {
+            panic!(
+                "a `B66` node parses to the `Lte` variant, got {:?}",
+                nr_doc.combo[0].sub_blocks[0]
+            )
+        };
+        assert_eq!(sub_block.band, 66);
+        assert_eq!(sub_block.dl_bw_class, Some(3));
+        assert_eq!(sub_block.dl_feature, Some(2));
+
+        // lte.kdl: the identical text `d=C2` is class C + 2x2 MIMO, the bitfield 8192.
+        let lte_doc = lte_from_kdl(lte_text).expect("lte.kdl parses");
+        let component = &lte_doc.combo[0].components[0];
+        assert_eq!(component.band, 66);
+        assert_eq!(component.dl_bw_class_mimo, 8192);
+
+        // Spell out that these are different INTERPRETATIONS of identical text, not merely
+        // different incidental numbers: nr.kdl's value is a small 1-based catalog reference,
+        // lte.kdl's is a bitfield. If the two `d=` codecs were ever unified, this is the
+        // assertion that would catch it.
+        assert_ne!(
+            i64::from(sub_block.dl_feature.unwrap()),
+            i64::from(component.dl_bw_class_mimo),
+            "nr.kdl's per-CC feature index and lte.kdl's class+MIMO bitfield must stay disjoint \
+             decodings of the same `d=C2` text — if they ever match, the two codecs have merged"
+        );
+
+        // `B66 d=A` parses in nr.kdl: class A (1), with an empty per-CC list (the all-zero
+        // placeholder that `resolve` re-materializes later; not asserted here, see report).
+        let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nc {\n    B66 d=A\n}\n")
+            .expect("`d=A` parses as a class with no per-CC list");
+        let NrSourceSubBlock::Lte(placeholder_sub_block) = &nr_placeholder.combo[0].sub_blocks[0]
+        else {
+            panic!("still a `B66`/`Lte` sub-block")
+        };
+        assert_eq!(placeholder_sub_block.dl_bw_class, Some(1));
+
+        // The identical `B66 d=A` is rejected by lte_from_kdl: a class+MIMO value always needs
+        // the MIMO digit that nr.kdl's bare-class placeholder spelling never carries.
+        let error = lte_from_kdl("version 1\nc {\n    B66 d=A\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("MIMO width"), "{error}");
+    }
 }
 
 #[cfg(test)]
