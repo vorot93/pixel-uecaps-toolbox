@@ -19,12 +19,15 @@ use crate::{
 
 /// The source-document format version both `nr.kdl` and `lte.kdl` carry.
 ///
-/// Bumped to 2 by the short-vocabulary rename: a version-1 document uses spellings this build
-/// does not know, so it must be rejected with a remedy rather than a confusing unknown-node
-/// error. That is also why `kdl_keys::nr_doc::VERSION` is the one key left unabbreviated — the
-/// marker announcing the version cannot be renamed by the change it describes, or the check
-/// below would be unreachable for exactly the documents it exists to diagnose.
-pub(crate) const SOURCE_FORMAT_VERSION: u32 = 2;
+/// This number identifies *the* format, not a count of revisions — it is reset rather than
+/// advanced when a format change lands in an unpublished series, because this repo's history is
+/// squashable and a reader at HEAD must see one coherent state. The check below is an
+/// inequality, not an ordering, so a reset still rejects a tree from any build that emitted a
+/// different number. That is also why `kdl_keys::nr_doc::VERSION` is the one key left
+/// unabbreviated — the marker announcing the version cannot be renamed by the change it
+/// describes, or the check below would be unreachable for exactly the documents it exists to
+/// diagnose.
+pub(crate) const SOURCE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DecimalU64(pub(crate) u64);
@@ -555,6 +558,24 @@ fn validate_lte_combos(
                 "LTE combo {} component band must be positive",
                 index + 1
             );
+            // Neither state is representable in `lte.kdl`, and neither occurs in the corpus.
+            // Rejecting here — ahead of `to_kdl` — makes the omit-when-0 rule value-faithful by
+            // construction rather than by assumption, and gives a message naming the component
+            // instead of the codec's "value 0 has no known bandwidth-class letter".
+            ensure!(
+                component.dl_bw_class_mimo != 0,
+                "LTE combo {} band {} has dl_bw_class_mimo 0; the source format cannot represent \
+                 a disabled downlink",
+                index + 1,
+                component.band
+            );
+            ensure!(
+                component.ul_bw_class_mimo.is_some(),
+                "LTE combo {} band {} omits ul_bw_class_mimo; the source format cannot represent \
+                 an absent uplink class (an omitted property means the explicit zero)",
+                index + 1,
+                component.band
+            );
         }
         ensure!(
             seen.insert(RawLteCombo::from(source)),
@@ -859,13 +880,13 @@ mod tests {
 
     use crate::{
         compiler::{lte_from_kdl, nr_from_kdl, selection::Sku},
-        proto::ShannonFeatureSetDlPerCcNr,
+        proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
     };
 
-    use super::{parse_sources, to_kdl};
+    use super::{LteSourceCombo, parse_sources, to_kdl};
 
     const MINIMAL_NR: &str = r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {
@@ -874,7 +895,7 @@ bf 715188856 {
 "#;
 
     const MINIMAL_LTE: &str = r#"
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=4082165014
 "#;
@@ -882,7 +903,7 @@ f "400907661" fp=862505271 bm=4082165014
     fn profiled_nr(profile_key: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -899,7 +920,7 @@ cr "PROFILED" pi=7 sg=1 t="main" {{
     fn lte_with_file_key(file_key: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 
 f "{file_key}" fp=862505271 bm=4082165014
 "#
@@ -909,7 +930,7 @@ f "{file_key}" fp=862505271 bm=4082165014
     fn nr_with_carrier_sections(sections: &str) -> String {
         format!(
             r#"
-version 2
+version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -938,7 +959,7 @@ cr "MAPPING" mi=8 {
 
     fn lte_with_complete_domain() -> String {
         r#"
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=1
 f "564260317" fp=874888686 bm=2
@@ -1088,26 +1109,26 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
 
     #[test]
     fn versions_are_required_and_only_the_current_one_is_supported() {
-        let missing = MINIMAL_NR.replacen("version 2\n", "", 1);
+        let missing = MINIMAL_NR.replacen("version 1\n", "", 1);
         assert!(parse_sources(&missing, MINIMAL_LTE).is_err());
 
-        let unsupported_nr = MINIMAL_NR.replacen("\nversion 2", "\nversion 3", 1);
+        let unsupported_nr = MINIMAL_NR.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
             parse_sources(&unsupported_nr, MINIMAL_LTE)
                 .unwrap_err()
                 .to_string()
-                .contains("source-format version 3")
+                .contains("source-format version 2")
         );
 
-        let missing = MINIMAL_LTE.replacen("version 2\n", "", 1);
+        let missing = MINIMAL_LTE.replacen("version 1\n", "", 1);
         assert!(parse_sources(MINIMAL_NR, &missing).is_err());
 
-        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 2", "\nversion 3", 1);
+        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 1", "\nversion 2", 1);
         assert!(
             parse_sources(MINIMAL_NR, &unsupported_lte)
                 .unwrap_err()
                 .to_string()
-                .contains("source-format version 3")
+                .contains("source-format version 2")
         );
     }
 
@@ -1148,7 +1169,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
     fn fingerprint_groups_are_nonempty_disjoint_and_exhaustive() {
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c
@@ -1159,7 +1180,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1173,7 +1194,7 @@ bf 2 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1184,7 +1205,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c "A" "B"
@@ -1195,7 +1216,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A" "A"
 bf 1 {
     c "A"
@@ -1206,7 +1227,7 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 2
+version 1
 bc "A"
 bf 1 {
     c "A"
@@ -1424,7 +1445,7 @@ cr "MAPPING" mi=7 {
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 dm=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 d=A4\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1478,7 +1499,7 @@ cr "MAPPING" mi=7 {
         let empty = format!("{MINIMAL_LTE}\nc {{\n}}\n");
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
-        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc {{\n    B1 dm=A4\n}}\n");
+        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc {{\n    B1 d=A4\n}}\n");
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
                 .unwrap_err()
@@ -1487,22 +1508,67 @@ cr "MAPPING" mi=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n    B3 dm=A4\n}}\nc {{\n    B3 dm=A4\n    B1 dm=A4\n}}\n"
+            "{MINIMAL_LTE}\nc {{\n    B1 d=A4\n    B3 d=A4\n}}\nc {{\n    B3 d=A4\n    B1 d=A4\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
+        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=0` is `Some(0)`.
+        // It is also what keeps these two combos distinct under `RawLteCombo`, now that their
+        // components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4\n}}\nc b=0 {{\n    B1 dm=A4 um=off\n}}\n");
+            format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc b=0 {{\n    B1 d=A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
         assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
-        assert_eq!(
-            sources.lte.combo[1].source.components[0].ul_bw_class_mimo,
-            Some(0)
+        // An omitted `u` is the explicit zero, not an absent field — in both combos.
+        for combo in &sources.lte.combo {
+            assert_eq!(combo.source.components[0].ul_bw_class_mimo, Some(0));
+        }
+    }
+
+    /// The source format spells UL-disabled by omitting the property, so `None` has no spelling
+    /// left; and with `off` gone, neither does a disabled DL. Both are corpus-absent (0 of 12 159
+    /// sub-blocks), so this rejects rather than silently normalising — a foreign file gets a loud
+    /// error instead of a quiet re-encode.
+    #[test]
+    fn lte_components_reject_a_disabled_dl_and_an_absent_ul_class() {
+        let nr = nr_from_kdl(MINIMAL_NR).unwrap();
+        let base = lte_from_kdl(MINIMAL_LTE).unwrap();
+
+        let bad_combo = |component: LteComponent| LteSourceCombo {
+            selection: None,
+            bcs: None,
+            unknown1: None,
+            unknown2: None,
+            components: vec![component],
+        };
+
+        let mut disabled_dl = base.clone();
+        disabled_dl.combo.push(bad_combo(LteComponent {
+            band: 7,
+            dl_bw_class_mimo: 0,
+            ul_bw_class_mimo: Some(0),
+        }));
+        let error = to_kdl(&nr, &disabled_dl).unwrap_err().to_string();
+        assert!(
+            error.contains("band 7") && error.contains("dl_bw_class_mimo 0"),
+            "{error}"
+        );
+
+        let mut absent_ul = base;
+        absent_ul.combo.push(bad_combo(LteComponent {
+            band: 7,
+            dl_bw_class_mimo: 32_769,
+            ul_bw_class_mimo: None,
+        }));
+        let error = to_kdl(&nr, &absent_ul).unwrap_err().to_string();
+        assert!(
+            error.contains("band 7") && error.contains("omits ul_bw_class_mimo"),
+            "{error}"
         );
     }
 
@@ -1544,7 +1610,7 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 dm=A4\n    B1 dm=A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 dm=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 d=A4\n    B1 d=A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 d=A4\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();

@@ -148,7 +148,21 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
         lte_sub_block::DL_MIMO,
         format_class_mimo(comp.dl_bw_class_mimo)?.as_str(),
     ));
-    if let Some(ul) = comp.ul_bw_class_mimo {
+    // Local guard. The `.filter` below maps `None` and `Some(0)` to the same output, so this
+    // function alone cannot tell them apart. Every production path already passes
+    // `validate_lte_combos`, which rejects a `None`; this keeps the writer honest if it ever
+    // gains a second caller.
+    ensure!(
+        comp.ul_bw_class_mimo.is_some(),
+        "LTE component band {} omits ul_bw_class_mimo; the source format cannot represent an \
+         absent uplink class",
+        comp.band
+    );
+    // UL 0 is the majority value — 8 281 of 12 159 corpus sub-blocks — and carries no
+    // information, so it is omitted and re-defaulted by `read_lte_cc`. Same omit-when-0 rule the
+    // NR sub-block uses for its UL bandwidth class. `validate_lte_combos` rejects a `None`, so an
+    // omitted `u` always means the explicit zero and never a dropped absent field.
+    if let Some(ul) = comp.ul_bw_class_mimo.filter(|&v| v != 0) {
         node.push(KdlEntry::new_prop(
             lte_sub_block::UL_MIMO,
             format_class_mimo(ul)?.as_str(),
@@ -785,10 +799,14 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
         })?,
         lte_sub_block::DL_MIMO,
     )?;
-    let ul_bw_class_mimo = r
-        .opt_str(lte_sub_block::UL_MIMO)?
-        .map(|raw| parse_class_mimo(&raw, lte_sub_block::UL_MIMO))
-        .transpose()?;
+    // Omit-when-0: an absent UL property is UL disabled. `parse_class_mimo` never returns 0, so
+    // this is the sole route to one and the value-to-spelling mapping stays one-to-one.
+    let ul_bw_class_mimo = Some(
+        r.opt_str(lte_sub_block::UL_MIMO)?
+            .map(|raw| parse_class_mimo(&raw, lte_sub_block::UL_MIMO))
+            .transpose()?
+            .unwrap_or(0),
+    );
     r.finish()?;
     Ok(LteComponent {
         band,
@@ -1066,7 +1084,7 @@ mod nr_tests {
         // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
         // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
         // point.
-        let text = "version 2\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n48 d=B5,8\n    B66 d=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
@@ -1087,7 +1105,7 @@ mod nr_tests {
         // On an `lte` node the proto-4/5 index is spelled `dl-feature`/`ul-feature` (no
         // `-index`), single-valued; `ul-feature=0` is omitted and re-defaults to `Some(0)`.
         // No per-CC list is read on LTE. Byte-identical fixed point.
-        let text = "version 2\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B7 d=B1 u=A2\n    B66 d=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
@@ -1160,7 +1178,7 @@ mod nr_tests {
         // pre-migration `plmns "a" "b"` list node — this writer's old shape, and something
         // a hand-editor could still type — must be a hard parse error, never a silent
         // `Some(vec![])` that drops the listed PLMNs.
-        let text = "version 2\nbc \"LEGACY\"\ncr \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
+        let text = "version 1\nbc \"LEGACY\"\ncr \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
         let err = format!("{:#}", nr_from_kdl(text).unwrap_err());
         assert!(err.contains("ps"), "{err}");
     }
@@ -1180,7 +1198,7 @@ mod nr_tests {
     /// which carries one `parseLteFeatureIndex` scalar whatever its class.
     #[test]
     fn lte_sub_block_rejects_a_repeated_feature_property() {
-        let text = "version 2\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    B66 d=B3,4\n}\n";
 
         let error = nr_from_kdl(text).unwrap_err().to_string();
 
@@ -1192,7 +1210,7 @@ mod nr_tests {
     /// designation — the same convention `SubBlockKind::band_label` uses everywhere else.
     #[test]
     fn sub_block_node_name_carries_the_band() {
-        let text = "version 2\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n257 d=G1,1 u=A1\n    B66 d=A2\n}\n";
 
         let doc = nr_from_kdl(text).expect("bands parse out of the node name");
         let combo = &doc.combo[0];
@@ -1212,7 +1230,7 @@ mod nr_tests {
     #[test]
     fn malformed_sub_block_node_names_are_rejected() {
         for bad in ["nr", "n257x", "nrfoo", "lte", "x99", "n99999999"] {
-            let text = format!("version 2\nbc ATT\nc {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
+            let text = format!("version 1\nbc ATT\nc {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
             assert!(
                 nr_from_kdl(&text).is_err(),
                 "`{bad}` must not parse as a sub-block"
@@ -1230,7 +1248,7 @@ mod nr_tests {
             "dl-cc-id=1",
             "ul-cc-id=1",
         ] {
-            let text = format!("version 2\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
+            let text = format!("version 1\nbc ATT\nc {{\n    n78 d=A {key}\n}}\n");
             let err = nr_from_kdl(&text).unwrap_err().to_string();
             assert!(
                 err.contains("unknown property"),
@@ -1265,14 +1283,14 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_missing_version() {
-        let text = nr_to_kdl(&sample()).unwrap().replacen("version 2\n", "", 1);
+        let text = nr_to_kdl(&sample()).unwrap().replacen("version 1\n", "", 1);
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
 
     #[test]
     fn nr_rejects_duplicate_version() {
-        let text = format!("version 2\n{}", nr_to_kdl(&sample()).unwrap());
+        let text = format!("version 1\n{}", nr_to_kdl(&sample()).unwrap());
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("duplicate `version`"), "{err}");
     }
@@ -1364,7 +1382,7 @@ mod nr_tests {
     #[test]
     fn bw_class_is_direction_first_and_old_spelling_rejected() {
         // New direction-first spelling round-trips byte-identically.
-        let text = "version 2\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n78 d=A u=A\n}\n";
         let doc = nr_from_kdl(text).expect("parse new spelling");
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
@@ -1373,7 +1391,7 @@ mod nr_tests {
         );
 
         // The old suffix spelling is now an unknown property (strict reader, no alias).
-        let old = "version 2\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
+        let old = "version 1\nbc ATT\nc {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n";
         let err = nr_from_kdl(old).unwrap_err().to_string();
         assert!(
             err.contains("unknown property") && err.contains("bw-class-dl"),
@@ -1385,7 +1403,7 @@ mod nr_tests {
     /// Property order is load-bearing for byte-identity. The merge collapsed each direction's
     /// class and feature list into one property, so what remains to pin is that DL precedes UL.
     fn nr_emits_direction_grouped_order() {
-        let text = "version 2\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
+        let text = "version 1\nbc ATT\nc {\n    n78 d=A2 u=A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let out = nr_to_kdl(&doc).unwrap();
         let dl = out.find("d=A2").expect("DL property present");
@@ -1430,7 +1448,8 @@ mod lte_tests {
                     LteComponent {
                         band: 3,
                         dl_bw_class_mimo: 32769,
-                        ul_bw_class_mimo: None,
+                        // Omit-when-0: this renders with no `u` at all.
+                        ul_bw_class_mimo: Some(0),
                     },
                 ],
             }],
@@ -1444,8 +1463,8 @@ mod lte_tests {
         let back = lte_from_kdl(&text).expect("read back");
         assert_eq!(lte_to_kdl(&back).unwrap(), text, "byte-identity");
         assert!(text.contains("f \"3\" fp=715188856 bm=1"), "{text}");
-        assert!(text.contains("B1 dm=A4 um=A4"), "{text}");
-        assert!(text.contains("B3 dm=A4\n"), "{text}");
+        assert!(text.contains("B1 d=A4 u=A4"), "{text}");
+        assert!(text.contains("B3 d=A4\n"), "{text}");
     }
 
     #[test]
@@ -1455,20 +1474,20 @@ mod lte_tests {
     }
 
     #[test]
-    fn lte_rejects_the_old_mimo_bw_class_spelling() {
-        // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which
-        // covers only the NR combo pair. The lte.kdl mimo pair shares the same strict
-        // `finish()` and must reject the pre-rename suffix spelling just as firmly.
-        for (new, old) in [("dm=", "md="), ("um=", "mu=")] {
-            // Additive: keep the required new-spelling property and append the old one, so
-            // the reader reports the unknown property rather than a missing required one.
+    fn lte_rejects_superseded_direction_property_spellings() {
+        // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which covers only
+        // the NR combo pair. Two generations are dead here: the direction-last `md`/`mu`, and the
+        // `dm`/`um` that carried the class+MIMO encoding in the key.
+        for (current, dead) in [("d=", "md="), ("u=", "mu="), ("d=", "dm="), ("u=", "um=")] {
+            // Additive: keep the required current property and append the dead one, so the reader
+            // reports the unknown property rather than a missing required one.
             let text = lte_to_kdl(&sample())
                 .unwrap()
-                .replace(new, &format!("{old}1 {new}"));
+                .replace(current, &format!("{dead}1 {current}"));
             let err = lte_from_kdl(&text).unwrap_err().to_string();
             assert!(
-                err.contains("unknown property") && err.contains(old.trim_end_matches('=')),
-                "{old} must be rejected, got: {err}"
+                err.contains("unknown property") && err.contains(dead.trim_end_matches('=')),
+                "{dead} must be rejected, got: {err}"
             );
         }
     }
@@ -1483,7 +1502,7 @@ mod lte_tests {
     fn lte_rejects_missing_version() {
         let text = lte_to_kdl(&sample())
             .unwrap()
-            .replacen("version 2\n", "", 1);
+            .replacen("version 1\n", "", 1);
         let err = format!("{:#}", lte_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }

@@ -130,11 +130,15 @@ pub(crate) mod lte_combo {
     pub(crate) const SUB_BLOCK_PREFIX: &str = "B";
 }
 
-/// Properties of an `lte.kdl` sub-block.
 /// Properties of an `lte.kdl` sub-block: the class+MIMO bitfield as `<letter><mimo>`.
+///
+/// Spelled `d`/`u` like the `nr.kdl` sub-block's, because the document already fixes which
+/// encoding applies — the same rule that lets a sub-block node name carry no radio-kind tag.
+/// The Rust constants keep `_MIMO` precisely *because* the KDL spelling no longer distinguishes
+/// them: `B66 d=C2` is a per-CC feature index in `nr.kdl` and a class+MIMO bitfield here.
 pub(crate) mod lte_sub_block {
-    pub(crate) const DL_MIMO: &str = "dm";
-    pub(crate) const UL_MIMO: &str = "um";
+    pub(crate) const DL_MIMO: &str = "d";
+    pub(crate) const UL_MIMO: &str = "u";
 }
 
 #[cfg(test)]

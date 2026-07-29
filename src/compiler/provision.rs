@@ -801,7 +801,7 @@ mod tests {
     fn sources_are_fully_loaded_and_validated_before_model_resolution() {
         let temp = tempdir().unwrap();
         write_sources(temp.path());
-        fs::write(temp.path().join("lte.kdl"), "version 2\nu 1\n").unwrap();
+        fs::write(temp.path().join("lte.kdl"), "version 1\nu 1\n").unwrap();
 
         let error = load_and_generate(temp.path(), "NOT-A-MODEL").unwrap_err();
         let error = format!("{error:#}");
@@ -955,7 +955,7 @@ mod tests {
         fs::write(&output, b"original zip bytes").unwrap();
         let original_names = directory_names(temp.path());
 
-        fs::write(source.join("lte.kdl"), "version 2\nu 1\n").unwrap();
+        fs::write(source.join("lte.kdl"), "version 1\nu 1\n").unwrap();
         let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("parsing lte.kdl"),

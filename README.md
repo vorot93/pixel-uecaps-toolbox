@@ -95,7 +95,7 @@ versions, malformed references, and lossy values are rejected. A small valid
 `nr.kdl` has this shape:
 
 ```kdl
-version 2
+version 1
 bc VZW
 
 bf 715188856 {
@@ -167,7 +167,7 @@ The matching `lte.kdl` stores the exact LTE file whitelist and byte-preserving
 payloads:
 
 ```kdl
-version 2
+version 1
 
 f "400907661" fp=862505271 bm=1645725906
 
@@ -175,7 +175,7 @@ c b=0 u1=0 u2=0 {
     s {
         m G2YBB
     }
-    B1 dm=A2 um=off
+    B1 d=A2
 }
 ```
 
@@ -183,7 +183,9 @@ An `f` (file) node's quoted key argument is the modem firmware's exact `lte_file
 value (quoted because it's numeric-leading), not a hash. File-level `fingerprint`
 and `bitmask` remain stored because the compiler has no independent derivation for
 them. For optional protobuf fields, omission means absent and an explicit `0` means
-present-zero. LTE component order is significant.
+present-zero — with one deliberate exception: a sub-block's `u`, where omission means the
+explicit zero (uplink disabled) and a genuinely absent uplink class is rejected outright.
+LTE component order is significant.
 
 In either document, a combo's `selection` is zero or more child `selection { … }`
 nodes, each with an optional `carriers` child list-node and an optional `skus` child
@@ -444,8 +446,12 @@ The letter is worth learning: it is the 3GPP class, so it tells you the aggregat
 `A` is 1 CC, `B` and `C` are 2, and `G` through `M` are the FR2 (mmWave) classes running 2 to 8
 CCs. So `n257 d=G30,30` reads as "mmWave band n257, two aggregated carriers".
 
-`lte.kdl` sub-blocks use `dm`/`um` instead, which pack the class *and* the MIMO width: `dm=A4`
-is class A with 4x4 MIMO, `dm=A2` is 2x2, and `um=off` means UL disabled.
+`lte.kdl` sub-blocks spell their directions `d`/`u` too, but the *value* is a different encoding:
+it packs the class and the MIMO width into one bitfield. `d=A4` is class A with 4x4 MIMO, `d=A2`
+is 2x2, and an absent `u` means UL disabled. So the same text means different things in the two
+files — `B66 d=C2` is "class C, feature index 2" in `nr.kdl` and "class C, 2x2 MIMO" in
+`lte.kdl`. Which file you are reading settles it, the same way a sub-block node name carries no
+radio-kind tag when the document already does.
 
 Other keys, in rough order of how often you will meet them: `c` combo (and, inside `s`,
 carriers), `s` selection, `m` skus, `cr` carrier, `pf` profile, `bc` bitmask-carriers,

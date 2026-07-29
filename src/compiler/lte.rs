@@ -433,6 +433,9 @@ mod tests {
         let reverse = RawLteCombo::from(&combo(&[3, 1]));
         assert_ne!(forward, reverse);
 
+        // `None` vs `Some(0)` stays a raw-identity distinction even though `lte.kdl` cannot spell
+        // `None`: the source format omits `u` for `Some(0)`, and `validate_lte_combos` rejects a
+        // `None` outright. Different layers, both claims true.
         let absent = RawLteCombo::from(&LteCombo {
             components: vec![LteComponent {
                 band: 1,
@@ -579,11 +582,15 @@ mod tests {
     #[test]
     fn generation_filters_global_order_restores_metadata_and_is_byte_identical() {
         let shared = combo(&[1]);
+        // A real corpus bitfield (class B, 4x4). This combo only has to differ from `shared`; a
+        // disabled DL and an absent UL are states `lte.kdl` cannot represent and
+        // `validate_lte_combos` rejects, and `validated()` below round-trips through the source
+        // format.
         let first_only = LteCombo {
             components: vec![LteComponent {
                 band: 2,
-                dl_bw_class_mimo: 0,
-                ul_bw_class_mimo: None,
+                dl_bw_class_mimo: 16_385,
+                ul_bw_class_mimo: Some(0),
             }],
             bcs: None,
             unknown1: Some(0),
