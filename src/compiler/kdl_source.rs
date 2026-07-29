@@ -290,7 +290,20 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
 
 fn emit_lte_combo(combo: &LteSourceCombo) -> Result<KdlNode> {
     let mut node = KdlNode::new(lte_doc::COMBO);
-    opt_int_prop(&mut node, lte_combo::BCS, combo.bcs);
+    // `LteCombo.bcs` is `uint64` on the wire but carries a 32-bit left-aligned 3GPP BIT
+    // STRING; every one of the 3,878 corpus values fits. Fail closed rather than invent a
+    // spelling for a width that has never been observed — the same stance `format_direction`
+    // and `format_class_mimo` take. See DESIGN.md.
+    if let Some(bcs) = combo.bcs {
+        let bits = u32::try_from(bcs).with_context(|| {
+            format!(
+                "LTE combo bcs {bcs} does not fit the 32-bit BCS bit string the source format \
+                 spells (never observed; refusing to invent an encoding)"
+            )
+        })?;
+        let spelling = format_bcs(bits);
+        opt_str_prop(&mut node, lte_combo::BCS, Some(spelling.as_str()));
+    }
     opt_int_prop(&mut node, lte_combo::UNKNOWN1, combo.unknown1);
     opt_int_prop(&mut node, lte_combo::UNKNOWN2, combo.unknown2);
     if combo.selection.is_some() || !combo.components.is_empty() {
@@ -886,7 +899,12 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
 
 fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
     let mut r = NodeReader::new(node);
-    let bcs = r.opt_int::<u64>(lte_combo::BCS)?;
+    // An omitted `b` is a genuinely absent field; an explicit `""` is the all-zero bit
+    // string. Both occur, and the LTE round trip needs them kept apart.
+    let bcs = r
+        .opt_str(lte_combo::BCS)?
+        .map(|raw| parse_bcs(&raw, lte_combo::BCS).map(u64::from))
+        .transpose()?;
     let unknown1 = r.opt_int::<u64>(lte_combo::UNKNOWN1)?;
     let unknown2 = r.opt_int::<u64>(lte_combo::UNKNOWN2)?;
     let mut selection = Vec::new();
@@ -1700,10 +1718,45 @@ mod lte_tests {
         assert!(text.contains("B3 A4\n"), "{text}");
     }
 
+    /// `lte.kdl`'s `b` distinguishes an explicit zero from an absent field — DESIGN.md
+    /// requires that fidelity for the bit-for-bit LTE round trip — so unlike `bn`/`be` its
+    /// empty set IS spelled, as `""`.
+    #[test]
+    fn lte_bcs_round_trips_as_an_index_list_and_keeps_absent_distinct() {
+        let text = "version 1\nc b=b0,1 u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from_kdl(text).expect("parse");
+        assert_eq!(doc.combo[0].bcs, Some(3_221_225_472));
+        assert_eq!(lte_to_kdl(&doc).unwrap(), text);
+
+        let explicit_zero = "version 1\nc b=\"\" u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from_kdl(explicit_zero).expect("parse");
+        assert_eq!(doc.combo[0].bcs, Some(0));
+        assert_eq!(lte_to_kdl(&doc).unwrap(), explicit_zero);
+
+        let absent = "version 1\nc u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from_kdl(absent).expect("parse");
+        assert_eq!(doc.combo[0].bcs, None, "an absent `b` is None, not Some(0)");
+        assert_eq!(lte_to_kdl(&doc).unwrap(), absent);
+    }
+
+    /// The guard exists because `LteCombo.bcs` is `uint64`; a value above 2^32 has never been
+    /// observed and has no spelling, so the writer refuses it rather than truncating.
+    #[test]
+    fn an_lte_bcs_wider_than_32_bits_fails_closed() {
+        let mut doc = lte_from_kdl("version 1\nc u1=0 u2=0 {\n    B1 A4\n}\n").expect("parse");
+        doc.combo[0].bcs = Some(u64::from(u32::MAX) + 1);
+        let error = lte_to_kdl(&doc).unwrap_err().to_string();
+        assert!(error.contains("32-bit"), "{error}");
+    }
+
     #[test]
     fn lte_rejects_unknown_property() {
-        let text = lte_to_kdl(&sample()).unwrap().replace("b=2", "b=2 bogus=9");
-        assert!(lte_from_kdl(&text).is_err());
+        // Built directly rather than via `sample()`'s round-tripped output: `sample()`'s
+        // `bcs = Some(2)` now spells as `b=b30` (2 is bit 1 of the 32-bit word, so index
+        // 31-1 = 30), so a `.replace("b=2", …)` on the writer's own output would silently
+        // become a no-op once the index-list codec landed.
+        let text = "version 1\nc b=b30 u1=0 u2=0 bogus=9 {\n    B1 A4\n}\n";
+        assert!(lte_from_kdl(text).is_err());
     }
 
     #[test]

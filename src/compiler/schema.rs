@@ -1539,11 +1539,11 @@ cr "MAPPING" mi=7 {
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
 
-        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=0` is `Some(0)`.
-        // It is also what keeps these two combos distinct under `RawLteCombo`, now that their
-        // components are identical.
+        // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=""` is
+        // `Some(0)`. It is also what keeps these two combos distinct under `RawLteCombo`, now
+        // that their components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc b=0 {{\n    B1 A4\n}}\n");
+            format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc b=\"\" {{\n    B1 A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
