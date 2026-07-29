@@ -1317,6 +1317,20 @@ mod nr_tests {
         assert!(err.contains("duplicate `version`"), "{err}");
     }
 
+    /// `checked_version` *scans* for the marker rather than reading the first node, so the version
+    /// is diagnosed even in a document that puts it somewhere else. Every other fixture in the
+    /// suite opens with `version`, so without this one a "simplification" to `doc.nodes().first()`
+    /// would silently defeat the scan — and defeat it exactly where it matters, since a stale tree
+    /// whose vocabulary also changed would go back to failing on the vocabulary instead.
+    #[test]
+    fn the_version_marker_is_found_wherever_it_sits() {
+        let good = nr_from_kdl("bc ATT\nversion 1\n").expect("`version` may follow another node");
+        assert_eq!(good.version, 1);
+
+        let err = format!("{:#}", nr_from_kdl("bc ATT\nversion 2\n").unwrap_err());
+        assert!(err.contains("source-format version 2"), "{err}");
+    }
+
     #[test]
     fn nr_rejects_bare_numeric_profile_key() {
         // A map key (the profile anchor) must be a quoted string arg, never a bare
@@ -1477,8 +1491,9 @@ mod nr_tests {
              decodings of the same `d=C2` text — if they ever match, the two codecs have merged"
         );
 
-        // `B66 d=A` parses in nr.kdl: class A (1), with an empty per-CC list (the all-zero
-        // placeholder that `resolve` re-materializes later; not asserted here, see report).
+        // `B66 d=A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
+        // placeholder that `features::resolve` re-materializes later. The resulting
+        // `dl_feature` is incidental to this test's point and deliberately not pinned here.
         let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nc {\n    B66 d=A\n}\n")
             .expect("`d=A` parses as a class with no per-CC list");
         let NrSourceSubBlock::Lte(placeholder_sub_block) = &nr_placeholder.combo[0].sub_blocks[0]

@@ -1136,11 +1136,11 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
     /// version marker and the vocabulary; before the check moved into the reader, the vocabulary
     /// failed first and the remedy sentence never printed.
     ///
-    /// `{:#}`, not bare `to_string()`: `parse_sources` wraps every `nr_from_kdl`/`lte_from_kdl`
-    /// error in a "parsing lte.kdl" context (see `assert_nr_error` above), so plain `Display` only
-    /// ever shows that outer layer, never the version text underneath — regardless of which error
-    /// produced it. `main.rs` prints top-level errors with `{:#}` too, so this is also the
-    /// reader's-eye view of the fix, not just a test-visibility workaround.
+    /// `{:#}`, not bare `to_string()`: `parse_sources` wraps each reader's errors in its own
+    /// context — "parsing nr.kdl" for `nr_from_kdl`, "parsing lte.kdl" for `lte_from_kdl` — so
+    /// plain `Display` shows only that outer layer, never the version text underneath. `main.rs`
+    /// prints top-level errors with `{:#}` too, so this is the user's-eye view of the fix, not a
+    /// test-visibility workaround. `assert_nr_error` below takes the same precaution.
     #[test]
     fn a_stale_vocabulary_reports_the_version_not_the_unknown_property() {
         let stale = format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4 um=off\n}}\n").replacen(
