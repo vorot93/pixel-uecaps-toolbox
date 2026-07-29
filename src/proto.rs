@@ -139,10 +139,12 @@ pub struct ShannonFeatureSetUlPerCcNr {
 
 /// LTE-only fallback files (lte_*.binarypb): a Shannon-format LTE UE-capability blob.
 /// Field 1 = fingerprint/version, field 2 = repeated CA combinations, field 3 = a bitmask.
-/// Schema + class/MIMO semantics per the Shannon LTE editor reference; opaque numeric fields
-/// widened to uint64 (real files carry 64-bit values in unknown1). The four `optional` fields
-/// carry explicit presence because real lte_*.binarypb files encode them as explicit zeros;
-/// bare (non-`optional`) scalars would drop zeros on re-encode, producing a 4 KB-smaller file.
+/// Schema + class/MIMO semantics per the Shannon LTE editor reference; the opaque `unknown1`/
+/// `unknown2` fields are widened to uint64 (real files carry 64-bit values in unknown1). `bcs`
+/// is NOT opaque — see DESIGN.md's "BCS: a 3GPP bit string, not an opaque number" section. The
+/// four `optional` fields carry explicit presence because real lte_*.binarypb files encode
+/// them as explicit zeros; bare (non-`optional`) scalars would drop zeros on re-encode,
+/// producing a 4 KB-smaller file.
 ///
 /// The NON-optional scalars in the bit-identity messages — LteCaps.fingerprint/bitmask,
 /// LteComponent.band and dl_bw_class_mimo, and Carrier.index below — deliberately assume no

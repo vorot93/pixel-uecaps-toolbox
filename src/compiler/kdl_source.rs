@@ -645,22 +645,28 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     Ok(cc)
 }
 
-/// Read a BCS property whose zero is spelled by omitting it.
+/// Read a BCS property whose zero is spelled by omitting it. `key` is the KDL property to look
+/// up; `label` is the descriptive name (`bcs-nr`, `bcs-eutra`, …) diagnostics report instead —
+/// DESIGN.md's "a key spelling is not a diagnostic" rule.
 ///
 /// An explicit empty value is refused rather than accepted as zero: omission already spells
 /// that value, and a format with two spellings for one value cannot round-trip byte-stably.
 /// The writer never emits one — `emit_nr_combo` filters `Some(0)` out first — so this guards
 /// a hand-edited document.
-fn read_omitted_zero_bcs(r: &mut NodeReader<'_>, key: &'static str) -> Result<Option<u32>> {
+fn read_omitted_zero_bcs(
+    r: &mut NodeReader<'_>,
+    key: &'static str,
+    label: &'static str,
+) -> Result<Option<u32>> {
     let Some(raw) = r.opt_str(key)? else {
         return Ok(None);
     };
     ensure!(
         !raw.is_empty(),
-        "property `{key}` is empty; the empty BCS set is spelled by omitting the property, so \
-         an explicit empty value would give one value two spellings"
+        "property `{label}` is empty; the empty BCS set is spelled by omitting the property, \
+         so an explicit empty value would give one value two spellings"
     );
-    Ok(Some(parse_bcs(&raw, key)?))
+    Ok(Some(parse_bcs(&raw, label)?))
 }
 
 fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
@@ -670,8 +676,8 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // defaults back to `Some(0)`. `bcs-intra-endc` derives from `intra-band-en-dc-support` —
     // see below.
     let power_class = r.opt_int::<i32>(combo::POWER_CLASS)?.or(Some(0));
-    let bcs_nr = read_omitted_zero_bcs(&mut r, combo::BCS_NR)?.or(Some(0));
-    let bcs_eutra = read_omitted_zero_bcs(&mut r, combo::BCS_EUTRA)?.or(Some(0));
+    let bcs_nr = read_omitted_zero_bcs(&mut r, combo::BCS_NR, "bcs-nr")?.or(Some(0));
+    let bcs_eutra = read_omitted_zero_bcs(&mut r, combo::BCS_EUTRA, "bcs-eutra")?.or(Some(0));
     let intra_band_en_dc_support = r
         .opt_int::<i32>(combo::INTRA_BAND_EN_DC_SUPPORT)?
         .or(Some(0));
@@ -680,15 +686,15 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // the field it depends on.
     let bcs_intra_endc = match r.opt_str(combo::BCS_INTRA_ENDC)? {
         Some(raw) => {
-            let value = parse_bcs(&raw, combo::BCS_INTRA_ENDC)?;
+            let value = parse_bcs(&raw, "bcs-intra-endc")?;
             // Spelling out the derived value would give it two spellings. `emit_nr_combo`
             // omits exactly this case, so a document containing it was hand-edited.
+            // Names the fields in words, not their abbreviated key spellings — the same rule
+            // `parse_bcs` above follows, and the one DESIGN.md states.
             ensure!(
                 Some(value) != derive_bcs_intra_endc(intra_band_en_dc_support),
-                "property `{}` states the value already derived from `{}`; omit it, so that \
-                 each value has one spelling",
-                combo::BCS_INTRA_ENDC,
-                combo::INTRA_BAND_EN_DC_SUPPORT
+                "property `bcs-intra-endc` states the value already derived from \
+                 `intra-band-en-dc-support`; omit it, so that each value has one spelling"
             );
             Some(value)
         }
@@ -905,7 +911,7 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
     // string. Both occur, and the LTE round trip needs them kept apart.
     let bcs = r
         .opt_str(lte_combo::BCS)?
-        .map(|raw| parse_bcs(&raw, lte_combo::BCS).map(u64::from))
+        .map(|raw| parse_bcs(&raw, "bcs").map(u64::from))
         .transpose()?;
     let unknown1 = r.opt_int::<u64>(lte_combo::UNKNOWN1)?;
     let unknown2 = r.opt_int::<u64>(lte_combo::UNKNOWN2)?;
@@ -1275,7 +1281,9 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_unknown_property() {
-        let text = nr_to_kdl(&sample()).unwrap().replace("n78", "n78 bogus=9");
+        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let text = unmodified.replace("n78", "n78 bogus=9");
+        assert_ne!(text, unmodified);
         assert!(nr_from_kdl(&text).is_err());
     }
 
@@ -1361,19 +1369,25 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_unknown_cc_kind() {
-        let text = nr_to_kdl(&sample()).unwrap().replace("n78", "bogus78");
+        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let text = unmodified.replace("n78", "bogus78");
+        assert_ne!(text, unmodified);
         assert!(nr_from_kdl(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_unknown_tier() {
-        let text = nr_to_kdl(&sample()).unwrap().replace("t=main", "t=bogus");
+        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let text = unmodified.replace("t=main", "t=bogus");
+        assert_ne!(text, unmodified);
         assert!(nr_from_kdl(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_missing_version() {
-        let text = nr_to_kdl(&sample()).unwrap().replacen("version 1\n", "", 1);
+        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let text = unmodified.replacen("version 1\n", "", 1);
+        assert_ne!(text, unmodified);
         let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
@@ -1403,9 +1417,9 @@ mod nr_tests {
     fn nr_rejects_bare_numeric_profile_key() {
         // A map key (the profile anchor) must be a quoted string arg, never a bare
         // integer — the reader rejects `profile 66813533` in favor of `profile "66813533"`.
-        let text = nr_to_kdl(&sample())
-            .unwrap()
-            .replace("pf \"66813533\"", "pf 66813533");
+        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let text = unmodified.replace("pf \"66813533\"", "pf 66813533");
+        assert_ne!(text, unmodified);
         assert!(nr_from_kdl(&text).is_err());
     }
 
@@ -1816,6 +1830,18 @@ mod lte_tests {
         assert!(error.contains("missing"), "{error}");
     }
 
+    /// The `lte.kdl` counterpart to `nr_tests::a_sub_block_with_a_third_argument_is_rejected`:
+    /// a third argument has no meaning and must not be silently dropped. Both readers share the
+    /// same `NodeReader::finish` mechanism, so the two documents' readers are pinned
+    /// symmetrically here.
+    #[test]
+    fn an_lte_sub_block_with_a_third_argument_is_rejected() {
+        let error = lte_from_kdl("version 1\nc {\n    B1 A4 A2 A2\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("extra argument"), "{error}");
+    }
+
     #[test]
     fn lte_rejects_duplicate_file() {
         let text = format!("{}\nf \"3\" fp=1 bm=1\n", lte_to_kdl(&sample()).unwrap());
@@ -1824,9 +1850,9 @@ mod lte_tests {
 
     #[test]
     fn lte_rejects_missing_version() {
-        let text = lte_to_kdl(&sample())
-            .unwrap()
-            .replacen("version 1\n", "", 1);
+        let unmodified = lte_to_kdl(&sample()).unwrap();
+        let text = unmodified.replacen("version 1\n", "", 1);
+        assert_ne!(text, unmodified);
         let err = format!("{:#}", lte_from_kdl(&text).unwrap_err());
         assert!(err.contains("missing `version`"), "{err}");
     }
@@ -1834,7 +1860,9 @@ mod lte_tests {
     #[test]
     fn lte_rejects_bare_numeric_file_key() {
         // The LTE file id is a map key: a quoted string arg, not a bare integer.
-        let text = lte_to_kdl(&sample()).unwrap().replace("f \"3\"", "f 3");
+        let unmodified = lte_to_kdl(&sample()).unwrap();
+        let text = unmodified.replace("f \"3\"", "f 3");
+        assert_ne!(text, unmodified);
         assert!(lte_from_kdl(&text).is_err());
     }
 }

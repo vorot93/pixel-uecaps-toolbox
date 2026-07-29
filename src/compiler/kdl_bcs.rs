@@ -45,52 +45,54 @@ pub(crate) fn format_bcs(bits: u32) -> String {
     out
 }
 
-/// The inverse of [`format_bcs`]. `key` names the property in diagnostics.
+/// The inverse of [`format_bcs`]. `label` names the property in diagnostics — a descriptive
+/// name (`bcs-nr`, `bcs-eutra`, `bcs-intra-endc`, `bcs`), never the raw KDL key: DESIGN.md's
+/// "a key spelling is not a diagnostic" rule.
 ///
 /// Indices must ascend and not repeat. Normalising a descending list instead would give one
 /// value two spellings, and the round trip would stop being byte-stable — the same rule
 /// [`super::kdl_direction::parse_class_mimo`] keeps for its own encoding.
-pub(crate) fn parse_bcs(raw: &str, key: &str) -> Result<u32> {
+pub(crate) fn parse_bcs(raw: &str, label: &str) -> Result<u32> {
     if raw.is_empty() {
         return Ok(0);
     }
     let rest = raw.strip_prefix(PREFIX).with_context(|| {
-        format!("property `{key}` value `{raw}` must begin with `{PREFIX}`, as in `b0,1`")
+        format!("property `{label}` value `{raw}` must begin with `{PREFIX}`, as in `b0,1`")
     })?;
     ensure!(
         !rest.is_empty(),
-        "property `{key}` value `{raw}` has no BCS index"
+        "property `{label}` value `{raw}` has no BCS index"
     );
     let mut bits = 0u32;
     let mut previous: Option<u32> = None;
     for part in rest.split(',') {
         ensure!(
             !part.is_empty(),
-            "property `{key}` value `{raw}` has an empty BCS index"
+            "property `{label}` value `{raw}` has an empty BCS index"
         );
         ensure!(
             part.bytes().all(|b| b.is_ascii_digit()),
-            "property `{key}` BCS index `{part}` is not a decimal number"
+            "property `{label}` BCS index `{part}` is not a decimal number"
         );
         // `b00` and `b0` must not both parse: one value, one spelling, or the round trip
         // stops being byte-stable. Index 0 is legitimately spelled `0`, so only PADDED
         // zeros are refused.
         ensure!(
             part == "0" || !part.starts_with('0'),
-            "property `{key}` BCS index `{part}` has a leading zero; each index has exactly \
+            "property `{label}` BCS index `{part}` has a leading zero; each index has exactly \
              one spelling, so write it without padding"
         );
         let index: u32 = part
             .parse()
-            .with_context(|| format!("property `{key}` BCS index `{part}` is out of range"))?;
+            .with_context(|| format!("property `{label}` BCS index `{part}` is out of range"))?;
         ensure!(
             index < 32,
-            "property `{key}` BCS index {index} exceeds 31; the bit string is 32 bits wide"
+            "property `{label}` BCS index {index} exceeds 31; the bit string is 32 bits wide"
         );
         if let Some(previous) = previous {
             ensure!(
                 index > previous,
-                "property `{key}` value `{raw}` lists BCS index {index} after {previous}; \
+                "property `{label}` value `{raw}` lists BCS index {index} after {previous}; \
                  indices must ascend without repeating, so that each value has one spelling"
             );
         }
@@ -122,7 +124,7 @@ mod tests {
             (134_217_728, "b4"),
         ] {
             assert_eq!(format_bcs(bits), text, "formatting {bits}");
-            assert_eq!(parse_bcs(text, "bn").unwrap(), bits, "parsing `{text}`");
+            assert_eq!(parse_bcs(text, "bcs-nr").unwrap(), bits, "parsing `{text}`");
         }
     }
 
@@ -130,7 +132,7 @@ mod tests {
     #[test]
     fn the_last_index_round_trips() {
         assert_eq!(format_bcs(1), "b31");
-        assert_eq!(parse_bcs("b31", "bn").unwrap(), 1);
+        assert_eq!(parse_bcs("b31", "bcs-nr").unwrap(), 1);
     }
 
     /// Two spellings of one value would break byte-stable round-tripping, so a descending or
@@ -145,7 +147,7 @@ mod tests {
             ("b01", "leading zero"),
             ("b0,01", "leading zero"),
         ] {
-            let error = parse_bcs(bad, "bn").unwrap_err().to_string();
+            let error = parse_bcs(bad, "bcs-nr").unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -165,7 +167,7 @@ mod tests {
             ("b32", "exceeds 31"),
             ("b99999999999", "out of range"),
         ] {
-            let error = parse_bcs(bad, "bn").unwrap_err().to_string();
+            let error = parse_bcs(bad, "bcs-nr").unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -178,7 +180,10 @@ mod tests {
     #[test]
     fn the_empty_set_and_set_zero_stay_distinct() {
         assert_ne!(format_bcs(0), format_bcs(2_147_483_648));
-        assert_eq!(parse_bcs("", "bi").unwrap(), 0);
-        assert_ne!(parse_bcs("", "bi").unwrap(), parse_bcs("b0", "bi").unwrap());
+        assert_eq!(parse_bcs("", "bcs-intra-endc").unwrap(), 0);
+        assert_ne!(
+            parse_bcs("", "bcs-intra-endc").unwrap(),
+            parse_bcs("b0", "bcs-intra-endc").unwrap()
+        );
     }
 }

@@ -1190,8 +1190,16 @@ served over the UecapFile RPC at `0x42E07046`.
   one (`bcs_nr`, `bcs_intra_endc`, `bcs_eutra`, `LteCombo.bcs`), and source spells each as a
   `b`-prefixed index list. See
   [BCS: a 3GPP bit string, not an opaque number](#bcs-a-3gpp-bit-string-not-an-opaque-number).
-- **Bandwidth class** — the A–F letter (with MIMO branches) describing a CC's aggregation
-  class.
+- **Bandwidth class** — a sub-block's 3GPP CA aggregation class, rendered as the leading letter
+  of a positional direction value (`format_direction`/`parse_direction`,
+  `src/compiler/kdl_direction.rs`): the plain index into the 3GPP letters, `A` upward. E-UTRA
+  classes 1..=5 reach `A`..`E`; NR classes 7..=13 (FR2-only) reach `G`..`M`
+  (`format_direction` admits the general range 1..=26). Do not confuse this with the
+  class+MIMO bitfield below — same module, same letters for part of its range, unrelated field.
+- **Class+MIMO bitfield** — `lte.kdl`'s own encoding of `LteComponent.dl_bw_class_mimo` /
+  `ul_bw_class_mimo` (`format_class_mimo`/`parse_class_mimo`, same module): a letter restricted
+  to `A`–`F` plus a MIMO digit (`2` or `4`). It runs the OPPOSITE way from the bandwidth class
+  above — the highest raw value, 32768, is `A`; the lowest, 1024, is `F`.
 - **EN-DC** — E-UTRA-NR Dual Connectivity; an NR combo mixing LTE (`B…`) and NR (`n…`)
   components.
 - **LTE-fallback config** — the `lte_*.binarypb` a modem loads by hardware category;
