@@ -411,7 +411,7 @@ that mirror is worth more than the 28,587 bytes (0.38%) inverting it would have 
 The smallest value each side actually emits differs, and conflating the two understates the LTE
 case. On the **NR** side the decoder prints trimmed bits and a single-bit {0} is ordinary —
 `'1'B(1)`, 58 occurrences. On the **LTE** side (`-r10`/`-r13`, printed full-width) the field
-takes only four values across all 80 captures, **every one with at least two bits set**:
+takes only four values across all 80 capture files, **every one with at least two bits set**:
 
 | on-air value | set | occurrences |
 |---|---|---|
@@ -468,7 +468,8 @@ The LTE BCS is not carried inside a band combination. It lives in
 `supportedBandCombination-r10` — index *n* of one describes index *n* of the other. Each Ext
 entry is a SEQUENCE whose `supportedBandwidthCombinationSet-r10` is `OPTIONAL`, so an entry can
 be present and empty. Verified in `lte_information.txt`: **51 entries in each list**, of which 19
-carry a bit string and **32 are present-but-empty**.
+carry a bit string and **32 are present-but-empty**; every other capture that carries the two
+lists keeps them equal-length as well (7 distinct captures, the largest 128 = 128).
 
 A combo that exists therefore has exactly two on-air renderings, and `LteCombo.bcs` spells them:
 
@@ -484,19 +485,26 @@ combo. `lte.kdl` keeps omission mapped to `None` regardless — the LTE round tr
 so present-zero and absent are different bytes and collapsing them would be unsound for a
 hand-edited or future document — but that branch does not fire on corpus input.
 
-**`b=b0` and `b=""` most likely mean the same thing on the air.** The config asks for exactly {0}
-on 3,414 of 3,878 combos (88%), the captures are Pixels running these configs, and a single-bit
-{0} appears in none of them — so the modem renders `bcs = {0}` as an empty Ext entry, the same
-output as `bcs = 0`. Proven: LTE never emits single-bit {0}, and empty entries are routine.
-Inferred: the collapse happens in the modem. Either way the two **must** stay distinct in source,
-because they are different config bytes and LTE is bit-for-bit. Do not fold one into the other.
+**`b=b0` and `b=""` mean the same thing on the air — witnessed per combination, not just
+inferred.** The config asks for exactly {0} on 3,414 of 3,878 combos (88%), yet a single-bit {0}
+appears in no capture. Matching settles where the collapse happens: zip a capture's Ext list
+positionally against its main list, key each combination as the ordered (band, DL class, DL MIMO
+layers, UL class) list, and look the key up in the corpus (well-defined — see the exact-value
+bullet below). Across the 4 distinct corpus-matching captures (`detail (1)/(4)/(6).txt`,
+`lte_information.txt`; 317 matched entries), **173** empty Ext entries sit on combinations
+configured exactly `b=b0`, **144** populated entries carry exactly the configured value, and
+there are **0** contradictions: the modem renders `bcs = {0}` as an empty Ext entry, the same
+output as `bcs = 0`. The two still **must** stay distinct in source, because they are different
+config bytes and LTE is bit-for-bit. Do not fold one into the other.
 
 **What decides which spelling a combo gets**, measured so the 39 `b=""` combos are not mistaken
 for noise:
 
-- It is a function of the component list. Across 3,371 distinct lists, **zero** carry both `b=""`
-  and a nonzero BCS.
-- It is not per-carrier: the 39 spread across all 18 SKUs plus `lte:1534561764`.
+- It is a function of the component list, and the list determines the **exact value**, not just
+  zero-vs-nonzero: across 3,371 distinct lists, **zero** carry both `b=""` and a nonzero BCS,
+  and zero carry two different nonzero values.
+- It is not per-carrier: all 8 LTE files carry some of the 39 — every one of the 18 SKUs plus
+  both files no SKU selects (`lte:844857560`, `lte:1534561764`).
 - It is not `u1`/`u2`: `(u1=1, u2=768)` occurs 22 times with `b=""` and 22 times with `b=b0`.
 - The 39 partition exactly: **22 repeat B41**, **17 include B32**.
 - One exact rule holds: a repeated B41 with at least 3 entries is always `b=""` (22 of 22, no
@@ -507,6 +515,20 @@ for noise:
 The residual discriminator is the specific CA configuration — a TS 36.101 fact about which
 configurations have a defined bandwidth-combination-set table — and is not derivable from the
 corpus. Do not over-fit a rule to those 17.
+
+**Rejected: deriving `b` from the combo instead of storing it.** Because the list determines the
+value, one could hope to omit `b=""`/`b=b0` on decompose and re-derive on build. Measured and
+declined: the best intrinsic rule — `""` for a repeated B41 with at least 3 entries or any B32
+combo — mispredicts **284** combos, because the B32 family splits 17 `b=""` / 284 `b=b0` /
+5 `b=b0,1`; and the opaque fields do not separate the sides either (4 of the 5 `u1` values seen
+on `b=""` combos also occur on `b=b0` combos, likewise `u2`, and 3 of 5 for the `(u1,u2)` pair).
+An exact derivation would have to embed the TS 36.101 per-configuration tables — or the 17
+component lists verbatim — in the compiler: corpus data relocated into code and frozen at
+today's spec. The partial variant (omit where the rule matches, spell the exceptions) still
+writes 284 `b=b0` and turns an absent `b` into "run a band-pattern rule to know the value"; the
+no-rule variant (an absent `b` means the majority `b0`) is the inverted omit rule already
+rejected above. Every variant also repurposes omission, which today spells `bcs = None` on a
+bit-for-bit path.
 
 #### Sub-block syntax
 
