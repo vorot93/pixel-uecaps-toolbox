@@ -16,7 +16,7 @@ use crate::{
         },
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
-            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
+            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION,
         },
         selection::SelectionRect,
     },
@@ -677,6 +677,28 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
     Ok(v)
 }
 
+/// Read and check the format version before any other node is mapped.
+///
+/// The ordering is the whole point. The mapping that follows is what rejects an unknown
+/// vocabulary (`unknown property`, `missing required property`), and every format change so far
+/// has also changed the vocabulary — so a stale source tree used to die there, unhelpfully, while
+/// the check that exists to diagnose exactly that case sat downstream in `validate_documents` and
+/// never ran. Scanning for the marker up front is also order-independent, so the diagnosis holds
+/// for a hand-written document that puts `version` somewhere other than the top.
+fn checked_version(doc: &KdlDocument, file: &str, key: &str) -> Result<u32> {
+    let mut found: Option<u32> = None;
+    for node in doc.nodes().iter().filter(|node| node.name().value() == key) {
+        found = Some(read_version(node, found)?);
+    }
+    let version = found.ok_or_else(|| anyhow!("{file} missing `{key}`"))?;
+    ensure!(
+        version == SOURCE_FORMAT_VERSION,
+        "{file} is source-format version {version} but this build reads version \
+         {SOURCE_FORMAT_VERSION}; re-run `decompose` to regenerate it"
+    );
+    Ok(version)
+}
+
 /// Parses `bitmask-carriers`, or errors if it already appeared once — same duplicate-before-
 /// parse order as `read_version`.
 fn read_bitmask_carriers(node: &KdlNode, existing: Option<&[String]>) -> Result<Vec<String>> {
@@ -699,7 +721,7 @@ fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, 
 
 pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
     let doc: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
-    let mut version: Option<u32> = None;
+    let version = checked_version(&doc, "nr.kdl", nr_doc::VERSION)?;
     let mut bitmask_carriers: Option<Vec<String>> = None;
     let mut bitmask_fingerprints = Vec::new();
     let mut carriers = BTreeMap::new();
@@ -711,7 +733,7 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
         // constants, which are not valid `match` patterns.
         let name = node.name().value();
         if name == nr_doc::VERSION {
-            version = Some(read_version(node, version)?);
+            // Already read, duplicate-checked, and version-checked by `checked_version` above.
         } else if name == nr_doc::BITMASK_CARRIERS {
             bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
         } else if name == nr_doc::BITMASK_FINGERPRINT {
@@ -729,7 +751,7 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
         }
     }
     Ok(NrDocument {
-        version: version.ok_or_else(|| anyhow!("nr.kdl missing `version`"))?,
+        version,
         bitmask_carriers: bitmask_carriers
             .ok_or_else(|| anyhow!("nr.kdl missing `bitmask-carriers`"))?,
         bitmask_fingerprints,
@@ -846,14 +868,14 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
 
 pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
     let doc: KdlDocument = text.parse().context("lte.kdl is not valid KDL")?;
-    let mut version: Option<u32> = None;
+    let version = checked_version(&doc, "lte.kdl", lte_doc::VERSION)?;
     let mut files = BTreeMap::new();
     let mut combo = Vec::new();
     for node in doc.nodes() {
         // See the `nr_from_kdl` twin: constants are not valid `match` patterns.
         let name = node.name().value();
         if name == lte_doc::VERSION {
-            version = Some(read_version(node, version)?);
+            // Already read, duplicate-checked, and version-checked by `checked_version` above.
         } else if name == lte_doc::FILE {
             insert_unique(&mut files, lte_doc::FILE, read_file(node)?)?;
         } else if name == lte_doc::COMBO {
@@ -863,7 +885,7 @@ pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
         }
     }
     Ok(LteDocument {
-        version: version.ok_or_else(|| anyhow!("lte.kdl missing `version`"))?,
+        version,
         files,
         combo,
     })
@@ -1295,6 +1317,20 @@ mod nr_tests {
         assert!(err.contains("duplicate `version`"), "{err}");
     }
 
+    /// `checked_version` *scans* for the marker rather than reading the first node, so the version
+    /// is diagnosed even in a document that puts it somewhere else. Every other fixture in the
+    /// suite opens with `version`, so without this one a "simplification" to `doc.nodes().first()`
+    /// would silently defeat the scan — and defeat it exactly where it matters, since a stale tree
+    /// whose vocabulary also changed would go back to failing on the vocabulary instead.
+    #[test]
+    fn the_version_marker_is_found_wherever_it_sits() {
+        let good = nr_from_kdl("bc ATT\nversion 1\n").expect("`version` may follow another node");
+        assert_eq!(good.version, 1);
+
+        let err = format!("{:#}", nr_from_kdl("bc ATT\nversion 2\n").unwrap_err());
+        assert!(err.contains("source-format version 2"), "{err}");
+    }
+
     #[test]
     fn nr_rejects_bare_numeric_profile_key() {
         // A map key (the profile anchor) must be a quoted string arg, never a bare
@@ -1409,6 +1445,69 @@ mod nr_tests {
         let dl = out.find("d=A2").expect("DL property present");
         let ul = out.find("u=A3").expect("UL property present");
         assert!(dl < ul, "expected dl before ul:\n{out}");
+    }
+
+    /// `d=`/`u=` mean different things depending on which document reads them: in `nr.kdl` a
+    /// bandwidth class plus a per-CC feature-index list (`parse_direction`); in `lte.kdl` a
+    /// bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing else in the
+    /// suite ties the two codecs together, so an editor who noticed the shared spelling and
+    /// "unified" them would break nothing visible here — only every real `lte.kdl` combo,
+    /// silently. The collision is a deliberate trade, not an oversight: the *document* fixes
+    /// the interpretation, the same way a sub-block node name carries no radio-kind tag. This
+    /// test is where that trade is meant to be learned before anyone "fixes" it.
+    #[test]
+    fn identical_d_equals_text_means_different_things_in_each_document() {
+        // The exact same property text, `d=C2`, fed to each document's reader.
+        let nr_text = "version 1\nbc ATT\nc {\n    B66 d=C2\n}\n";
+        let lte_text = "version 1\nc {\n    B66 d=C2\n}\n";
+
+        // nr.kdl: `d=C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
+        // always parses to the `Lte` variant of `NrSourceSubBlock`.
+        let nr_doc = nr_from_kdl(nr_text).expect("nr.kdl parses");
+        let NrSourceSubBlock::Lte(sub_block) = &nr_doc.combo[0].sub_blocks[0] else {
+            panic!(
+                "a `B66` node parses to the `Lte` variant, got {:?}",
+                nr_doc.combo[0].sub_blocks[0]
+            )
+        };
+        assert_eq!(sub_block.band, 66);
+        assert_eq!(sub_block.dl_bw_class, Some(3));
+        assert_eq!(sub_block.dl_feature, Some(2));
+
+        // lte.kdl: the identical text `d=C2` is class C + 2x2 MIMO, the bitfield 8192.
+        let lte_doc = lte_from_kdl(lte_text).expect("lte.kdl parses");
+        let component = &lte_doc.combo[0].components[0];
+        assert_eq!(component.band, 66);
+        assert_eq!(component.dl_bw_class_mimo, 8192);
+
+        // Spell out that these are different INTERPRETATIONS of identical text, not merely
+        // different incidental numbers: nr.kdl's value is a small 1-based catalog reference,
+        // lte.kdl's is a bitfield. If the two `d=` codecs were ever unified, this is the
+        // assertion that would catch it.
+        assert_ne!(
+            i64::from(sub_block.dl_feature.unwrap()),
+            i64::from(component.dl_bw_class_mimo),
+            "nr.kdl's per-CC feature index and lte.kdl's class+MIMO bitfield must stay disjoint \
+             decodings of the same `d=C2` text — if they ever match, the two codecs have merged"
+        );
+
+        // `B66 d=A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
+        // placeholder that `features::resolve` re-materializes later. The resulting
+        // `dl_feature` is incidental to this test's point and deliberately not pinned here.
+        let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nc {\n    B66 d=A\n}\n")
+            .expect("`d=A` parses as a class with no per-CC list");
+        let NrSourceSubBlock::Lte(placeholder_sub_block) = &nr_placeholder.combo[0].sub_blocks[0]
+        else {
+            panic!("still a `B66`/`Lte` sub-block")
+        };
+        assert_eq!(placeholder_sub_block.dl_bw_class, Some(1));
+
+        // The identical `B66 d=A` is rejected by lte_from_kdl: a class+MIMO value always needs
+        // the MIMO digit that nr.kdl's bare-class placeholder spelling never carries.
+        let error = lte_from_kdl("version 1\nc {\n    B66 d=A\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("MIMO width"), "{error}");
     }
 }
 
