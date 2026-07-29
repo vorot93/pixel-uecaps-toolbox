@@ -183,7 +183,9 @@ An `f` (file) node's quoted key argument is the modem firmware's exact `lte_file
 value (quoted because it's numeric-leading), not a hash. File-level `fingerprint`
 and `bitmask` remain stored because the compiler has no independent derivation for
 them. For optional protobuf fields, omission means absent and an explicit `0` means
-present-zero. LTE component order is significant.
+present-zero — with one deliberate exception: a sub-block's `u`, where omission means the
+explicit zero (uplink disabled) and a genuinely absent uplink class is rejected outright.
+LTE component order is significant.
 
 In either document, a combo's `selection` is zero or more child `selection { … }`
 nodes, each with an optional `carriers` child list-node and an optional `skus` child

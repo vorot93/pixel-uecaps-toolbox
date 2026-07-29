@@ -306,7 +306,8 @@ that, so a key added to the wrong group fails the suite instead of silently shad
 #### The short vocabulary
 
 Keys are abbreviated. The measured effect on the real corpus is 12.69 MB → 7.65 MB (39.7%
-smaller) and a 10.4% faster `decompose`. Per-carrier keys that appear a handful of times
+smaller) and a 10.4% faster `decompose`; the later direction-key change took it to 7.57 MB
+(40.3% off the original). Per-carrier keys that appear a handful of times
 (`mcc`, `mnc`) stay spelled out; the per-combo keys that repeat tens of thousands of times do
 not.
 
@@ -341,9 +342,17 @@ mismatch error names the remedy.
 The number identifies *the* format, not a count of revisions. It is currently **1**, and it was
 reset from 2 rather than advanced to 3 when the short-vocabulary work landed: this repo's history
 is squashable, so a version series accumulated inside unpublished commits is noise a reader at
-HEAD cannot interpret. The check is an inequality, not an ordering, so a reset still rejects a
-tree from any build that emitted a different number — including the 2 that the immediately
-preceding build wrote.
+HEAD cannot interpret. The check is an inequality, not an ordering, so any number but the current
+one is rejected, in either direction.
+
+**The marker only diagnoses a pure number change, though, and that is a narrower job than it
+looks.** `parse_sources` parses *both* documents in full before `validate_documents` reaches the
+version check, so a format change that also altered the vocabulary is caught earlier and less
+kindly — by the strict reader, as `unknown property` / `missing required property`, with no
+`re-run decompose` remedy attached. Every change to this format so far has altered the vocabulary,
+which makes the mismatch message unreachable for precisely the migrations it was written for.
+Making it fire would mean reading the `version` node before the document body. Until that happens,
+read the remedy sentence as aspirational.
 
 **A key spelling is not a diagnostic.** Error messages say "carrier", "profile", "bitmask" —
 words, not KDL keys. A mechanical rename that rewrites both leaves the suite green while
@@ -375,6 +384,7 @@ are FR2-only: every occurrence is on n257/n258/n260/n261 at 120 kHz with a 100 M
 | *(`u` absent)* | UL class **0** — disabled |
 | `lte.kdl` `d=A4` | class A, 4x4 MIMO — a class+MIMO bitfield, not a catalog reference |
 | `lte.kdl` *(`u` absent)* | UL class **0** — disabled |
+| `lte.kdl` *(`d` absent)* | rejected — `d` is required there, unlike in `nr.kdl` |
 
 Arity is kind-dependent and checked: on `n` the list length must equal `cc_count(class)`, which
 makes the per-CC invariant syntactic; on `B` the index is a single `parseLteFeatureIndex` value
@@ -391,9 +401,11 @@ the round trip stays byte-stable without a uniqueness check.
 That omission is guarded, not assumed. `validate_lte_combos` rejects a component whose
 `dl_bw_class_mimo` is 0 or whose `ul_bw_class_mimo` is absent, naming the combo and band; neither
 occurs in the corpus (0 of 12 159 sub-blocks), and neither is representable in the source format,
-so a foreign file gets a loud error instead of a quiet re-encode. **The NR sub-block's identical
-omit-when-0 rule for `ul-bw-class` is still assumption-only** — corpus-verified but unguarded.
-That is a known gap, deliberately left for its own change.
+so a foreign file gets a loud error instead of a quiet re-encode. The NR sub-block's identical
+omit-when-0 rule for `ul-bw-class` is guarded too, at a different boundary:
+`RawSubBlock::from_proto_sub_block` refuses a `None` at decode (`src/raw_nr.rs`), because NR
+components pass through `raw_nr`'s strict decode and E-UTRA ones do not. Two placements, one
+stance — nothing in this toolbox silently normalizes an unobserved `None` to 0.
 
 The two documents share the `d`/`u` spelling while meaning different things by it: `B66 d=C2` is
 class C with per-CC feature index 2 in `nr.kdl` and class C with 2x2 MIMO in `lte.kdl`. That is
@@ -586,7 +598,8 @@ Filename factors and opaque filename-related `u64` values are native KDL integer
 the full `u64` range fits without string-encoding); the two remaining string map keys (profile
 anchor, LTE file id) are quoted positional arguments, still parsed by `parse_decimal_key`'s
 shortest-decimal check. Optional protobuf scalars use KDL presence exactly: omission is absent, while
-`0` is present-zero.
+`0` is present-zero — except where an omit-when-0 rule inverts it, as on a sub-block's `u` (see the
+omit-when-0 catalogue below).
 
 ### Applicability relation and canonical rectangles
 
@@ -899,6 +912,12 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   does not extend to `dl_feature_index` (never `0` on LTE — the rule would be dead code). Unlike
   the five fields above it has no decode-time `ensure!`; the `lte_feature_index_is_always_some_in_corpus`
   test (`tests/compiler_corpus.rs`) is its guard.
+  A **seventh** applies to `lte.kdl`'s own sub-blocks: `ul_bw_class_mimo` is `Some(0)` on 8 281 of
+  the corpus's 12 159 E-UTRA sub-blocks and `None` on none of them, so the writer omits `u` for a
+  zero and the reader defaults an absent one back to `Some(0)`. It is the only member of this list
+  guarded at **validation** rather than at decode — `compiler::schema::validate_lte_combos` rejects
+  a `None`, and also a zero `dl_bw_class_mimo`, which the format likewise cannot spell — because
+  LTE components never pass through `raw_nr`'s decode boundary.
   The strict decode boundary that builds a `RawSubBlock`/`RawNrPayload` from a real
   `.binarypb` — `raw_nr::RawSubBlock::from_proto_sub_block` and the header read in
   `raw_nr::RawNrPayload::from_proto_combo` — asserts (`anyhow::ensure!`) that these fields

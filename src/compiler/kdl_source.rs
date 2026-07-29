@@ -148,6 +148,16 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
         lte_sub_block::DL_MIMO,
         format_class_mimo(comp.dl_bw_class_mimo)?.as_str(),
     ));
+    // Local guard. The `.filter` below maps `None` and `Some(0)` to the same output, so this
+    // function alone cannot tell them apart. Every production path already passes
+    // `validate_lte_combos`, which rejects a `None`; this keeps the writer honest if it ever
+    // gains a second caller.
+    ensure!(
+        comp.ul_bw_class_mimo.is_some(),
+        "LTE component band {} omits ul_bw_class_mimo; the source format cannot represent an \
+         absent uplink class",
+        comp.band
+    );
     // UL 0 is the majority value — 8 281 of 12 159 corpus sub-blocks — and carries no
     // information, so it is omitted and re-defaulted by `read_lte_cc`. Same omit-when-0 rule the
     // NR sub-block uses for its UL bandwidth class. `validate_lte_combos` rejects a `None`, so an
