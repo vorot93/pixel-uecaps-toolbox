@@ -86,7 +86,7 @@ pub(crate) mod sub_block {
     pub(crate) const SRS_TX_SWITCH: &str = "st";
 }
 
-/// Properties of a `dl-feature` catalog node.
+/// Properties of a `df` catalog node.
 pub(crate) mod dl_catalog {
     pub(crate) const MAX_SCS: &str = "s";
     pub(crate) const MAX_MIMO: &str = "m";
@@ -95,7 +95,7 @@ pub(crate) mod dl_catalog {
     pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
 }
 
-/// Properties of a `ul-feature` catalog node.
+/// Properties of a `uf` catalog node.
 pub(crate) mod ul_catalog {
     pub(crate) const MAX_SCS: &str = "s";
     pub(crate) const MAX_MIMO_CB: &str = "m";

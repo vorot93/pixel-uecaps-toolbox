@@ -79,20 +79,22 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
     node
 }
 
-/// Emit one `nr.kdl` sub-block node. Property order is load-bearing for byte-identity:
-/// `band` positional, then `dl-bw-class`, `dl-feature`, `ul-bw-class`, `ul-feature`,
-/// `srs-tx-switch` — direction-grouped, so DL and UL each read as a contiguous run.
+/// Emit one `nr.kdl` sub-block node. The node name is the kind prefix (`n`/`B`) plus the band
+/// (`n78`, `B66`); DL and UL are then positional arguments — DL required, UL omitted when its
+/// bandwidth class is 0 — followed by `srs-tx-switch`. Order is load-bearing for byte-identity.
 ///
 /// The two node kinds spell proto 4/5 and 6/7 differently, which is why the source model is a
 /// sum type and this matches on it once:
 ///   * `nr`: the proto-4/5 index is NOT surfaced — NR derives it from its feature set on
-///     provision. The per-CC catalog list becomes repeated `dl-feature=`/`ul-feature=`. An
-///     unresolved NR selector is only ever the all-zero placeholder (corpus: 0 of 1.74M
-///     non-zero), omitted here and re-derived by the reader.
-///   * `lte`: the index becomes a single scalar `dl-feature`/`ul-feature` (the LTE MIMO ×
-///     CC-count value). LTE never carries a per-CC list, so the un-suffixed name is free.
-///     `ul-feature` is always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted
-///     (Task 8 omit-when-0) and the reader re-defaults it. LTE has no `srs-tx-switch`.
+///     provision. The per-CC catalog list becomes the comma-separated tail of the positional
+///     DL/UL value (`format_direction`), one 1-based reference per CC. An unresolved NR
+///     selector is only ever the all-zero placeholder (corpus: 0 of 1.74M non-zero), omitted
+///     here and re-derived by the reader.
+///   * `lte`: the index becomes the single trailing number in the positional DL/UL value (the
+///     LTE MIMO × CC-count value). LTE never carries a per-CC list. `ul_feature` is
+///     always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted (Task 8
+///     omit-when-0) by dropping the whole UL argument, and the reader re-defaults it. LTE has
+///     no `srs-tx-switch`.
 fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
     let prefix = match cc.kind() {
         SubBlockKind::Nr => combo::NR_PREFIX,
@@ -1164,20 +1166,20 @@ mod nr_tests {
 
     #[test]
     fn nr_sub_block_repeated_features_and_lte_placeholder_round_trip() {
-        // Two-CC NR sub-block: repeated `dl-feature=` reads back as one usize per CC.
-        // LTE sub-block: no per-CC references at all. The all-zero placeholder selector
-        // that the binary carries for it is NOT part of the source model — the reader
-        // leaves it out entirely (`NrSourceSubBlock::resolve` derives it from
-        // `dl-bw-class=1` on the provision path; see `resolve_derives_the_omitted_placeholder`
-        // in `compiler::features`) — and re-emitting must stay a byte-identical fixed
-        // point.
+        // Two-CC NR sub-block: the comma-separated per-CC list in the DL positional argument
+        // (`B5,8`) reads back as one usize per CC. LTE sub-block: no per-CC references at all.
+        // The all-zero placeholder selector that the binary carries for it is NOT part of the
+        // source model — the reader leaves it out entirely (`NrSourceSubBlock::resolve`
+        // derives it from the DL positional argument's class, here `A` (class 1), on the
+        // provision path; see `resolve_derives_the_omitted_placeholder` in
+        // `compiler::features`) — and re-emitting must stay a byte-identical fixed point.
         let text = "version 1\nbc ATT\nc {\n    n48 B5,8\n    B66 A\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
             panic!("first sub-block is an `nr` node, got {:?}", cc[0])
         };
-        assert_eq!(nr.dl_feature, vec![5, 8], "repeated dl-feature");
+        assert_eq!(nr.dl_feature, vec![5, 8], "repeated dl_feature");
         // The `lte` variant has no per-CC feature list to be empty — that is the point.
         assert!(matches!(cc[1], NrSourceSubBlock::Lte(_)));
         assert_eq!(
@@ -1189,9 +1191,10 @@ mod nr_tests {
 
     #[test]
     fn lte_sub_block_scalar_feature_names_and_ul_omit_when_zero_round_trip() {
-        // On an `lte` node the proto-4/5 index is spelled `dl-feature`/`ul-feature` (no
-        // `-index`), single-valued; `ul-feature=0` is omitted and re-defaults to `Some(0)`.
-        // No per-CC list is read on LTE. Byte-identical fixed point.
+        // On an `lte` node the proto-4/5 index is the single trailing number in the
+        // positional direction value, single-valued; an omitted UL argument means index `0`
+        // and re-defaults to `Some(0)`. No per-CC list is read on LTE. Byte-identical fixed
+        // point.
         let text = "version 1\nbc ATT\nc {\n    B7 B1 A2\n    B66 A3\n}\n";
         let doc = nr_from_kdl(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
@@ -1206,12 +1209,12 @@ mod nr_tests {
         assert_eq!(
             second.ul_feature,
             Some(0),
-            "absent ul-feature on an lte node defaults to Some(0)"
+            "absent ul_feature on an lte node defaults to Some(0)"
         );
         assert_eq!(
             nr_to_kdl(&doc).unwrap(),
             text,
-            "byte-identical fixed point: ul=0 stays omitted, no -index suffix"
+            "byte-identical fixed point: ul=0 stays omitted"
         );
     }
 

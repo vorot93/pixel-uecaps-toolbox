@@ -462,9 +462,9 @@ fn nr_feature_index_matches_derivation_formula() {
 }
 
 /// Guard the omit-when-0 + reader-default invariant for LTE (E-UTRA) combo sub-blocks: their
-/// `dl_feature_index`/`ul_feature_index` are always `Some` in the real corpus, so an absent
-/// `dl-feature`/`ul-feature` in KDL unambiguously means "omitted zero", never a genuine `None`.
-/// Env-gated exactly like the other corpus tests.
+/// `dl_feature_index`/`ul_feature_index` are always `Some` in the real corpus, so an omitted UL
+/// positional-argument value in the sub-block's KDL spelling unambiguously means the explicit
+/// zero, never a genuine `None`. Env-gated exactly like the other corpus tests.
 #[test]
 fn lte_feature_index_is_always_some_in_corpus() {
     let (Some(bitmask), Some(profiled)) =

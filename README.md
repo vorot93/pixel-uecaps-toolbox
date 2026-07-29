@@ -131,7 +131,7 @@ excludes that carrier from the rebuilt profiled legend, while a bare, childless
 above) deliberately emits an entry with no PLMNs. PLMN order and duplicates are
 significant and preserved.
 
-Top-level `dl-feature` and `ul-feature` nodes are canonical global catalogs for
+Top-level `df` and `uf` nodes are canonical global catalogs for
 compiler source. A band+CA-bandwidth-class entry (an `nr`/`lte` node) can carry more than
 one component carrier (CC) — the count is fixed by its bandwidth class, e.g. `n78` class C
 = 2 CCs — and each CC has its own feature reference, so a sub-block's direction argument carries a
@@ -154,9 +154,10 @@ the component's per-CC feature set on provision (DL from the subcarrier-spacing 
 MIMO presence). The old `dl-feature-index`/`ul-feature-index` override was removed — a decoded NR
 index that contradicts the derivation is now a hard decode error rather than a carried override
 (the proto field is still materialized on provision/decompose). LTE components keep the value explicit
-but spell it `dl-feature`/`ul-feature` (dropping the `-index` suffix; the LTE MIMO × CC-count
-encoding, which is not derivable); `ul-feature` is omitted when it is `0` — the common "no UL"
-default — and re-defaults to `0` on read.
+(the LTE MIMO × CC-count encoding, which is not derivable), but it is not a property — it is the
+single trailing number in the sub-block's positional direction argument (`B66 C2` is class C,
+feature index 2); an omitted UL argument means feature index `0` — the common "no UL" default —
+and re-defaults to `0` on read.
 
 A combo header's `bi` (bcs-intra-endc) is likewise omitted from `nr.kdl` when it is derivable: an
 absent value re-derives to the empty bandwidth-combination-set when the same combo's `ie`

@@ -548,8 +548,8 @@ The band is part of the **node name**, parsed by `parse_sub_block_name` and matc
 **A sub-block emits DL before UL**, then the direction-agnostic `st`. On a sub-block that order
 is now *load-bearing* rather than a convention, because the two directions are positional
 arguments — see [Sub-block syntax](#sub-block-syntax). Elsewhere, direction-paired keys still
-lead with the direction (`df`/`uf`, `dl-feature`/`ul-feature`), never a `-dl`/`-ul` suffix;
-those readers are property-keyed, so their order remains an emit convention only.
+lead with the direction (`df`/`uf`), never a `-dl`/`-ul` suffix; those readers are
+property-keyed, so their order remains an emit convention only.
 
 **PLMN representation: one `plmn mcc=… mnc=…` node per entry.** The compiler `nr.kdl` carrier
 PLMN list is the only place a PLMN appears in KDL now (the legend's own KDL round-trip is gone;
@@ -783,7 +783,7 @@ be stored:
   fingerprints, derived band labels/keys, or masks. Profiled input accepts absent or
   explicit-zero combo masks and always regenerates explicit `0`; a nonzero profiled
   mask is unsupported.
-- Top-level `dl-feature` and `ul-feature` nodes are shared compiler-only source
+- Top-level `df` and `uf` nodes are shared compiler-only source
   catalogs. Decompose resolves a component's whole per-CC selector-byte array
   **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
@@ -1068,7 +1068,9 @@ LteCombo { components=1, bcs=2 (optional), unknown1=3 (optional), unknown2=4 (op
 LteComponent { band=1, dl_bw_class_mimo=2, ul_bw_class_mimo=3 (optional) }
 ```
 
-E-UTRA only (1–5 CA, no NR). Opaque numeric fields are `uint64` (real files carry 64-bit
+E-UTRA only (1–5 CA, no NR). `bcs` is not opaque — see
+[BCS: a 3GPP bit string, not an opaque number](#bcs-a-3gpp-bit-string-not-an-opaque-number). The
+remaining opaque numeric fields (`unknown1`, `unknown2`) are `uint64` (real files carry 64-bit
 values in `unknown1`). **Class + MIMO encoding** (`report/lte.rs`, one field per direction):
 
 - `value == 0` → that direction **disabled**.
