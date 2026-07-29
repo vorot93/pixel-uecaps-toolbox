@@ -88,6 +88,14 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
             part.bytes().all(|b| b.is_ascii_digit()),
             "{label} positional argument index `{part}` is not a decimal number"
         );
+        // Same rule `parse_bcs` enforces: `A03` and `A3` must not both parse, or the round
+        // trip stops being byte-stable. Index 0 is a legitimate E-UTRA
+        // `parseLteFeatureIndex` value spelled `0`, so only PADDED zeros are refused.
+        ensure!(
+            part == "0" || !part.starts_with('0'),
+            "{label} positional argument index `{part}` has a leading zero; each index has \
+             exactly one spelling, so write it without padding"
+        );
         let index: u16 = part.parse().with_context(|| {
             format!("{label} positional argument index `{part}` is out of range")
         })?;
@@ -225,6 +233,24 @@ mod tests {
     #[test]
     fn index_zero_parses_and_is_left_to_the_reader() {
         assert_eq!(parse_direction("A0", "DL").unwrap().indices, vec![0]);
+    }
+
+    /// `A03` and `A3` must not both parse to the same index, or the round trip stops being
+    /// byte-stable — the same rule `kdl_bcs::parse_bcs` enforces for its own index list. Plain
+    /// `0` is exempt: it is a legitimate value, not padding.
+    #[test]
+    fn rejects_anything_with_a_second_spelling() {
+        for (bad, expect) in [
+            ("A03", "leading zero"),
+            ("A01", "leading zero"),
+            ("G22,023", "leading zero"),
+        ] {
+            let error = parse_direction(bad, "DL").unwrap_err().to_string();
+            assert!(
+                error.contains(expect),
+                "`{bad}` should mention `{expect}`, got: {error}"
+            );
+        }
     }
 
     #[test]
