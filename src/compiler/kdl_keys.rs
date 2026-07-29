@@ -129,17 +129,6 @@ pub(crate) mod lte_combo {
     pub(crate) const SUB_BLOCK_PREFIX: &str = "B";
 }
 
-/// Properties of an `lte.kdl` sub-block: the class+MIMO bitfield as `<letter><mimo>`.
-///
-/// Spelled `d`/`u` like the `nr.kdl` sub-block's, because the document already fixes which
-/// encoding applies — the same rule that lets a sub-block node name carry no radio-kind tag.
-/// The Rust constants keep `_MIMO` precisely *because* the KDL spelling no longer distinguishes
-/// them: `B66 d=C2` is a per-CC feature index in `nr.kdl` and a class+MIMO bitfield here.
-pub(crate) mod lte_sub_block {
-    pub(crate) const DL_MIMO: &str = "d";
-    pub(crate) const UL_MIMO: &str = "u";
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -147,8 +136,8 @@ mod tests {
     /// One scope's keys. Two keys may share a spelling across scopes but never within one.
     fn scopes() -> Vec<(&'static str, Vec<&'static str>)> {
         use super::{
-            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, lte_sub_block,
-            nr_doc, plmn, profile, selection, sub_block, ul_catalog,
+            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, nr_doc, plmn,
+            profile, selection, sub_block, ul_catalog,
         };
         vec![
             (
@@ -229,10 +218,6 @@ mod tests {
                     lte_combo::SELECTION,
                     lte_combo::SUB_BLOCK_PREFIX,
                 ],
-            ),
-            (
-                "lte_sub_block",
-                vec![lte_sub_block::DL_MIMO, lte_sub_block::UL_MIMO],
             ),
         ]
     }

@@ -11,8 +11,8 @@ use crate::{
         features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
         kdl_direction::{format_class_mimo, format_direction, parse_class_mimo, parse_direction},
         kdl_keys::{
-            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, lte_sub_block,
-            nr_doc, profile, selection, sub_block, ul_catalog,
+            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, nr_doc, profile,
+            selection, sub_block, ul_catalog,
         },
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
@@ -151,10 +151,10 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
         )
     })?;
     let mut node = KdlNode::new(sub_block_node_name(lte_combo::SUB_BLOCK_PREFIX, band));
-    // The bitfield becomes `<letter><mimo>`: 32769 -> `A4`. The number told you nothing without
-    // the table in `report::lte::lte_class`.
-    node.push(KdlEntry::new_prop(
-        lte_sub_block::DL_MIMO,
+    // The bitfield becomes `<letter><mimo>`: 32769 -> `A4`. The number told you nothing
+    // without the table in `report::lte::lte_class`. Positional, DL first — the same shape
+    // `nr.kdl` sub-blocks use.
+    node.push(KdlEntry::new(
         format_class_mimo(comp.dl_bw_class_mimo)?.as_str(),
     ));
     // Local guard. The `.filter` below maps `None` and `Some(0)` to the same output, so this
@@ -170,12 +170,9 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
     // UL 0 is the majority value — 8 281 of 12 159 corpus sub-blocks — and carries no
     // information, so it is omitted and re-defaulted by `read_lte_cc`. Same omit-when-0 rule the
     // NR sub-block uses for its UL bandwidth class. `validate_lte_combos` rejects a `None`, so an
-    // omitted `u` always means the explicit zero and never a dropped absent field.
+    // omitted second argument always means the explicit zero and never a dropped absent field.
     if let Some(ul) = comp.ul_bw_class_mimo.filter(|&v| v != 0) {
-        node.push(KdlEntry::new_prop(
-            lte_sub_block::UL_MIMO,
-            format_class_mimo(ul)?.as_str(),
-        ));
+        node.push(KdlEntry::new(format_class_mimo(ul)?.as_str()));
     }
     Ok(node)
 }
@@ -825,19 +822,15 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
     let band = i32::from(band);
     let mut r = NodeReader::new(node);
     let dl_bw_class_mimo = parse_class_mimo(
-        &r.opt_str(lte_sub_block::DL_MIMO)?.ok_or_else(|| {
-            anyhow!(
-                "`{name}` missing required property `{}`",
-                lte_sub_block::DL_MIMO
-            )
-        })?,
-        lte_sub_block::DL_MIMO,
+        &r.key_str()
+            .with_context(|| format!("`{name}` is missing its DL class+MIMO value"))?,
+        "DL",
     )?;
-    // Omit-when-0: an absent UL property is UL disabled. `parse_class_mimo` never returns 0, so
-    // this is the sole route to one and the value-to-spelling mapping stays one-to-one.
+    // Omit-when-0: an absent UL argument is UL disabled. `parse_class_mimo` never returns 0,
+    // so this is the sole route to one and the value-to-spelling mapping stays one-to-one.
     let ul_bw_class_mimo = Some(
-        r.opt_str(lte_sub_block::UL_MIMO)?
-            .map(|raw| parse_class_mimo(&raw, lte_sub_block::UL_MIMO))
+        r.opt_arg_str()?
+            .map(|raw| parse_class_mimo(&raw, "UL"))
             .transpose()?
             .unwrap_or(0),
     );
@@ -1488,21 +1481,22 @@ mod nr_tests {
         assert!(error.contains("extra argument"), "{error}");
     }
 
-    /// `d=`/`u=` mean different things depending on which document reads them: in `nr.kdl` a
-    /// bandwidth class plus a per-CC feature-index list (`parse_direction`); in `lte.kdl` a
-    /// bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing else in the
-    /// suite ties the two codecs together, so an editor who noticed the shared spelling and
-    /// "unified" them would break nothing visible here — only every real `lte.kdl` combo,
-    /// silently. The collision is a deliberate trade, not an oversight: the *document* fixes
-    /// the interpretation, the same way a sub-block node name carries no radio-kind tag. This
-    /// test is where that trade is meant to be learned before anyone "fixes" it.
+    /// A sub-block's first argument means different things depending on which document reads
+    /// it: in `nr.kdl` a bandwidth class plus a per-CC feature-index list (`parse_direction`);
+    /// in `lte.kdl` a bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing
+    /// else in the suite ties the two codecs together, so an editor who noticed the shared
+    /// spelling and "unified" them would break nothing visible here — only every real
+    /// `lte.kdl` combo, silently. The collision is a deliberate trade, not an oversight: the
+    /// *document* fixes the interpretation, the same way a sub-block node name carries no
+    /// radio-kind tag. This test is where that trade is meant to be learned before anyone
+    /// "fixes" it.
     #[test]
     fn identical_d_equals_text_means_different_things_in_each_document() {
-        // The exact same property text, `d=C2`, fed to each document's reader.
+        // The exact same positional text, `C2`, fed to each document's reader.
         let nr_text = "version 1\nbc ATT\nc {\n    B66 C2\n}\n";
-        let lte_text = "version 1\nc {\n    B66 d=C2\n}\n";
+        let lte_text = "version 1\nc {\n    B66 C2\n}\n";
 
-        // nr.kdl: `d=C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
+        // nr.kdl: `C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
         // always parses to the `Lte` variant of `NrSourceSubBlock`.
         let nr_doc = nr_from_kdl(nr_text).expect("nr.kdl parses");
         let NrSourceSubBlock::Lte(sub_block) = &nr_doc.combo[0].sub_blocks[0] else {
@@ -1515,7 +1509,7 @@ mod nr_tests {
         assert_eq!(sub_block.dl_bw_class, Some(3));
         assert_eq!(sub_block.dl_feature, Some(2));
 
-        // lte.kdl: the identical text `d=C2` is class C + 2x2 MIMO, the bitfield 8192.
+        // lte.kdl: the identical text `C2` is class C + 2x2 MIMO, the bitfield 8192.
         let lte_doc = lte_from_kdl(lte_text).expect("lte.kdl parses");
         let component = &lte_doc.combo[0].components[0];
         assert_eq!(component.band, 66);
@@ -1523,13 +1517,13 @@ mod nr_tests {
 
         // Spell out that these are different INTERPRETATIONS of identical text, not merely
         // different incidental numbers: nr.kdl's value is a small 1-based catalog reference,
-        // lte.kdl's is a bitfield. If the two `d=` codecs were ever unified, this is the
+        // lte.kdl's is a bitfield. If the two positional codecs were ever unified, this is the
         // assertion that would catch it.
         assert_ne!(
             i64::from(sub_block.dl_feature.unwrap()),
             i64::from(component.dl_bw_class_mimo),
             "nr.kdl's per-CC feature index and lte.kdl's class+MIMO bitfield must stay disjoint \
-             decodings of the same `d=C2` text — if they ever match, the two codecs have merged"
+             decodings of the same `C2` text — if they ever match, the two codecs have merged"
         );
 
         // `B66 A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
@@ -1543,9 +1537,9 @@ mod nr_tests {
         };
         assert_eq!(placeholder_sub_block.dl_bw_class, Some(1));
 
-        // The identical `B66 d=A` is rejected by lte_from_kdl: a class+MIMO value always needs
+        // The identical `B66 A` is rejected by lte_from_kdl: a class+MIMO value always needs
         // the MIMO digit that nr.kdl's bare-class placeholder spelling never carries.
-        let error = lte_from_kdl("version 1\nc {\n    B66 d=A\n}\n")
+        let error = lte_from_kdl("version 1\nc {\n    B66 A\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("MIMO width"), "{error}");
@@ -1603,8 +1597,8 @@ mod lte_tests {
         let back = lte_from_kdl(&text).expect("read back");
         assert_eq!(lte_to_kdl(&back).unwrap(), text, "byte-identity");
         assert!(text.contains("f \"3\" fp=715188856 bm=1"), "{text}");
-        assert!(text.contains("B1 d=A4 u=A4"), "{text}");
-        assert!(text.contains("B3 d=A4\n"), "{text}");
+        assert!(text.contains("B1 A4 A4"), "{text}");
+        assert!(text.contains("B3 A4\n"), "{text}");
     }
 
     #[test]
@@ -1616,20 +1610,55 @@ mod lte_tests {
     #[test]
     fn lte_rejects_superseded_direction_property_spellings() {
         // Companion to `bw_class_is_direction_first_and_old_spelling_rejected`, which covers only
-        // the NR combo pair. Two generations are dead here: the direction-last `md`/`mu`, and the
-        // `dm`/`um` that carried the class+MIMO encoding in the key.
-        for (current, dead) in [("d=", "md="), ("u=", "mu="), ("d=", "dm="), ("u=", "um=")] {
-            // Additive: keep the required current property and append the dead one, so the reader
+        // the NR combo pair. Three generations of now-dead property spelling are checked here:
+        // the direction-last `md`/`mu`, the `dm`/`um` that carried the class+MIMO encoding in the
+        // key, and the property form `d`/`u` itself — superseded by the positional spelling
+        // `lte_directions_are_positional_and_the_old_keys_are_rejected` covers.
+        for dead in ["md", "mu", "dm", "um", "d", "u"] {
+            // A valid positional sub-block with a leftover dead property appended, so the reader
             // reports the unknown property rather than a missing required one.
-            let text = lte_to_kdl(&sample())
-                .unwrap()
-                .replace(current, &format!("{dead}1 {current}"));
+            let text = format!("version 1\nc {{\n    B1 A4 A2 {dead}=A4\n}}\n");
             let err = lte_from_kdl(&text).unwrap_err().to_string();
             assert!(
-                err.contains("unknown property") && err.contains(dead.trim_end_matches('=')),
+                err.contains(&format!("unknown property `{dead}`")),
                 "{dead} must be rejected, got: {err}"
             );
         }
+    }
+
+    /// `lte.kdl` spells its directions positionally too, and the superseded `d=`/`u=` keys are
+    /// rejected rather than silently ignored.
+    #[test]
+    fn lte_directions_are_positional_and_the_old_keys_are_rejected() {
+        let text = "version 1\nc {\n    B1 A4 A2\n}\n";
+        let doc = lte_from_kdl(text).expect("parse positional spelling");
+        assert_eq!(
+            lte_to_kdl(&doc).unwrap(),
+            text,
+            "positional is a fixed point"
+        );
+
+        // `B1 d=A4` has no positional argument at all, so the reader stops at the missing DL.
+        let error = lte_from_kdl("version 1\nc {\n    B1 d=A4\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing its DL"), "{error}");
+
+        // With DL present, the leftover key is reported as the unknown property it is.
+        let error = lte_from_kdl("version 1\nc {\n    B1 A4 u=A2\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown property `u`"), "{error}");
+    }
+
+    /// A DL class+MIMO value is mandatory; without it the UL value would slide into first
+    /// place and be read as the downlink.
+    #[test]
+    fn an_lte_sub_block_without_a_dl_argument_is_rejected() {
+        let error = lte_from_kdl("version 1\nc {\n    B1\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing"), "{error}");
     }
 
     #[test]

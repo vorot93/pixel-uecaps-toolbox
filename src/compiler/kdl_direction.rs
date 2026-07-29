@@ -117,7 +117,7 @@ const CLASS_MIMO_BASES: [(i32, char); 6] = [
 /// Render the class+MIMO bitfield as `<letter><mimo>`, e.g. 32769 → `A4`.
 ///
 /// Fails closed on an unobserved value rather than inventing a letter — including 0, which is
-/// UL-disabled. `lte.kdl` spells that by *omitting* the property, so 0 has no rendering here and
+/// UL-disabled. `lte.kdl` spells that by *omitting* the argument, so 0 has no rendering here and
 /// no value has two spellings. A 0 reaching this function is a disabled downlink, which
 /// `validate_lte_combos` rejects first with a message naming the combo and band.
 pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
@@ -130,33 +130,36 @@ pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
     Ok(format!("{letter}{mimo}"))
 }
 
-/// The inverse of [`format_class_mimo`]. `key` names the property in diagnostics.
+/// The inverse of [`format_class_mimo`]. `label` names the positional direction argument
+/// (`DL`/`UL`) in diagnostics.
 ///
 /// Never returns 0: every result is `base + low` with `base >= 1024`. The only route to a zero UL
-/// class is an omitted property, which the reader defaults — so the source format has exactly one
+/// class is an omitted argument, which the reader defaults — so the source format has exactly one
 /// spelling per value and the round trip stays byte-stable without a uniqueness check.
-pub(crate) fn parse_class_mimo(raw: &str, key: &str) -> Result<i32> {
+pub(crate) fn parse_class_mimo(raw: &str, label: &str) -> Result<i32> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
-        .with_context(|| format!("property `{key}` is empty"))?;
+        .with_context(|| format!("{label} positional argument is empty"))?;
     let mimo = chars
         .next()
-        .with_context(|| format!("property `{key}` value `{raw}` has no MIMO width"))?;
+        .with_context(|| format!("{label} positional argument value `{raw}` has no MIMO width"))?;
     ensure!(
         chars.next().is_none(),
-        "property `{key}` value `{raw}` has trailing characters"
+        "{label} positional argument value `{raw}` has trailing characters"
     );
     let (base, _) = CLASS_MIMO_BASES
         .iter()
         .find(|(_, candidate)| *candidate == letter)
         .with_context(|| {
-            format!("property `{key}` bandwidth-class letter `{letter}` is not one of A..F")
+            format!(
+                "{label} positional argument bandwidth-class letter `{letter}` is not one of A..F"
+            )
         })?;
     let low = match mimo {
         '2' => 0,
         '4' => 1,
-        other => bail!("property `{key}` MIMO width `{other}` must be 2 or 4"),
+        other => bail!("{label} positional argument MIMO width `{other}` must be 2 or 4"),
     };
     Ok(base + low)
 }
@@ -249,19 +252,19 @@ mod tests {
             (1025, "F4"),
         ] {
             assert_eq!(format_class_mimo(value).unwrap(), text);
-            assert_eq!(parse_class_mimo(text, "d").unwrap(), value);
+            assert_eq!(parse_class_mimo(text, "DL").unwrap(), value);
         }
     }
 
     #[test]
     fn class_mimo_fails_closed_on_an_unknown_bitfield() {
         assert!(format_class_mimo(999).is_err());
-        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the property.
+        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the argument.
         assert!(format_class_mimo(0).is_err());
-        assert!(parse_class_mimo("Z2", "d").is_err());
-        assert!(parse_class_mimo("A3", "d").is_err());
-        assert!(parse_class_mimo("A", "d").is_err());
+        assert!(parse_class_mimo("Z2", "DL").is_err());
+        assert!(parse_class_mimo("A3", "DL").is_err());
+        assert!(parse_class_mimo("A", "DL").is_err());
         // The superseded `off` spelling is not accepted back.
-        assert!(parse_class_mimo("off", "u").is_err());
+        assert!(parse_class_mimo("off", "UL").is_err());
     }
 }

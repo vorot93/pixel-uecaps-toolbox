@@ -565,7 +565,7 @@ fn validate_lte_combos(
             ensure!(
                 component.ul_bw_class_mimo.is_some(),
                 "LTE combo {} band {} omits ul_bw_class_mimo; the source format cannot represent \
-                 an absent uplink class (an omitted property means the explicit zero)",
+                 an absent uplink class (an omitted argument means the explicit zero)",
                 index + 1,
                 component.band
             );
@@ -1469,7 +1469,7 @@ cr "MAPPING" mi=7 {
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 d=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 A4\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1523,7 +1523,7 @@ cr "MAPPING" mi=7 {
         let empty = format!("{MINIMAL_LTE}\nc {{\n}}\n");
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
-        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc {{\n    B1 d=A4\n}}\n");
+        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc {{\n    B1 A4\n}}\n");
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
                 .unwrap_err()
@@ -1532,7 +1532,7 @@ cr "MAPPING" mi=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\nc {{\n    B1 d=A4\n    B3 d=A4\n}}\nc {{\n    B3 d=A4\n    B1 d=A4\n}}\n"
+            "{MINIMAL_LTE}\nc {{\n    B1 A4\n    B3 A4\n}}\nc {{\n    B3 A4\n    B1 A4\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
@@ -1543,18 +1543,18 @@ cr "MAPPING" mi=7 {
         // It is also what keeps these two combos distinct under `RawLteCombo`, now that their
         // components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 d=A4\n}}\nc b=0 {{\n    B1 d=A4\n}}\n");
+            format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc b=0 {{\n    B1 A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
         assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
-        // An omitted `u` is the explicit zero, not an absent field — in both combos.
+        // An omitted UL argument is the explicit zero, not an absent field — in both combos.
         for combo in &sources.lte.combo {
             assert_eq!(combo.source.components[0].ul_bw_class_mimo, Some(0));
         }
     }
 
-    /// The source format spells UL-disabled by omitting the property, so `None` has no spelling
+    /// The source format spells UL-disabled by omitting the argument, so `None` has no spelling
     /// left; and with `off` gone, neither does a disabled DL. Both are corpus-absent (0 of 12 159
     /// sub-blocks), so this rejects rather than silently normalising — a foreign file gets a loud
     /// error instead of a quiet re-encode.
@@ -1634,7 +1634,7 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 d=A4\n    B1 d=A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 d=A4\n}}\n",
+            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();

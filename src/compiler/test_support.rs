@@ -64,16 +64,16 @@ c b=0 u1=0 u2=0 {
     s {
         m G2YBB GGX8B GR83Y
     }
-    B1 d=A4
+    B1 A4
 }
 c b=0 u1=0 u2=0 {
-    B3 d=A4
+    B3 A4
 }
 c b=0 u1=0 u2=0 {
     s {
         m lte:92
     }
-    B5 d=A4
+    B5 A4
 }
 "#;
 
