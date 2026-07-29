@@ -207,11 +207,11 @@ fn emit_ul_feature(f: &ShannonFeatureSetUlPerCcNr) -> KdlNode {
     node
 }
 
-/// The value an absent `bcs-intra-endc` re-derives to on read: `Some(0)` exactly when the
+/// The value `bcs-intra-endc` takes when the property is absent: `Some(0)` exactly when the
 /// combo advertises intra-band EN-DC (`intra-band-en-dc-support == 1`), else `None`. Single
-/// source of truth shared by `emit_nr_combo` (omit-when-equal) and `read_combo` (re-derive),
-/// so the write and read sides cannot silently disagree. See
-/// DESIGN.md.
+/// source of truth for all three users, so no two of them can silently disagree:
+/// `emit_nr_combo` omits the property when it equals this, and `read_combo` both re-derives an
+/// absent property from it and rejects an explicit one that states it. See DESIGN.md.
 fn derive_bcs_intra_endc(intra_band_en_dc_support: Option<i32>) -> Option<u32> {
     if intra_band_en_dc_support == Some(1) {
         Some(0)
