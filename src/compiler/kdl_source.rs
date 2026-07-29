@@ -689,12 +689,12 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
             let value = parse_bcs(&raw, "bcs-intra-endc")?;
             // Spelling out the derived value would give it two spellings. `emit_nr_combo`
             // omits exactly this case, so a document containing it was hand-edited.
+            // Names the fields in words, not their abbreviated key spellings — the same rule
+            // `parse_bcs` above follows, and the one DESIGN.md states.
             ensure!(
                 Some(value) != derive_bcs_intra_endc(intra_band_en_dc_support),
-                "property `{}` states the value already derived from `{}`; omit it, so that \
-                 each value has one spelling",
-                combo::BCS_INTRA_ENDC,
-                combo::INTRA_BAND_EN_DC_SUPPORT
+                "property `bcs-intra-endc` states the value already derived from \
+                 `intra-band-en-dc-support`; omit it, so that each value has one spelling"
             );
             Some(value)
         }
