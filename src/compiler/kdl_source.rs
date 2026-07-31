@@ -406,11 +406,13 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
 /// Takes the halves by reference rather than a `&SourceDocument`: `ValidatedSources` stores them
 /// separately, and `decompose` calls this twice, so a wrapper parameter would mean cloning the
 /// whole ~19 MB model each time.
-pub(crate) fn source_to_kdl(version: u32, nr: &NrDocument, lte: &LteDocument) -> Result<String> {
+pub(crate) fn source_to_kdl(nr: &NrDocument, lte: &LteDocument) -> Result<String> {
     let mut document = KdlDocument::new();
 
+    // The constant, not a parameter: this build only ever writes the format it reads, and
+    // `checked_version` has already proven any parsed input equal to it.
     let mut version_node = KdlNode::new(doc::VERSION);
-    version_node.push(KdlEntry::new(version as i128));
+    version_node.push(KdlEntry::new(i128::from(SOURCE_FORMAT_VERSION)));
     document.nodes_mut().push(version_node);
 
     document
@@ -785,7 +787,10 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
 /// the check that exists to diagnose exactly that case sat downstream in `validate_documents` and
 /// never ran. Scanning for the marker up front is also order-independent, so the diagnosis holds
 /// for a hand-written document that puts `version` somewhere other than the top.
-fn checked_version(document: &KdlDocument, key: &str) -> Result<u32> {
+///
+/// Returns nothing: success means the number equals [`SOURCE_FORMAT_VERSION`], so handing it back
+/// would only propagate a value every caller already has as a constant.
+fn checked_version(document: &KdlDocument, key: &str) -> Result<()> {
     let mut found: Option<u32> = None;
     for node in document
         .nodes()
@@ -800,7 +805,7 @@ fn checked_version(document: &KdlDocument, key: &str) -> Result<u32> {
         "the source document is source-format version {version} but this build reads version \
          {SOURCE_FORMAT_VERSION}; re-run `decompose` to regenerate it"
     );
-    Ok(version)
+    Ok(())
 }
 
 /// Parses `bitmask-carriers`, or errors if it already appeared once — same duplicate-before-
@@ -916,7 +921,7 @@ pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
     let document: KdlDocument = text
         .parse()
         .context("the source document is not valid KDL")?;
-    let version = checked_version(&document, doc::VERSION)?;
+    checked_version(&document, doc::VERSION)?;
     let mut bitmask_carriers: Option<Vec<String>> = None;
     let mut bitmask_fingerprints = Vec::new();
     let mut carriers = BTreeMap::new();
@@ -952,7 +957,6 @@ pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
         }
     }
     Ok(SourceDocument {
-        version,
         nr: NrDocument {
             bitmask_carriers: bitmask_carriers
                 .ok_or_else(|| anyhow!("the source document is missing `bitmask-carriers`"))?,
@@ -1095,7 +1099,7 @@ mod nr_tests {
     /// only the NR one, so the LTE half is empty. Returns `Result` rather than unwrapping so it
     /// stays a drop-in for the writer it replaced, whose failures some tests assert on.
     fn nr_only(nr: &NrDocument) -> Result<String> {
-        source_to_kdl(SOURCE_FORMAT_VERSION, nr, &LteDocument::default())
+        source_to_kdl(nr, &LteDocument::default())
     }
 
     /// Read a document and keep the NR half. The reader is document-level now, so the LTE half
@@ -1638,7 +1642,7 @@ mod lte_tests {
     /// emits its `bc` node (an empty list, not an omission), which is why every inline fixture
     /// below carries a bare `bc` line: without one the reader rejects the document outright.
     fn lte_only(lte: &LteDocument) -> Result<String> {
-        source_to_kdl(SOURCE_FORMAT_VERSION, &NrDocument::default(), lte)
+        source_to_kdl(&NrDocument::default(), lte)
     }
 
     /// Read a document and keep the LTE half — the mirror of `nr_tests::nr_from`.
@@ -1813,7 +1817,6 @@ mod lte_tests {
 #[cfg(test)]
 mod source_tests {
     use super::*;
-    use crate::compiler::schema::SOURCE_FORMAT_VERSION;
 
     /// One document, both halves, in canonical order: version, the whitelists and identity
     /// nodes, the two catalogs, then every NR combo, then every LTE combo.
@@ -1821,21 +1824,16 @@ mod source_tests {
     fn source_round_trips_byte_identically() {
         let nr = super::nr_tests::sample();
         let lte = super::lte_tests::sample();
-        let text = source_to_kdl(SOURCE_FORMAT_VERSION, &nr, &lte).unwrap();
+        let text = source_to_kdl(&nr, &lte).unwrap();
         let parsed = source_from_kdl(&text).unwrap();
-        let reserialized = source_to_kdl(parsed.version, &parsed.nr, &parsed.lte).unwrap();
+        let reserialized = source_to_kdl(&parsed.nr, &parsed.lte).unwrap();
         assert_eq!(text, reserialized);
     }
 
     /// Exactly one version marker, and the node order is the canonical one.
     #[test]
     fn node_order_is_canonical_with_one_version_marker() {
-        let text = source_to_kdl(
-            SOURCE_FORMAT_VERSION,
-            &super::nr_tests::sample(),
-            &super::lte_tests::sample(),
-        )
-        .unwrap();
+        let text = source_to_kdl(&super::nr_tests::sample(), &super::lte_tests::sample()).unwrap();
         // Top-level node names sit at column 0 — and so does the `}` that closes a block node,
         // which is why it is filtered out too rather than read as a node name.
         let kinds: Vec<&str> = text
@@ -1871,12 +1869,7 @@ mod source_tests {
     fn two_version_markers_are_rejected() {
         let text = format!(
             "{}\nversion 1\n",
-            source_to_kdl(
-                SOURCE_FORMAT_VERSION,
-                &super::nr_tests::sample(),
-                &super::lte_tests::sample(),
-            )
-            .unwrap()
+            source_to_kdl(&super::nr_tests::sample(), &super::lte_tests::sample()).unwrap()
         );
         let error = format!("{:#}", source_from_kdl(&text).unwrap_err());
         assert!(error.contains("duplicate `version`"), "{error}");
@@ -1884,12 +1877,8 @@ mod source_tests {
 
     #[test]
     fn a_document_without_a_version_marker_is_rejected() {
-        let unmodified = source_to_kdl(
-            SOURCE_FORMAT_VERSION,
-            &super::nr_tests::sample(),
-            &super::lte_tests::sample(),
-        )
-        .unwrap();
+        let unmodified =
+            source_to_kdl(&super::nr_tests::sample(), &super::lte_tests::sample()).unwrap();
         let text = unmodified.replacen("version 1\n", "", 1);
         assert_ne!(text, unmodified);
         let error = format!("{:#}", source_from_kdl(&text).unwrap_err());
@@ -1905,7 +1894,8 @@ mod source_tests {
     fn the_version_marker_is_found_wherever_it_sits() {
         let good =
             source_from_kdl("bc ATT\nversion 1\n").expect("`version` may follow another node");
-        assert_eq!(good.version, 1);
+        // The body still maps: the scan neither swallowed the preceding node nor stopped at it.
+        assert_eq!(good.nr.bitmask_carriers, ["ATT"]);
 
         let error = format!("{:#}", source_from_kdl("bc ATT\nversion 2\n").unwrap_err());
         assert!(error.contains("source-format version 2"), "{error}");

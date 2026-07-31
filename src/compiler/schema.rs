@@ -93,19 +93,16 @@ pub(crate) struct NrSourceCombo {
     pub(crate) sub_blocks: Vec<NrSourceSubBlock>,
 }
 
-/// One source document: the format version, plus the NR and LTE halves it carries.
+/// One source document: the NR and LTE halves it carries.
 ///
-/// `version` lives here and nowhere else. One file has one format version, so the halves cannot
-/// disagree about it — a state the two-document format had to reject at runtime.
+/// The format version is deliberately *not* a field. One file has one version — a state the
+/// two-document format had to reject at runtime — and by the time anything downstream sees a
+/// `SourceDocument` that version is always [`SOURCE_FORMAT_VERSION`]: the reader
+/// (`kdl_source::checked_version`) refuses any other value before returning, and the writer
+/// (`kdl_source::source_to_kdl`) stamps the constant unconditionally. Storing it would only carry
+/// a number both ends already know, so it was carried write-only until it was dropped.
 #[derive(Clone, Debug)]
 pub(crate) struct SourceDocument {
-    /// By the time anything downstream sees this it is always [`SOURCE_FORMAT_VERSION`]: the
-    /// reader (`kdl_source::checked_version`) refuses any other value before returning, and every
-    /// in-process construction sets it from the constant. It is a field anyway so the parsed
-    /// document stays a faithful image of the file and the round-trip test can re-emit exactly
-    /// the version it read — which is also the only place that reads it back, hence the `allow`.
-    #[allow(dead_code)]
-    pub(crate) version: u32,
     pub(crate) nr: NrDocument,
     pub(crate) lte: LteDocument,
 }
@@ -287,7 +284,7 @@ impl ValidatedSources {
     /// third `validate_documents` pass while its byte-idempotence assertion still proves the
     /// emitted document is a fixed point.
     pub(crate) fn to_kdl(&self) -> anyhow::Result<String> {
-        super::source_to_kdl(SOURCE_FORMAT_VERSION, &self.nr.source, &self.lte.source)
+        super::source_to_kdl(&self.nr.source, &self.lte.source)
     }
 }
 
@@ -300,13 +297,9 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
     // The version check lives in the reader (`kdl_source::checked_version`), not here. It has to
     // run before the document body is mapped: a stale tree fails the *vocabulary* first, so a
     // check at this point only ever saw documents that had already mapped cleanly. `decompose`
-    // reaches here with a freshly-ingested document whose version is `SOURCE_FORMAT_VERSION` by
-    // construction, so nothing is left for a check here to catch.
-    let SourceDocument {
-        version: _,
-        nr,
-        lte,
-    } = source;
+    // reaches here with a freshly-ingested document, which carries no version at all — the writer
+    // stamps `SOURCE_FORMAT_VERSION` on the way out — so nothing is left for a check here to catch.
+    let SourceDocument { nr, lte } = source;
     let bitmask_fingerprints = validate_fingerprint_partition(&nr)?;
     let carriers = validate_carriers(&nr)?;
     validate_mapping_projection(&carriers)?;

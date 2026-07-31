@@ -227,7 +227,7 @@ mod tests {
             schema::{
                 BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
                 LteFileSource, LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
-                SOURCE_FORMAT_VERSION, SourceDocument, ValidatedSources, parse_sources, to_kdl,
+                SourceDocument, ValidatedSources, parse_sources, to_kdl,
             },
             selection::SelectionRect,
             source_from_kdl,
@@ -383,11 +383,7 @@ mod tests {
                 }],
             }],
         };
-        SourceDocument {
-            version: SOURCE_FORMAT_VERSION,
-            nr,
-            lte,
-        }
+        SourceDocument { nr, lte }
     }
 
     fn validated_sources() -> ValidatedSources {

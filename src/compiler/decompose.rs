@@ -12,8 +12,8 @@ use super::{
     lte::{DecodedLteFile, generate_lte_file, ingest_lte},
     nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
     schema::{
-        SOURCE_FORMAT_VERSION, SourceDocument, ValidatedLte, ValidatedNr, ValidatedSources,
-        legend_root, parse_sources, validate_documents,
+        SourceDocument, ValidatedLte, ValidatedNr, ValidatedSources, legend_root, parse_sources,
+        validate_documents,
     },
     selection::Sku,
 };
@@ -175,12 +175,7 @@ pub(crate) fn decode_documents(
     // the validated representation for every internal generation self-check. The reparse's
     // `validated.to_kdl()` serializes an already-canonical source, so no third `validate_documents`
     // pass is needed — the assertion below still proves the emitted document is a fixed point.
-    let text = validate_documents(SourceDocument {
-        version: SOURCE_FORMAT_VERSION,
-        nr,
-        lte,
-    })?
-    .to_kdl()?;
+    let text = validate_documents(SourceDocument { nr, lte })?.to_kdl()?;
     let validated = parse_sources(&text).context("reparsing the decoded source")?;
     let canonical = validated.to_kdl()?;
     ensure!(
@@ -199,7 +194,6 @@ pub(crate) fn decode_documents(
     // byte-idempotent). Return it so `decompose` need not recompute `to_kdl`.
     Ok((
         SourceDocument {
-            version: SOURCE_FORMAT_VERSION,
             nr: validated.nr.source,
             lte: validated.lte.source,
         },
@@ -842,6 +836,16 @@ mod tests {
             decompose(&bitmask, &profiled, Some(out.as_path())).unwrap(),
             Outcome::Clean
         );
+
+        // Exactly one document: the two corpus folders and the output, and nothing else. This is
+        // what catches a leftover `.tmpXXXX` sibling from `write_bytes_atomic`'s temp-then-rename,
+        // which the reparse below would happily ignore.
+        let mut names: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["bitmask", "profiled", "uecaps.kdl"]);
 
         let text = fs::read_to_string(&out).unwrap();
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"));

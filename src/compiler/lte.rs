@@ -356,8 +356,8 @@ mod tests {
     use crate::{
         compiler::{
             schema::{
-                BitmaskFingerprint, LteDocument, NrDocument, SOURCE_FORMAT_VERSION, SourceDocument,
-                ValidatedLte, parse_sources, to_kdl,
+                BitmaskFingerprint, LteDocument, NrDocument, SourceDocument, ValidatedLte,
+                parse_sources, to_kdl,
             },
             selection::Sku,
         },
@@ -416,7 +416,6 @@ mod tests {
 
     fn validated(document: &LteDocument) -> ValidatedLte {
         let text = to_kdl(&SourceDocument {
-            version: SOURCE_FORMAT_VERSION,
             nr: minimal_nr(),
             lte: document.clone(),
         })

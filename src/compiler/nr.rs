@@ -861,8 +861,8 @@ mod tests {
         compiler::{
             features::NrSourceSubBlock,
             schema::{
-                CarrierTier, DecimalU64, LteDocument, LteFileSource, SOURCE_FORMAT_VERSION,
-                SourceDocument, ValidatedNr, ValidatedNrCombo, parse_sources, to_kdl,
+                CarrierTier, DecimalU64, LteDocument, LteFileSource, SourceDocument, ValidatedNr,
+                ValidatedNrCombo, parse_sources, to_kdl,
             },
         },
         mapping::{MappingEntry, MappingRoot},
@@ -982,12 +982,7 @@ mod tests {
             )]),
             combo: vec![],
         };
-        let text = to_kdl(&SourceDocument {
-            version: SOURCE_FORMAT_VERSION,
-            nr: document,
-            lte,
-        })
-        .unwrap();
+        let text = to_kdl(&SourceDocument { nr: document, lte }).unwrap();
         parse_sources(&text).unwrap().nr
     }
 
