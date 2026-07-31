@@ -10,7 +10,7 @@ use pixel_uecaps_toolbox::proto::{
     ShannonFeatureSetDlPerCcNr, SubBlock, UeCaps,
 };
 use prost::Message;
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 use zip::ZipArchive;
 
 const MODEL: &str = "G2YBB";
@@ -21,7 +21,7 @@ struct Fixture {
     _temp: TempDir,
     bitmask: PathBuf,
     profiled: PathBuf,
-    source: PathBuf,
+    source: NamedTempFile,
     module: PathBuf,
 }
 
@@ -30,7 +30,7 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let bitmask = temp.path().join("bitmask");
         let profiled = temp.path().join("profiled");
-        let source = temp.path().join("uecaps.kdl");
+        let source = NamedTempFile::new_in(temp.path()).unwrap();
         let module = temp.path().join("module.zip");
         fs::create_dir(&bitmask).unwrap();
         fs::create_dir(&profiled).unwrap();
@@ -111,7 +111,7 @@ impl Fixture {
             .arg("--profiled")
             .arg(&self.profiled)
             .arg("-o")
-            .arg(&self.source)
+            .arg(self.source.path())
             .output()
             .unwrap()
     }
@@ -130,7 +130,7 @@ impl Fixture {
         command()
             .arg("provision")
             .arg(model)
-            .arg(&self.source)
+            .arg(self.source.path())
             .arg("-o")
             .arg(&self.module)
             .output()
@@ -201,8 +201,7 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
 
     let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
-    assert!(fixture.source.is_file(), "{}", fixture.source.display());
-    let source = fs::read_to_string(&fixture.source).unwrap();
+    let source = fs::read_to_string(fixture.source.path()).unwrap();
     assert!(source.contains("mi=7"), "{source}");
     assert!(!source.contains("pi="), "{source}");
     // The catalog NODE keeps its name; only the sub-block's DL reference became the
@@ -275,7 +274,7 @@ fn decompose_without_an_output_path_writes_the_document_to_stdout() {
 
     let to_file = fixture.decompose();
     assert!(to_file.status.success(), "{}", stderr(&to_file));
-    let written = fs::read(&fixture.source).unwrap();
+    let written = fs::read(fixture.source.path()).unwrap();
 
     let to_stdout = fixture.decompose_to_stdout();
     assert!(to_stdout.status.success(), "{}", stderr(&to_stdout));
