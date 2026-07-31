@@ -916,9 +916,10 @@ mod tests {
         replace_nr(file, &caps);
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let out = NamedTempFile::new_in(temp.path()).unwrap();
 
         assert_eq!(
-            decompose(&bitmask, &profiled, Some(temp.path().join("out").as_path())).unwrap(),
+            decompose(&bitmask, &profiled, Some(out.path())).unwrap(),
             Outcome::Clean
         );
     }

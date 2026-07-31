@@ -55,13 +55,18 @@ files.
 
 **No test names the source document.** Its path comes from `tempfile::NamedTempFile::new_in(…)`;
 `uecaps.kdl` is a docs convention and nothing more, so a fixture repeating it reads as a
-requirement that does not exist. The cost is paid in `src/atomic.rs`: `NamedTempFile` always
-creates the file, so the three cases that needed a *not-yet-existing* path are gone — the
+requirement that does not exist. The cost: `NamedTempFile` always creates the file, so the four
+cases that needed a *not-yet-existing* path are gone — in `src/atomic.rs`, the
 `adopt_destination_mode` branch that applies the umask to a brand-new output (the 0600-leak
-guard), the missing-parent-directory error, and the failed-writer cleanup with no destination.
-The first two are now untested on purpose; the third is covered by
+guard), the missing-parent-directory error, and the failed-writer cleanup with no destination;
+plus the absent-source case of `provision`'s prewrite-failure helper. No test *asserts* on the
+first two any more — the umask branch still runs wherever a test writes a fresh `module.zip`, so
+what is gone is the assertion, not the execution. The third is covered by
 `preserves_existing_output_when_byte_production_fails`, which makes the same cleanup assertion
-against an existing destination. Do not "restore coverage" by reintroducing a hand-named path.
+against an existing destination; the fourth by
+`source_loader_requires_a_present_utf8_strict_document`, which deletes the file mid-test and
+still exercises the missing-source error. Do not "restore coverage" by reintroducing a
+hand-named path.
 
 **A `cargo test` name filter is a substring match on the test's *full* path.** A unit test inside
 a `#[cfg(test)] mod tests` block is `<module>::tests::<name>`, so a filter built by appending the
