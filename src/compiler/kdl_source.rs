@@ -969,6 +969,10 @@ pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
     })
 }
 
+/// `NodeReader` combinator behaviour in isolation. The node names in these fixtures (`cr`, …)
+/// are illustrative scaffolding for the combinators, not source-format vocabulary — nothing here
+/// tracks the document's node names, so a grep for an old spelling that lands in this module has
+/// found a parser fixture, not a missed rename.
 #[cfg(test)]
 mod combinator_tests {
     use super::*;
@@ -1780,7 +1784,7 @@ mod lte_tests {
 
     /// The LTE counterpart to `nr_tests::a_sub_block_with_a_third_argument_is_rejected`:
     /// a third argument has no meaning and must not be silently dropped. Both readers share the
-    /// same `NodeReader::finish` mechanism, so the two documents' readers are pinned
+    /// same `NodeReader::finish` mechanism, so the `n` and `l` sub-block readers are pinned
     /// symmetrically here.
     #[test]
     fn an_lte_sub_block_with_a_third_argument_is_rejected() {

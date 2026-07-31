@@ -69,19 +69,19 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fp_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
-| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's `nr.kdl`/`lte.kdl` (de)serializers. |
+| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's source-document (de)serializers. |
 | `src/compiler/kdl_keys.rs` | Every KDL node name and property key, grouped by scope, consumed by both the reader and the writer; a structural test rejects two keys sharing a spelling within one scope. |
-| `src/compiler/kdl_direction.rs` | The composite positional direction value (bandwidth-class letter + per-CC index list) and `lte.kdl`'s class+MIMO bitfield codec, which reuses the same two argument positions. |
+| `src/compiler/kdl_direction.rs` | The composite positional direction value (bandwidth-class letter + per-CC index list) and the LTE combo's class+MIMO bitfield codec, which reuses the same two argument positions. |
 | `src/compiler/kdl_bcs.rs` | The BCS property value codec: a 3GPP `BIT STRING` ↔ its `b`-prefixed ascending index list. |
 | `src/wire.rs` | Recursive modeled-field/wire-type validation and strict decoders for `UeCaps`, `LteCaps`, and `PlmnMap`. |
 | `src/compiler/mod.rs` | Public folder-compiler `decompose`/`provision` entry points, generated-file type, and module boundary. |
 | `src/compiler/selection.rs` | Finite NR/LTE eligibility domains, SKU tokens, expanded applicability relations, validation, and canonical rectangle serialization. |
 | `src/compiler/features.rs` | Compiler-only global DL/UL feature DTOs, canonical source references, and compact per-file projection. |
-| `src/compiler/schema.rs` | Strict version-1 `nr.kdl`/`lte.kdl` DTOs, shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
-| `src/compiler/kdl_source.rs` | Hand-written `nr.kdl`/`lte.kdl` (de)serialization (`nr_to_kdl`/`nr_from_kdl`, `lte_to_kdl`/`lte_from_kdl`) over the shared `kdl_support` toolkit. |
+| `src/compiler/schema.rs` | Strict version-1 source-document DTOs (`SourceDocument`, wrapping the `NrDocument`/`LteDocument` halves), shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
+| `src/compiler/kdl_source.rs` | Hand-written source-document (de)serialization (`source_to_kdl`/`source_from_kdl`) over the shared `kdl_support` toolkit. |
 | `src/compiler/nr.rs` | Bitmask/profiled NR ingestion, carrier metadata derivation, raw payload normalization, model-targeted generation, and canonical self-verification. |
 | `src/compiler/lte.rs` | Ordered LTE payload identity, applicability, global DAG/topological ordering, byte-identical regeneration, and self-verification. |
-| `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and paired source writes. |
+| `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and the single file-or-stdout source write. |
 | `src/compiler/provision.rs` | Real-model resolution, complete file-set assembly, protobuf self-check, replacement-module construction, and atomic ZIP output. |
 | `src/compiler/test_support.rs` | `#[cfg(test)]` miniature bitmask/profiled folders and exact canonical-source fixtures shared by compiler unit tests. |
 | `src/mapping/mod.rs` | Reader for the `ap_plmn_mapping.binarypb` legend; `load_mapping(dir)` / `load_mapping_report(dir)`. |
@@ -159,9 +159,10 @@ rendering. Converting to text mid-pipeline is what previously forced four
 ## Full-folder compiler
 
 The `decompose`/`provision` workflow is the **only** editing surface in this crate: every other
-command is read-only. It normalizes two complete offline layouts into `nr.kdl` + `lte.kdl`, then
-builds one complete model-selected directory replacement. Do not add partial-output modes. These
-documents are normalized source, not one protobuf template per input file: each exact payload is
+command is read-only. It normalizes two complete offline layouts into one canonical source
+document, then builds one complete model-selected directory replacement. Do not add
+partial-output modes. That
+document is normalized source, not one protobuf template per input file: each exact payload is
 stored once with an applicability relation. Both layouts are required together so that relation
 is derived across generations rather than composed from incomplete sources later.
 
@@ -225,7 +226,7 @@ rest".
    contribute the observed fingerprint partition and `bitmask-id`. Finally the legend is
    merged in: each entry attaches `mapping-id` + PLMNs to its carrier, creating
    mapping-only carriers as needed. Exact rules:
-   [`nr.kdl` metadata and generation](#nrkdl-metadata-and-generation).
+   [NR metadata and generation](#nr-metadata-and-generation).
 6. **Assemble the LTE order DAG** (`ingest_lte` in `src/compiler/lte.rs`). Each exact
    ordered payload is one node stored once globally; every adjacent in-file pair adds an
    edge; a payload's SKU set unions its owner files' registered model codes (or
@@ -234,9 +235,11 @@ rest".
    order embedding every file's sequence, and `ingest_lte` immediately proves it: every
    `(file, SKU)` pair is regenerated by filtering that order through the relation and must
    reproduce the input byte-for-byte. See
-   [`lte.kdl` order and stored metadata](#ltekdl-order-and-stored-metadata).
-7. **Emit the two documents.** NR: sorted `bitmask-carriers`; the fingerprint partition
-   groups; the global DL/UL catalogs built from the feature sets actually embedded in
+   [LTE order and stored metadata](#lte-order-and-stored-metadata).
+7. **Emit the document**, in the canonical top-level order of
+   [The short vocabulary](#the-short-vocabulary). NR: sorted `bitmask-carriers`; the
+   fingerprint partition groups; the global DL/UL catalogs built from the feature sets
+   actually embedded in
    payloads during step 3, deduplicated and sorted by complete raw value (an unreferenced
    input record was never resolved into any payload, so pruning is not a separate pass —
    such records simply never reach this stage); the combos in canonical payload-key order,
@@ -248,10 +251,10 @@ rest".
    feature set carries just the class letter — the all-zero placeholder is re-derived on provision, and
    the raw selector fallback was removed). LTE: the ID-keyed file whitelist with stored
    `fingerprint`/`bitmask`, plus the step-6 global combo order.
-8. **Serialize, reparse, require a fixed point.** The assembled documents pass through
+8. **Serialize, reparse, require a fixed point.** The assembled document passes through
    `validate_documents` — the same cross-reference validation a hand-edited `provision` source
-   gets; decompose has no private fast path — and are serialized once. The emitted text is
-   then reparsed with `parse_sources` and reserialized, and both documents must come back
+   gets; decompose has no private fast path — and is serialized once. The emitted text is
+   then reparsed with `parse_sources` and reserialized, and must come back
    byte-identical. Serialization is itself a validation boundary: everything the ingest
    computed is re-derived from the text form and must agree (`validate_documents` therefore
    runs twice per decompose — canonicalize the ingest, then reparse as the validation
@@ -266,27 +269,36 @@ rest".
    strictly re-decoded here on top; every LTE ID and the rebuilt legend must be
    byte-identical to their inputs. This is the NR-value / LTE-and-legend-bytes fidelity
    split from [Invariants that must not break](#invariants-that-must-not-break).
-10. **Write last, atomically.** Only after every check passes are `nr.kdl` and `lte.kdl`
-    prepared as sibling temporaries and renamed into place (the two renames are not one
-    filesystem transaction — see
+10. **Write last, or not at all.** Only after every check passes is the document emitted:
+    atomically replacing `-o FILE` when one was given, or printed to stdout when it was
+    omitted (see
     [Input and output boundaries](#input-and-output-boundaries)).
 
 `provision` reuses the same machinery in the reverse direction: `load_sources` is step 8's
-parse-and-validate over the two source documents, and generation is step 9's generator
+parse-and-validate over the source document, and generation is step 9's generator
 pointed at one registered model, packaged per
 [Complete replacement and determinism](#complete-replacement-and-determinism).
 
 ### Source format: KDL, hand-mapped (not serde)
 
 Every persisted or emitted format in this crate is KDL, hand-mapped the same way — the
-compiler's `nr.kdl`/`lte.kdl` is now the crate's only KDL surface (the combo patch's KDL
+compiler's source document is now the crate's only KDL surface (the combo patch's KDL
 grammar and the PLMN legend's own separate KDL encoding are both gone; the legend is pure
 protobuf now) and follows this section's pattern. `serde` and `toml` are deliberately absent
 from `Cargo.toml` entirely.
 
-`nr.kdl`/`lte.kdl` are KDL v2 documents (the `kdl` crate), (de)serialized by hand-written
-mapping in `src/compiler/kdl_source.rs` — **not** `serde`. Each document type has one
-`_to_kdl`/`_from_kdl` pair (`nr_to_kdl`/`nr_from_kdl`, `lte_to_kdl`/`lte_from_kdl`, re-exported
+**One document, not two.** NR and LTE source lived in two separate files
+until they merged; they were always written together, always read together, and always
+version-checked against the same constant, so the directory that held them was ceremony. The
+CLI therefore takes a *file path* on both sides (`decompose -o FILE`, `provision MODEL FILE`),
+and the filename is the user's choice at runtime — `uecaps.kdl` is the convention in these docs
+and in test fixtures only, and no constant in the crate holds it. `SOURCE_FORMAT_VERSION` was
+deliberately **not** bumped for the merge — see the `version` discussion under
+[The short vocabulary](#the-short-vocabulary) for the cost that carries.
+
+The source document is one KDL v2 document (the `kdl` crate), (de)serialized by hand-written
+mapping in `src/compiler/kdl_source.rs` — **not** `serde`. It has one
+`_to_kdl`/`_from_kdl` pair (`source_to_kdl`/`source_from_kdl`, re-exported
 `pub(crate)` from `compiler/mod.rs`), built over a small set of `NodeReader` combinators in the
 crate-wide `src/kdl_support/` module (named `kdl_support`, **not** `kdl`, because a crate-root
 module named `kdl` collides with the external `kdl` crate): `key_str`/`key_int` read the leading
@@ -315,26 +327,39 @@ that appear a handful of times
 (`mcc`, `mnc`) stay spelled out; the per-combo keys that repeat tens of thousands of times do
 not.
 
+Top-level names, all mutually distinct: `version`, `bc`, `bf`, `c`, `f`, `df`, `uf`, `n`, `l`.
+
 | scope | keys |
 |---|---|
-| `nr.kdl` document | `version` (**not** abbreviated — see below), `bc` bitmask-carriers, `bf` bitmask-fingerprint, `cr` carrier, `df`/`uf` feature catalogs, `c` combo |
+| document | `version` (**not** abbreviated — see below), `bc` bitmask-carriers, `bf` bitmask-fingerprint, `c` carrier, `f` LTE file, `df`/`uf` feature catalogs, `n` NR combo, `l` LTE combo |
 | `bf` | `c` carriers |
-| `cr` props | `bi` bitmask-id, `pi` profiled-id, `mi` mapping-id, `sg` signature, `t` tier |
-| `cr` children | `p` plmn, `ps` plmns, `pf` profile |
+| `c` props | `bi` bitmask-id, `pi` profiled-id, `mi` mapping-id, `sg` signature, `t` tier |
+| `c` children | `p` plmn, `ps` plmns, `pf` profile |
 | `p` props | `mcc`, `mnc`, `mnc-digits` — unchanged |
 | `pf` props | `x` multiplier, `u` unknown |
-| `c` props | `pc` power-class, `bn` bcs-nr, `bi` bcs-intra-endc, `be` bcs-eutra (all three BCS values are `b`-prefixed index lists — see below), `ie` intra-band-en-dc-support |
-| `c` children | `s` selection, sub-blocks `n<band>` / `B<band>` |
+| `n` props | `pc` power-class, `bn` bcs-nr, `bi` bcs-intra-endc, `be` bcs-eutra (all three BCS values are `b`-prefixed index lists — see below), `ie` intra-band-en-dc-support |
+| `n` children | `s` selection, sub-blocks `n<band>` / `B<band>` |
+| `f` props | `fp` fingerprint, `bm` bitmask |
+| `l` props | `b` bcs (a `b`-prefixed index list too), `u1`/`u2` unknown1/2 |
+| `l` children | `s` selection, `B<band>` sub-block |
 | `s` | `c` carriers, `m` skus |
 | sub-block props | `st` srs-tx-switch (DL and UL are positional arguments, not properties) |
 | `df`/`uf` catalog props | `s` max-scs, `m` max-mimo(-cb), `b` max-bw, `o` max-mod-order, `w` bw-90mhz-supported, `nc` max-mimo-non-cb |
-| `lte.kdl` document | `version`, `f` file, `c` combo |
-| `f` props | `fp` fingerprint, `bm` bitmask |
-| `c` props | `b` bcs (a `b`-prefixed index list too), `u1`/`u2` unknown1/2 |
-| `c` children | `s` selection, `B<band>` sub-block |
 
-`c` means combo at document level and carriers inside `s`; `bi` means bitmask-id on a `cr` and
-bcs-intra-endc on a `c`. Both are legal because the pairs are never siblings.
+Nodes are emitted in that top-level order: `version`, `bc`, the `bf` groups, the carriers, the
+LTE file whitelist, `df`, `uf`, then every `n` combo and every `l` combo. Order *within* each
+group is the pre-merge one (`BTreeMap` iteration for carriers and files, `Vec` order for
+fingerprints, catalogs and both combo lists), so canonicality is preserved by construction and
+`decompose`'s byte-idempotence assertion still means what it meant. The metadata is small — 89
+carriers, two catalogs, 8 `f` nodes — and the combos are the ~19 MB, so this puts everything a
+human can read in the first screenful. Literal concatenation (each half keeping its old order,
+LTE after NR) was rejected for burying the `f` nodes behind ~19 MB of combos.
+
+`c` means carrier at every level it appears — the document, a `bf` group, and an `s` selection.
+That was not true before the two documents merged: `c` was the combo node at document level, and
+freeing it was half the reason the combos moved to `n`/`l`. The one cross-scope reuse still worth
+naming is `bi`: bitmask-id on a carrier, bcs-intra-endc on an NR combo. Both are legal because
+the pairs are never siblings.
 
 **`version` is deliberately never abbreviated.** The marker announcing the format version cannot
 be renamed by the change it describes: a document written against an older vocabulary would be
@@ -348,14 +373,19 @@ is squashable, so a version series accumulated inside unpublished commits is noi
 HEAD cannot interpret. The check is an inequality, not an ordering, so any number but the current
 one is rejected, in either direction.
 
-**The marker only diagnoses a pure number change, though, and that is a narrower job than it
-looks.** `parse_sources` parses *both* documents in full before `validate_documents` reaches the
-version check, so a format change that also altered the vocabulary is caught earlier and less
-kindly — by the strict reader, as `unknown property` / `missing required property`, with no
-`re-run decompose` remedy attached. Every change to this format so far has altered the vocabulary,
-which makes the mismatch message unreachable for precisely the migrations it was written for.
-Making it fire would mean reading the `version` node before the document body. Until that happens,
-read the remedy sentence as aspirational.
+**The marker runs before any other node is mapped, but only a pure number change reaches it.**
+`checked_version` scans the parsed document for `version` and checks it up front, and does so
+order-independently, so the diagnosis also holds for a hand-written document that puts the
+marker somewhere other than the top. A stale document gets the `re-run decompose` remedy *if its number
+is stale*; every format change so far has instead left the number alone and changed the
+vocabulary, and those die in the strict reader as `unknown property` / `missing required
+property` with no remedy attached.
+
+The two-document merge is where that cost became concrete and was accepted anyway. Holding at 1
+means a pre-merge NR document's top-level `c` combos are now claimed by the *carrier* reader and
+fail inside it (`` `c` is missing a required argument ``) rather than at the dispatch with
+`` unknown top-level node `c` ``. It still fails closed; only the message is worse. The remedy,
+if that ever bites in practice, is the branch rejected above — bump the number.
 
 **A key spelling is not a diagnostic.** Error messages say "carrier", "profile", "bitmask" —
 words, not KDL keys. A mechanical rename that rewrites both leaves the suite green while
@@ -430,7 +460,7 @@ The four fields differ only in what omission means — unchanged by the change o
 | `bn` (`bcs_nr`, `u32`) | `Some(0)` — not emitted on air | **rejected**; omission already spells it |
 | `be` (`bcs_eutra`, `u32`) | `Some(0)` | **rejected**; omission already spells it |
 | `bi` (`bcs_intra_endc`, `u32`) | derived from `ie` — see the derivation rule below | accepted → `Some(0)` when `ie != 1` (20 occurrences); **rejected** when `ie == 1`, since omission already spells that derived value |
-| `lte.kdl` `b` (`LteCombo.bcs`, `u64`) | `None` — **0 occurrences and structurally unreachable**, see the parallel-list subsection below | accepted → `Some(0)` (39 occurrences) |
+| `l` combo `b` (`LteCombo.bcs`, `u64`) | `None` — **0 occurrences and structurally unreachable**, see the parallel-list subsection below | accepted → `Some(0)` (39 occurrences) |
 
 `bn=""` and `be=""` are rejected because omission already spells that value on those two
 fields, and a format with two spellings for one value cannot round-trip byte-stably. The writer
@@ -452,8 +482,8 @@ normalising it, the same byte-stability rule `parse_class_mimo` keeps for its ow
 The prefix has one cost worth naming, because it has already misled a reader: **`b0` looks like
 "zero" but is set {0} = 2147483648**, the largest single-bit value in the field, since index 0 is
 the most significant bit. The all-zero bit string is `""`. `b=b0` is also the most common LTE
-spelling by far (3,414 of 3,878), so a glance down `lte.kdl` reads as a column of zeros when it is
-the opposite. `kdl_bcs::tests::the_empty_set_and_set_zero_stay_distinct` pins the two apart.
+spelling by far (3,414 of 3,878), so a glance down the `l` combos reads as a column of zeros when
+it is the opposite. `kdl_bcs::tests::the_empty_set_and_set_zero_stay_distinct` pins the two apart.
 
 Two spellings were measured and rejected, so that they are not re-proposed: letters A–F
 (`bn=ABE`) is the smallest output (−327,103 bytes) but hides the 3GPP index and would be a
@@ -461,7 +491,7 @@ Two spellings were measured and rejected, so that they are not re-proposed: lett
 class+MIMO; a literal bit string (`bn=b11001`, −283,290) mirrors the decoder exactly but reads
 further from the 3GPP term than the index list does.
 
-##### The LTE BCS lives in a parallel list, which is why `lte.kdl` `b` has three source states
+##### The LTE BCS lives in a parallel list, which is why an `l` combo's `b` has three source states
 
 The LTE BCS is not carried inside a band combination. It lives in
 `supportedBandCombinationExt-r10`, a list **positionally parallel** to
@@ -481,7 +511,7 @@ A combo that exists therefore has exactly two on-air renderings, and `LteCombo.b
 **This is why `bcs = None` occurs 0 times in 3,878 corpus combos.** The parallel list makes an Ext
 entry mandatory for every combination that exists, so the config always has a value for the
 field; a genuinely absent proto field is a state the air interface cannot express for a live
-combo. `lte.kdl` keeps omission mapped to `None` regardless — the LTE round trip is bit-for-bit,
+combo. Source keeps omission mapped to `None` regardless — the LTE round trip is bit-for-bit,
 so present-zero and absent are different bytes and collapsing them would be unsound for a
 hand-edited or future document — but that branch does not fire on corpus input.
 
@@ -533,7 +563,7 @@ bit-for-bit path.
 #### Sub-block syntax
 
 The band is the node name's suffix, so a source line reads as the 3GPP band designation it
-describes, and an E-UTRA sub-block is spelled the same way in both documents:
+describes, and an E-UTRA sub-block is spelled the same way under either kind of combo:
 
 ```kdl
 n257 H30,30,30 G26,26     NR n257, DL class H (FR2, 3 CC), UL class G (2 CC)
@@ -547,8 +577,8 @@ comma-separated per-CC index list. The letter is the plain index into the 3GPP l
 1, 2, 2, 3, 4, matching 3GPP 36.101 including B and C both being 2 CC. NR classes 7..=13 (G..=M)
 are FR2-only: every occurrence is on n257/n258/n260/n261 at 120 kHz with a 100 MHz channel.
 
-They are positional because the keys carried no information: **every** sub-block in both
-documents has a DL value, and a UL value only ever appears after one, so `d=`/`u=` were
+They are positional because the keys carried no information: **every** sub-block, under either
+kind of combo, has a DL value, and a UL value only ever appears after one, so `d=`/`u=` were
 positionally determined. Dropping them saved 309,934 bytes of real corpus (154,967 values × 2
 characters). `st` (`srs-tx-switch`) stays a named property, and is now the only property an NR
 sub-block has.
@@ -559,8 +589,8 @@ sub-block has.
 | `A3` | class A, one reference |
 | `A` | class A, no list — the all-zero placeholder, re-derived on read |
 | *(second argument absent)* | UL class **0** — disabled |
-| *(first argument absent)* | **rejected**, in both documents |
-| `lte.kdl` `A4` | class A, 4x4 MIMO — a class+MIMO bitfield, not a catalog reference |
+| *(first argument absent)* | **rejected**, under either kind of combo |
+| `A4` under an `l` combo | class A, 4x4 MIMO — a class+MIMO bitfield, not a catalog reference |
 
 **DL is required, and that is a consequence of going positional.** With no keys, nothing but
 order distinguishes the two arguments, so an omitted DL would silently shift UL into first
@@ -576,7 +606,7 @@ regardless of class. A `0` index is invalid as an NR catalog reference (1-based)
 as an E-UTRA MIMO code, so that rule lives in the reader, which knows the kind — not in the
 value codec, which only knows syntax.
 
-`lte.kdl`'s direction arguments are a third encoding: an inverted bitfield where 32768 is A and
+An `l` combo's direction arguments are a third encoding: an inverted bitfield where 32768 is A and
 1024 is F, with the low bit selecting 4x4, rendered `A4`. An unrecognised bitfield fails closed
 rather than guessing a letter — and so does 0, because UL-disabled is spelled by **omitting the
 second argument**, not by a word. `parse_class_mimo` therefore never returns 0, so every value
@@ -591,13 +621,15 @@ omit-when-0 rule for `ul_bw_class` is guarded too, at a different boundary:
 components pass through `raw_nr`'s strict decode and E-UTRA ones do not. Two placements, one
 stance — nothing in this toolbox silently normalizes an unobserved `None` to 0.
 
-The two documents share the same argument shape while meaning different things by it: `B66 C2` is
-class C with per-CC feature index 2 in `nr.kdl` and class C with 2x2 MIMO in `lte.kdl`. That is
-the rule the node names already follow — the document fixes the interpretation, so the source text
-does not repeat it. With the direction keys gone there is no Rust constant left to record the
+The two kinds of combo share the same argument shape while meaning different things by it:
+`B66 C2` is class C with per-CC feature index 2 under an `n` combo and class C with 2x2 MIMO
+under an `l` combo. That is the rule the node names already follow — the enclosing combo fixes
+the interpretation, so the source text does not repeat it. Before the merge the *file* settled
+it; now it is the node one to three lines up, which is strictly more local. With the direction
+keys gone there is no Rust constant left to record the
 distinction either; the two codec pairs in `kdl_direction.rs`
 (`format_direction`/`parse_direction` versus `format_class_mimo`/`parse_class_mimo`) and the
-`identical_d_equals_text_means_different_things_in_each_document` test in `kdl_source.rs` are
+`identical_sub_block_text_means_different_things_under_n_and_l` test in `kdl_source.rs` are
 where it is written down.
 
 **Do not re-attempt the `kdl`-crate `serde` route** (`kdl`'s own `serde` feature, intentionally
@@ -628,10 +660,10 @@ their band is part of the node name.
 `n257`, `B66`.** `n` marks an NR component and `B` an E-UTRA one, so the radio kind **is** part of
 the node name rather than a `kind=` property: `RawSubBlock` is an *enum over the two radio kinds*
 for exactly that reason (`kind()` reports the variant; the old explicit `kind: SubBlockKind` field
-is gone). The prefix earns its place in `nr.kdl`, where an EN-DC combo mixes both kinds in one
-combo — 45 045 of the real corpus's `nr.kdl` sub-blocks are `B<band>` E-UTRA components. `lte.kdl`
-is uniformly LTE and so only ever emits `B`, but it spells its sub-blocks identically rather than
-inventing a kind-less form, which is what lets one `parse_sub_block_name` serve both documents.
+is gone). The prefix earns its place under an `n` combo, where an EN-DC combo mixes both kinds in
+one combo — 45 045 of the real corpus's NR sub-blocks are `B<band>` E-UTRA components. An `l`
+combo is uniformly LTE and so only ever holds `B`, but it spells its sub-blocks identically rather
+than inventing a kind-less form, which is what lets one `parse_sub_block_name` serve both.
 The band is part of the **node name**, parsed by `parse_sub_block_name` and matched by
 `NodeReader::children_matching`, not a positional argument.
 **A sub-block emits DL before UL**, then the direction-agnostic `st`. On a sub-block that order
@@ -640,7 +672,7 @@ arguments — see [Sub-block syntax](#sub-block-syntax). Elsewhere, direction-pa
 lead with the direction (`df`/`uf`), never a `-dl`/`-ul` suffix; those readers are
 property-keyed, so their order remains an emit convention only.
 
-**PLMN representation: one `plmn mcc=… mnc=…` node per entry.** The compiler `nr.kdl` carrier
+**PLMN representation: one `plmn mcc=… mnc=…` node per entry.** The source document's carrier
 PLMN list is the only place a PLMN appears in KDL now (the legend's own KDL round-trip is gone;
 the legend is decoded straight to/from protobuf). `mcc`/`mnc`
 are **numeric**: `mcc` is always zero-padded to 3 digits on read; the all-`F` wildcard MNC (`ff`)
@@ -653,12 +685,12 @@ and fails closed on any non-decimal, non-wildcard nibble. That fail-closed is sa
 entire real 427-PLMN legend (`ap_plmn_mapping.binarypb`) was surveyed and is decimal-only except the
 `ff` wildcard MNC (42×), with exactly 14 leading-zero 3-digit MNCs needing `mnc-digits=3` (`310-004`,
 `310-012`, `316-010`, `334-030`, …) and the other 297 two-digit + 116 three-digit-≥100 MNCs a bare
-`mnc=N`. The compiler's `nr.kdl` still keeps its own separate `plmns` node name, but only as a
+`mnc=N`. The source document still keeps its own separate `plmns` node name, but only as a
 **bare, childless marker** distinguishing a present-but-empty PLMN list (a validated mapping-only
 carrier) from no PLMN concept at all (`None`) — see `kdl_source.rs`'s `read_carrier`; a `plmns` node
 carrying stale list-style arguments is rejected, not silently dropped.
 
-**`bcs-intra-endc` derivation.** In the compiler `nr.kdl` combo header, `bi` (`bcs-intra-endc`) is
+**`bcs-intra-endc` derivation.** In an `n` combo header, `bi` (`bcs-intra-endc`) is
 the BCS bit string for intra-band EN-DC and is present iff `intra-band-en-dc-support == 1`. An
 absent value re-derives to `Some(0)` when `intra-band-en-dc-support == 1`, else `None`; the ~20
 exceptional zeros (`intra_band != 1`) are written as the empty bit string `bi=""` and every nonzero
@@ -688,7 +720,7 @@ cross-checks that make the derivation provably non-destructive: it is present on
 (**0 of 237,710** non-EN-DC groups carry it); `None` ⟹ `intra_band == 0` always; `intra_band == 2`
 ⟹ always `Some(n>0)`; and the load-bearing one — **0 combos carry `intra-band-en-dc-support=1`
 without `bcs-intra-endc`**, so re-deriving an absent value can never overwrite a real `None`. On the
-generated `nr.kdl` (deduplicated: 25,578 combos, 276,924 lines) exactly **72** lines carried an
+generated NR half (deduplicated: 25,578 combos, 276,924 lines) exactly **72** lines carried an
 explicit zero `bcs-intra-endc` — **52 derivable** (`intra=1`, now omitted) and **20 exceptions**
 (`intra≠1`, kept explicit, and spelled `bi=""`) — plus **1,581** nonzero lines. The surviving
 `Some(n>0)` values include the `0x8000_0000` family, which is not a packed magnitude but simply
@@ -751,7 +783,8 @@ run proves only that its environment-variable guard works.
 
 ### Input and output boundaries
 
-- `decompose --bitmask DIR --profiled DIR -o DIR` always requires both inputs. The bitmask
+- `decompose --bitmask DIR --profiled DIR [-o FILE]` always requires both inputs; `-o` is
+  optional and its absence means stdout. The bitmask
   directory must contain at least one unnumbered `<CARRIER>.binarypb` and rejects every
   numbered carrier, mapping, LTE, empty carrier name, or otherwise unsupported
   `.binarypb` name. The profiled directory must contain exactly one
@@ -762,19 +795,22 @@ run proves only that its environment-variable guard works.
 - `wire.rs` recursively validates field numbers and wire types at every modeled message
   depth before prost decoding. Unknown fields must fail closed; allowing prost to drop
   them would make source normalization lossy.
-- The input legend must already be ordered by increasing `mapping-id`. `nr.kdl` stores
+- The input legend must already be ordered by increasing `mapping-id`. Source stores
   carrier metadata by name while generation canonically rebuilds legend entries by that
   independent ID; accepting a different original order would violate the legend's
   byte-identity contract.
-- Decompose reads and validates both directories, serializes both documents, strictly
-  reparses/reserializes them, regenerates every internal legacy/anchor/LTE/mapping
-  target, and self-checks fidelity before preparing output. Expected generated basename
+- Decompose reads and validates both directories, serializes the document, strictly
+  reparses/reserializes it, regenerates every internal legacy/anchor/LTE/mapping
+  target, and self-checks fidelity before writing anything. Expected generated basename
   lists are sorted before exact comparison, including for prefix-related carrier names.
-  Normal validation or encoding failure leaves pre-existing `nr.kdl` and `lte.kdl`
-  unchanged. Both sibling temporaries are prepared before persistence, but the two final
-  renames are not one filesystem transaction: an OS failure after the first rename is
-  reported as an I/O error and can leave only the first document replaced.
-- `provision MODEL SOURCE -o ZIP` reads and validates **both** source documents before model
+  Normal validation or encoding failure leaves a pre-existing source document
+  unchanged. With `-o FILE` the write is one `write_bytes_atomic` — a sibling temporary
+  renamed into place, so a failure part-way cannot leave a truncated document where a good
+  one was, and replacing an existing file keeps its mode. With `-o` omitted the document
+  goes to stdout via `print!`, so a reader that closes the pipe early makes that `print!`
+  panic (exit 101) instead of producing this crate's usual `error:`/exit 2 — the same
+  behaviour `report::matrix` has, kept deliberately rather than special-cased.
+- `provision MODEL SOURCE -o ZIP` reads and validates the source document before model
   resolution. `MODEL` is a real registered Google hardware code, never `legacy`,
   `prime:<anchor>`, or `lte:<id>`. Generation, protobuf re-decoding, complete file-set
   verification, and ZIP assembly finish in memory before the ZIP is atomically replaced.
@@ -784,7 +820,7 @@ unconsumed argument, property, or child node (the structural replacement for
 `#[serde(deny_unknown_fields)]`), and requires the current `SOURCE_FORMAT_VERSION`. A *repeated property* on a node is
 **rejected**, unconditionally: `node.get` returns the last value, so last-wins would silently
 discard a hand-edit, and the shadowed entry is never even type-checked (`mcc="oops" mcc=310`
-once parsed clean). Repeated *map-key child nodes* (`cr`/`pf`/`f`) are likewise rejected via
+once parsed clean). Repeated *map-key child nodes* (`c`/`pf`/`f`) are likewise rejected via
 explicit guards. The rule needs no exception now that no property is multi-valued — the per-CC
 catalog references that once used repeated `dl-feature=` entries are one comma-separated value
 inside a positional direction argument. This only affects hand-edited `provision` input —
@@ -838,7 +874,7 @@ node with a sorted `skus` list. Exhaustive small-domain tests reparse every cano
 prove that permutations and alternate rectangle compositions preserve the exact
 relation.
 
-### `nr.kdl` metadata and generation
+### NR metadata and generation
 
 The schema distinguishes metadata that is safely derived from opaque values that must
 be stored:
@@ -933,7 +969,7 @@ carry modeled identity and survives. Canonically equal payloads merge only withi
 legacy file after mask discard; duplicates within a profiled file remain errors because
 the normalized relation cannot represent multiplicity.
 
-### `lte.kdl` order and stored metadata
+### LTE order and stored metadata
 
 Repeated `file` nodes (keyed by a quoted `<id>` string argument) are the exact LTE
 whitelist. The ID is the firmware's hardcoded `lte_file_id`, not derived from content.
@@ -1080,7 +1116,7 @@ features are alternatives, and a flat struct let all three sit side by side:
   `i32` (they only ever format a value, and the `inspect` render path is not `Result`). Don't
   narrow the display DTO to `u8`/`u16` — it only adds a second fail-closed-or-truncate boundary in
   non-`Result` display code, with nothing to gain.
-- **The source model is a sum too.** `compiler::features::NrSourceSubBlock` — how `nr.kdl` spells a
+- **The source model is a sum too.** `compiler::features::NrSourceSubBlock` — how source spells a
   sub-block — is `enum { Lte(SourceLteSubBlock), Nr(SourceNrSubBlock) }` for the same reason. An
   `lte` node has the scalar proto-4/5 index and no catalog list; an `nr` node has the per-CC list,
   no index (NR derives 4/5), and is the only kind with `srs_tx_switch`. While it was a flat
@@ -1090,10 +1126,10 @@ features are alternatives, and a flat struct let all three sit side by side:
   existed only to feed it. Both checks and both accessors are gone.
 
 - **A `SubBlock` is one band+CA-bandwidth-class entry, not one component carrier** — it contains `cc_count(kind, bw_class)` physical CCs (e.g. band 78 class C = `n78C` = 2 CCs; this is how a Pixel expresses `7C-3A`, not just `7A-3A`). `cc_count(kind, bw_class)` (`src/raw_nr.rs`) is a fail-closed lookup over the Samsung Shannon `bw_class` enumeration; NR and LTE tables (`NR_CC_COUNTS`/`LTE_CC_COUNTS`) are distinct and non-monotonic relative to each other (NR class 2/3/7 all count 2; LTE class 2/3 both count 2 — the class carries strictly more information than the CC count, which is why `bw_class` is never derived from it), and an unknown class errors rather than mis-deriving a length (the tables are corpus-validated with zero exceptions across all **3.46M sub-blocks**). `RawSubBlock::validate` fails closed (checked on both source parse and regenerated output) if a stored per-CC list's length doesn't equal `cc_count` for its `bw_class`, and separately if the sub-block's CCs would derive disagreeing `dl_feature_index`/`ul_feature_index` values (physically you cannot mix FR1+FR2 or mixed MIMO-presence within one band+class entry).
-- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats `nr.kdl`), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
+- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats the source document), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
 - **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — carried as the single index inside a direction argument on a `B` sub-block (E-UTRA-only — an `n` node
 carries no feature index in source at all), with a UL index of 0 omitted per the omit-when-0
-rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source (compiler `nr.kdl`) carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `SourceNrSubBlock` (the `nr.kdl` shape) has none either, and `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on decompose/provision. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from` and `LocalFeaturePlan::reconstruct_sub_block` both read the index through the same `dl_feature_index()`/`ul_feature_index()` accessors, so dedup and generation cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
+rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified, 0 mismatches / 1.72M) — DL `0`=no set / `1`=FR1 (`max_scs < 4`) / `2`=FR2 (`max_scs ≥ 4`); UL `0`=no set / `1`=`max_mimo_cb != 2` / `2`=`max_mimo_cb == 2`. So NR KDL source carries **no** index, and neither does the model: `RawNrSubBlock` has no index field, `SourceNrSubBlock` (the source shape) has none either, and `RawSubBlock::dl_feature_index()` returns the derivation for NR and the stored `parseLteFeatureIndex` value for LTE. The old source override was removed, so a decoded NR index that disagrees with the derivation is a hard decode error (`RawNrSubBlock::ensure_feature_index_derivable`, `src/raw_nr.rs`) — corpus-verified impossible on real files — while proto field 4/5 is still materialized on decompose/provision. Round-trip is by value, not bytes: an NR UL index that was absent in the original binary (no UL feature set) is rebuilt as an explicit `0` — value-preserving and invisible to canonical-key checks. **Verification consistency:** `RawSubBlockKey::from` and `LocalFeaturePlan::reconstruct_sub_block` both read the index through the same `dl_feature_index()`/`ul_feature_index()` accessors, so dedup and generation cannot drift apart — there is no longer a stored value for them to disagree about. Keep it that way: derive at the accessor, not at each call site.
   - *Corpus scope behind the "0 mismatches" claim:* 1,487 files (9 non-`UeCaps` decode skips), **1,715,899 NR components** and **1,741,849 LTE components**. 0 of the 1.74M LTE components carry a field-6/7 per-CC selector; every NR component carries a DL one and ~60% carry a UL one.
   - *Why these keys (rejected hypotheses):* DL keys off `max_scs` (FR1/FR2), **not** `max_mimo` — a cross-tab against `max_mimo` looked noisy precisely because MIMO is not the key. UL keys off `max_mimo_cb`; `max_mimo_non_cb` moves in lockstep in the data but `max_mimo_cb` is the definitional key.
   - *LTE `parseLteFeatureIndex` cross-check* (for the record; the LTE index is kept explicit, not derived): DL `count = ceil(fi/2)` (fi 1/2→1CC, 3/6→2CC, 7/8→4CC, 9/10→5CC), even fi = 2-layer MIMO, odd = 1-layer, with 5/6 the special B/C 2-CC case; UL only ever `0` or `2` in this corpus.
@@ -1102,11 +1138,11 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   `ul_bw_class` (per sub-block) and the combo header's `power_class`, `bcs_nr`, `bcs_eutra`,
   `intra_band_en_dc_support`. (`bcs_intra_endc` does **not** qualify — it has genuine `None`
   in the corpus and stays a plain optional field everywhere.) Because these five are never
-  absent, `Some(0)` carries no information a KDL reader can't recover: `nr.kdl`'s writers
+  absent, `Some(0)` carries no information a KDL reader can't recover: the source writers
   (`compiler::kdl_source`) omit the property
   when the value is `Some(0)`, and the paired readers default an absent property back to
   `Some(0)` (`r.opt_int(key)?.or(Some(0))`) rather than `None`. A DL-only NR sub-block
-  (`ul_bw_class == Some(0)`) therefore carries no second positional argument at all in `nr.kdl`.
+  (`ul_bw_class == Some(0)`) therefore carries no second positional argument at all.
   A sixth, **kind-scoped** omit-when-0 applies on `lte` sub-blocks only: `ul_feature_index` is
   corpus-verified always-`Some` on LTE (1.74M sub-blocks; `Some(0)` ⟺ no UL, ≈59%), so `lte`
   writers omit a UL index of 0 and `B` readers default an absent one back to `Some(0)`.
@@ -1115,8 +1151,8 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   does not extend to `dl_feature_index` (never `0` on LTE — the rule would be dead code). Unlike
   the five fields above it has no decode-time `ensure!`; the `lte_feature_index_is_always_some_in_corpus`
   test (`tests/compiler_corpus.rs`) is its guard.
-  A **seventh** applies to `lte.kdl`'s own sub-blocks: `ul_bw_class_mimo` is `Some(0)` on 8 281 of
-  the corpus's 12 159 E-UTRA sub-blocks and `None` on none of them, so the writer omits the UL
+  A **seventh** applies to an `l` combo's own sub-blocks: `ul_bw_class_mimo` is `Some(0)`
+  on 8 281 of the corpus's 12 159 E-UTRA sub-blocks and `None` on none of them, so the writer omits the UL
   argument for a zero and the reader defaults an absent one back to `Some(0)`. It is the only
   member of this list
   guarded at **validation** rather than at decode — `compiler::schema::validate_lte_combos` rejects
@@ -1133,7 +1169,7 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   way, `RawNrPayload::header()` always returns `Some(ComboHeader{..})` (the `Option` return
   type is kept only because `ComboGroup::combo_header` itself is `Option<ComboHeader>`).
   Corpus-verified: every real combo header's `power_class` is in fact always `0` (never
-  appears in generated `nr.kdl` at all), so don't be surprised if `power-class=` is entirely
+  appears in generated source at all), so don't be surprised if `power-class=` is entirely
   absent from a real decode. **Guardrail — do not extend `=0` dropping blindly:** the only
   safely-droppable zeros are ones where `None` provably never occurs. Do not drop `=0` on any
   other field without the same *"`None` never occurs"* corpus proof, and **never** on a field
@@ -1290,7 +1326,7 @@ served over the UecapFile RPC at `0x42E07046`.
   classes 1..=5 reach `A`..`E`; NR classes 7..=13 (FR2-only) reach `G`..`M`
   (`format_direction` admits the general range 1..=26). Do not confuse this with the
   class+MIMO bitfield below — same module, same letters for part of its range, unrelated field.
-- **Class+MIMO bitfield** — `lte.kdl`'s own encoding of `LteComponent.dl_bw_class_mimo` /
+- **Class+MIMO bitfield** — an `l` combo's own encoding of `LteComponent.dl_bw_class_mimo` /
   `ul_bw_class_mimo` (`format_class_mimo`/`parse_class_mimo`, same module): a letter restricted
   to `A`–`F` plus a MIMO digit (`2` or `4`). It runs the OPPOSITE way from the bandwidth class
   above — the highest raw value, 32768, is `A`; the lowest, 1024, is `F`.

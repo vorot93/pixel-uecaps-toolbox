@@ -222,8 +222,8 @@ mod tests {
     }
 
     /// Keys within one scope are siblings, so a shared spelling would make one shadow the other.
-    /// Across scopes, sharing is deliberate and legal (`combo` and `carriers` both abbreviate to
-    /// `c`, at different nesting depths).
+    /// Across scopes, sharing is deliberate and legal (the top-level `carrier` node and a `bf`
+    /// group's nested carriers list both spell `c`, at different nesting depths).
     #[test]
     fn collisions_are_only_across_scopes() {
         for (scope, keys) in scopes() {

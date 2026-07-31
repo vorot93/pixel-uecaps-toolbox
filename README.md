@@ -20,8 +20,9 @@ the network what it supports. With it you can:
 - **Audit a whole dump** — scan a folder of capability files and flag anything that
   doesn't fit the expected scheme, and export the carrier × profile matrix as CSV.
 - **Edit a complete offline folder** — normalize the legacy and Exynos 5400 layouts
-  into `nr.kdl` + `lte.kdl` with `decompose`, edit the KDL, then `provision` a
-  deterministic full-replacement Magisk module for a real Pixel model code.
+  into one canonical KDL source document with `decompose`, edit the KDL, then
+  `provision` a deterministic full-replacement Magisk module for a real Pixel model
+  code.
 
 Editing goes through the folder compiler and nothing else: there is no single-file
 edit, patch, or repackage command.
@@ -67,20 +68,28 @@ installed it on your `PATH`, use `./target/release/pixel-uecaps-toolbox` instead
 
 ### Decompose, edit, and provision a complete offline `uecapconfig` folder
 
-The folder compiler consumes **both** generations together, writes exactly two
-canonical source files, and builds one complete replacement module for a real phone:
+The folder compiler consumes **both** generations together, writes one canonical
+source document — `uecaps.kdl` below, but the name is yours to choose — and builds
+one complete replacement module for a real phone:
 
 ```console
 $ pixel-uecaps-toolbox decompose \
     --bitmask bitmask-uecapconfig/ \
     --profiled profiled-uecapconfig/ \
-    -o source/
-$ ls source/
-lte.kdl  nr.kdl
+    -o uecaps.kdl
 
-# Edit source/nr.kdl and source/lte.kdl, then choose a registered phone model.
-$ pixel-uecaps-toolbox provision G2YBB source/ -o pixel-uecaps-G2YBB.zip
+# Or read it without writing anything:
+$ pixel-uecaps-toolbox decompose \
+    --bitmask bitmask-uecapconfig/ --profiled profiled-uecapconfig/ | less
+
+# Edit uecaps.kdl, then choose a registered phone model.
+$ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 ```
+
+> Piping and early exit: `decompose` writes the document with `print!`, so a reader that closes
+> the pipe before the end — quitting the pager early, or `| head` — ends the process with a
+> broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. Nothing is
+> written or corrupted when that happens; `-o FILE` is unaffected. `matrix` behaves the same way.
 
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled
@@ -90,9 +99,9 @@ carrier file, and at least one `lte_<id>.binarypb`. Unsupported or cross-layout
 protobuf is recursively checked for fields and wire types the observed schema does
 not model.
 
-The generated documents are strict, versioned KDL: unknown keys, unsupported
+The generated document is strict, versioned KDL: unknown keys, unsupported
 versions, malformed references, and lossy values are rejected. A small valid
-`nr.kdl` has this shape:
+source document has this shape:
 
 ```kdl
 version 1
@@ -102,13 +111,36 @@ bf 715188856 {
     c VZW
 }
 
-cr VZW bi=1 pi=0 mi=1 sg=1 t=main {
+c VZW bi=1 pi=0 mi=1 sg=1 t=main {
     p mcc=311 mnc=480
     pf "66813533" x=66813533 u=0
 }
 
+f "400907661" fp=862505271 bm=1645725906
+
 df s=3 m=2 b=100
+uf s=3 m=2 b=100
+
+n pc=3 bn=b0 ie=1 {
+    s {
+        m G2YBB
+    }
+    n78 A3
+    B66 C2
+}
+
+l b="" u1=0 u2=0 {
+    s {
+        m G2YBB
+    }
+    B1 A2
+}
 ```
+
+Node order is canonical: `version`, `bc`, the `bf` fingerprint groups, the carriers,
+the LTE file whitelist, the two feature catalogs, then every NR combo (`n`) and every
+LTE combo (`l`). Everything a human can read sits in the first screenful; the combos
+below it are the bulk of the ~19 MB.
 
 Keys are abbreviated — see the table below. `bc` (bitmask-carriers) is the exact legacy output whitelist, and the fingerprint
 groups must form a disjoint, complete partition of it. A carrier's `profile`
@@ -146,10 +178,10 @@ most 255 DL records and, independently, at most 255 UL records.
 The raw `dl-cc-id`/`ul-cc-id` selector fallback for unresolved bytes was removed: a component
 with no resolved feature set surfaces no per-CC property at all (the all-zero placeholder is
 re-derived from the bandwidth class and its CC count on read). Old inline compiler
-`dl-max-*`/`ul-max-*` properties are rejected in `nr.kdl`; regenerate canonical
+`dl-max-*`/`ul-max-*` properties are rejected; regenerate canonical
 source with `decompose` instead of hand-migrating feature indexes.
 
-Compiler `nr.kdl` stores no feature index for NR components at all: that value is derived from
+The source document stores no feature index for NR components at all: that value is derived from
 the component's per-CC feature set on provision (DL from the subcarrier-spacing band FR1/FR2, UL from
 MIMO presence). The old `dl-feature-index`/`ul-feature-index` override was removed — a decoded NR
 index that contradicts the derivation is now a hard decode error rather than a carried override
@@ -159,40 +191,27 @@ single trailing number in the sub-block's positional direction argument (`B66 C2
 feature index 2); an omitted UL argument means feature index `0` — the common "no UL" default —
 and re-defaults to `0` on read.
 
-A combo header's `bi` (bcs-intra-endc) is likewise omitted from `nr.kdl` when it is derivable: an
+An `n` combo header's `bi` (bcs-intra-endc) is likewise omitted when it is derivable: an
 absent value re-derives to the empty bandwidth-combination-set when the same combo's `ie`
 (intra-band-en-dc-support) is `1`, so a surviving explicit `bi=""` marks one of the exceptional
 combos where `ie` is not `1`. Spelling out the derivable value is rejected — omit it instead.
 Every nonempty `bi` stays explicit.
 
-The matching `lte.kdl` stores the exact LTE file whitelist and byte-preserving
-payloads:
-
-```kdl
-version 1
-
-f "400907661" fp=862505271 bm=1645725906
-
-c b="" u1=0 u2=0 {
-    s {
-        m G2YBB
-    }
-    B1 A2
-}
-```
-
-An `f` (file) node's quoted key argument is the modem firmware's exact `lte_file_id`
-value (quoted because it's numeric-leading), not a hash. File-level `fingerprint`
-and `bitmask` remain stored because the compiler has no independent derivation for
-them. For optional protobuf fields, omission means absent and an explicit `0` means
+The `f` nodes are the exact LTE file whitelist and the `l` combos are its
+byte-preserving payloads. An `f` (file) node's quoted key argument is the modem
+firmware's exact `lte_file_id` value (quoted because it's numeric-leading), not a
+hash. File-level `fingerprint` and `bitmask` remain stored because the compiler has
+no independent derivation for them. For optional protobuf fields, omission means
+absent and an explicit `0` means
 present-zero — with one deliberate exception: a sub-block's UL argument, where omission means the
 explicit zero (uplink disabled) and a genuinely absent uplink class is rejected outright. The
 DL argument is required; without keys, an omitted one would shift UL into its place.
-A combo's `b` (bcs) is a bandwidth combination set, so it reads as an index list too — `b=""` is
-the empty set, present but not emitted on the air, and an omitted `b` is a genuinely absent field.
+An `l` combo's `b` (bcs) is a bandwidth combination set, so it reads as an index list
+too — `b=""` is the empty set, present but not emitted on the air, and an omitted `b`
+is a genuinely absent field.
 LTE component order is significant.
 
-In either document, a combo's `selection` is zero or more child `selection { … }`
+In either kind of combo, `selection` is zero or more child `selection { … }`
 nodes, each with an optional `carriers` child list-node and an optional `skus` child
 list-node. Each `selection` node must constrain at least one nonempty axis; LTE
 selections may use only `skus`. Omitting one axis means unrestricted on that axis,
@@ -233,7 +252,7 @@ ZIP.
 
 All source validation, protobuf generation, re-decoding, and ZIP assembly finish in
 memory before the requested ZIP is atomically replaced. Normal decompose validation or
-encoding failures leave existing `nr.kdl`/`lte.kdl` files unchanged. Fidelity is
+encoding failures leave an existing source document unchanged. Fidelity is
 format-specific: NR preserves canonical modeled values rather than original bytes
 (with the deliberate `65535` legacy / explicit-zero modern normalization), while an
 unedited LTE file and PLMN legend rebuild bit-for-bit, including optional-zero
@@ -331,8 +350,9 @@ LTE band combinations (1053)
 **Read:** `lte_*.binarypb` files carry LTE-only carrier aggregation combinations (no NR). Each
 line is one combination — band + CA bandwidth class, `↓` marks a downlink-only component (UL
 disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. That `bcs` prints the
-raw stored decimal (e.g. `2147483648`), not the `b`-prefixed index-list spelling `lte.kdl` uses
-for the same value — deliberately, since this report is a decode-side view of the protobuf; see
+raw stored decimal (e.g. `2147483648`), not the `b`-prefixed index-list spelling the source
+document uses for the same value — deliberately, since this report is a decode-side view of
+the protobuf; see
 DESIGN.md's [BCS: a 3GPP bit string, not an opaque number](DESIGN.md#bcs-a-3gpp-bit-string-not-an-opaque-number)
 for why. These files sit outside the 16/14 SKU-profile scheme (no anchor prime divides their
 number). The `LTE config` line names the modem's selection-table family (and the Pixel model where
@@ -432,7 +452,7 @@ tens of thousands of times — the real corpus is 7.0 MB of KDL, down from 12.7 
 names. Per-carrier keys that appear a handful of times (`mcc`, `mnc`) are left spelled out.
 
 ```kdl
-c bn=b0,1 ie=1 {
+n bn=b0,1 ie=1 {
     s { c VZW; m legacy GUL82 }
     n257 G30,30 A1
     B66  C2
@@ -456,21 +476,23 @@ The letter is worth learning: it is the 3GPP class, so it tells you the aggregat
 `A` is 1 CC, `B` and `C` are 2, and `G` through `M` are the FR2 (mmWave) classes running 2 to 8
 CCs. So `n257 G30,30` reads as "mmWave band n257, two aggregated carriers".
 
-`lte.kdl` sub-blocks put their directions in the same two positions, but the *value* is a different
-encoding: it packs the class and the MIMO width into one bitfield. `A4` is class A with 4x4 MIMO,
-`A2` is 2x2, and an absent second value means UL disabled. So the same text means different things
-in the two files — `B66 C2` is "class C, feature index 2" in `nr.kdl` and "class C, 2x2 MIMO" in
-`lte.kdl`. Which file you are reading settles it, the same way a sub-block node name carries no
-radio-kind tag when the document already does.
+An LTE-fallback combo's sub-blocks put their directions in the same two positions, but the
+*value* is a different encoding: it packs the class and the MIMO width into one bitfield. `A4` is
+class A with 4x4 MIMO, `A2` is 2x2, and an absent second value means UL disabled. So the same
+text means different things in the two kinds of combo — `B66 C2` is "class C, feature index 2"
+under an `n` combo and "class C, 2x2 MIMO" under an `l` combo. The enclosing combo settles it,
+the same way a sub-block node name carries no radio-kind tag when its parent already does.
 
-`bn`, `bi` and `be` on a combo (and `b` in `lte.kdl`) are **bandwidth combination sets**, written
-as a `b` followed by the ascending 3GPP set indices: `bn=b0,1` means sets 0 and 1 are supported.
+`bn`, `bi` and `be` on an `n` combo (and `b` on an `l` combo) are **bandwidth combination sets**,
+written as a `b` followed by the ascending 3GPP set indices: `bn=b0,1` means sets 0 and 1 are
+supported.
 `b` prefixes the list only so KDL leaves it unquoted — a value starting with a digit gets quotes.
 `""` is the empty set, which means the field is not sent over the air at all, and on `bn`/`be` you
 spell that by leaving the property out entirely.
 
-Other keys, in rough order of how often you will meet them: `c` combo (and, inside `s`,
-carriers), `s` selection, `m` skus, `cr` carrier, `pf` profile, `bc` bitmask-carriers,
+Other keys, in rough order of how often you will meet them: `n`/`l` NR and LTE combo,
+`c` carrier (at every level: the document, a `bf` group, an `s` selection), `s` selection,
+`m` skus, `pf` profile, `bc` bitmask-carriers,
 `bf` bitmask-fingerprint, `p`/`ps` plmn/plmns, `f` file, `df`/`uf` the feature catalogs.
 `version` is never abbreviated, so a file from an older build fails with a message telling you
 to re-run `decompose`.
@@ -496,8 +518,8 @@ nothing back.
 
 | Command | What it does |
 | --- | --- |
-| `decompose --bitmask DIR --profiled DIR -o SOURCE` | Decompose both complete folder layouts into canonical `SOURCE/nr.kdl` and `SOURCE/lte.kdl`. Both directories and `-o` are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |
-| `provision <CODE> <SOURCE> -o ZIP [--name N]` | Strictly load both compiler documents and build a complete, deterministic `.replace` Magisk ZIP for a registered real model code. The destination is fixed at `/vendor/firmware/uecapconfig`; there is no `--dest`. Exit `0`/`2`. |
+| `decompose --bitmask DIR --profiled DIR [-o FILE]` | Decompose both complete folder layouts into the canonical source document, written to `FILE` or to stdout when `-o` is omitted. Both input directories are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |
+| `provision <CODE> <SOURCE> -o ZIP [--name N]` | Strictly load the source document and build a complete, deterministic `.replace` Magisk ZIP for a registered real model code. The destination is fixed at `/vendor/firmware/uecapconfig`; there is no `--dest`. Exit `0`/`2`. |
 | `inspect <FILE> [--full]` | Inspect one file. Adapts to the file type: a carrier file, the PLMN legend, or an `lte_*` fallback (whose LTE CA combinations it decodes). `--full` reveals the SKU-selection math and per-component capabilities. Exit `2` on an unrecognised filename. A file that fails strict wire validation prints the reason instead of its combinations, rather than reporting "not readable" or silently showing normalized data. |
 | `compare <A> <B> [--full] [--common]` | Diff two files' band combinations (set diff by default; `--full` adds per-component diffs; `--common` also lists the combos common to both — `=` identical, `~` caps differ). Exit `0` identical, `1` differ, `2` error. |
 | `check [DIR]` | Scan a folder (default `.`) and report everything that doesn't fit the scheme. Exit `1` on a genuine anomaly. Every file is decoded with the same fail-closed reader the compiler uses, so a file with an unknown field, a wrong wire type or a packed PLMN list is reported rather than accepted; the scan continues past it. Legend anomalies now include duplicate carrier indices, which `provision`/`decompose` reject. |
@@ -529,7 +551,7 @@ shim for any of them. Two things to know if you had scripted one of the removed 
   direct substitute.** Editing goes through the folder compiler and nothing else: there is no
   single-file edit, patch, or repackage command to move `patch`, the old `provision`, `magisk`,
   `mapping encode`, or `mapping inject-plmn` onto — the replacement workflow for all of them is
-  `decompose` → hand-edit `nr.kdl`/`lte.kdl` → `provision`.
+  `decompose` → hand-edit the source document → `provision`.
 
 An older, unrelated rename (already in place before this branch) is still worth knowing if
 you're carrying very old scripts or library calls:

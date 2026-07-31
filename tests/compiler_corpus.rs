@@ -303,7 +303,7 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
     let first_source = temp.path().join("uecaps-a.kdl");
     let second_source = temp.path().join("uecaps-b.kdl");
 
-    // A successful decompose has already reparsed/reserialized both canonical documents and
+    // A successful decompose has already reparsed/reserialized the canonical document and
     // self-verified every internal NR anchor, LTE ID, and mapping target. Repeating it also pins
     // directory-order-independent source bytes at the public boundary. The two decompose runs are
     // independent (distinct output files) and each is CPU-bound, so run them concurrently.
