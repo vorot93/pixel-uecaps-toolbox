@@ -24,31 +24,31 @@ bf 702152537 {
 bf 715188856 {
     c ALPHA
 }
-cr ALPHA bi=1 pi=7 mi=7 sg=11 t=main {
+c ALPHA bi=1 pi=7 mi=7 sg=11 t=main {
     p mcc=250 mnc=1
     p mcc=250 mnc=1
     pf "66813533" x=66813533 u=11
     pf "8969" x=8969 u=22
 }
-cr BETA bi=2 pi=8 mi=8 sg=13 t=main {
+c BETA bi=2 pi=8 mi=8 sg=13 t=main {
     ps
     pf "66813533" x=66813533 u=33
     pf "8969" x=8969 u=44
 }
-c {
+n {
     s {
         m prime:8969
     }
     n3 A A
 }
-c {
+n {
     s {
         c BETA
         m legacy G2YBB
     }
     n41 A A
 }
-c {
+n {
     s {
         c ALPHA
         m legacy G2YBB
@@ -60,16 +60,16 @@ c {
 const EXPECTED_LTE_KDL: &str = r#"version 1
 f "400907661" fp=101 bm=201
 f "92" fp=102 bm=202
-c b="" u1=0 u2=0 {
+l b="" u1=0 u2=0 {
     s {
         m G2YBB GGX8B GR83Y
     }
     B1 A4
 }
-c b="" u1=0 u2=0 {
+l b="" u1=0 u2=0 {
     B3 A4
 }
-c b="" u1=0 u2=0 {
+l b="" u1=0 u2=0 {
     s {
         m lte:92
     }

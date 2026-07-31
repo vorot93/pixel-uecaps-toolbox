@@ -903,7 +903,7 @@ bf 715188856 {{
     c "LEGACY"
 }}
 
-cr "PROFILED" pi=7 sg=1 t="main" {{
+c "PROFILED" pi=7 sg=1 t="main" {{
     pf "{profile_key}" x=66813533 u=0
 }}
 "#
@@ -938,12 +938,12 @@ bf 715188856 {{
     fn nr_with_complete_domain() -> String {
         nr_with_carrier_sections(
             r#"
-cr "PROFILED" pi=7 sg=1 t="main" {
+c "PROFILED" pi=7 sg=1 t="main" {
     pf "66813533" x=66813533 u=0
     pf "8969" x=8969 u=0
 }
 
-cr "MAPPING" mi=8 {
+c "MAPPING" mi=8 {
     ps
 }
 "#,
@@ -969,12 +969,12 @@ f "564260317" fp=874888686 bm=2
     fn carrier_ids_are_independent_and_mapping_ids_alone_are_unique() {
         let nr = format!(
             r#"{MINIMAL_NR}
-cr "A" pi=0 mi=7 sg=1 t="main" {{
+c "A" pi=0 mi=7 sg=1 t="main" {{
     ps
     pf "66813533" x=66813533 u=0
 }}
 
-cr "B" pi=0 mi=8 sg=1 t="main" {{
+c "B" pi=0 mi=8 sg=1 t="main" {{
     ps
     pf "66813533" x=66813533 u=0
 }}
@@ -1001,7 +1001,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
 
     #[test]
     fn mapping_id_requires_plmns_and_must_be_unique() {
-        let missing = format!("{MINIMAL_NR}\ncr \"MAP\" mi=7\n");
+        let missing = format!("{MINIMAL_NR}\nc \"MAP\" mi=7\n");
         let error = parse_sources(&missing, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -1010,7 +1010,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
             "{error}"
         );
 
-        let missing_id = format!("{MINIMAL_NR}\ncr \"MAP\" {{\n    ps\n}}\n");
+        let missing_id = format!("{MINIMAL_NR}\nc \"MAP\" {{\n    ps\n}}\n");
         let error = parse_sources(&missing_id, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -1020,7 +1020,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         );
 
         let duplicate =
-            format!("{MINIMAL_NR}\ncr \"A\" mi=7 {{\n    ps\n}}\ncr \"B\" mi=7 {{\n    ps\n}}\n");
+            format!("{MINIMAL_NR}\nc \"A\" mi=7 {{\n    ps\n}}\nc \"B\" mi=7 {{\n    ps\n}}\n");
         let error = parse_sources(&duplicate, MINIMAL_LTE)
             .unwrap_err()
             .to_string();
@@ -1035,8 +1035,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
              df s=1\n\
              df s=3\n\
              uf s=9\n\
-             c {{\n    n77 A1\n}}\n\
-             c {{\n    n78 A3\n}}\n"
+             n {{\n    n77 A1\n}}\n\
+             n {{\n    n78 A3\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
@@ -1055,8 +1055,8 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
             "{MINIMAL_NR}\n\
              df\n\
              df s=0\n\
-             c {{\n    n77 A2\n}}\n\
-             c {{\n    n78 A1\n}}\n"
+             n {{\n    n77 A2\n}}\n\
+             n {{\n    n78 A1\n}}\n"
         );
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
@@ -1078,14 +1078,14 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
             ("n78 A1 A0", "1-based"),
             ("n78 A1 A2", "exceeds the ul catalog length 1"),
         ] {
-            let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nc {{\n    {cc_line}\n}}\n");
+            let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nn {{\n    {cc_line}\n}}\n");
             // `{:#}` for the whole chain: a parse-time rejection is wrapped in
             // "parsing nr.kdl", so `to_string()` alone would show only that.
             let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
             assert!(error.contains(expected), "{error}");
         }
 
-        let old = format!("{MINIMAL_NR}\nc {{\n    n78 dl-max-scs=3\n}}\n");
+        let old = format!("{MINIMAL_NR}\nn {{\n    n78 dl-max-scs=3\n}}\n");
         assert!(nr_from_kdl(&old).is_err());
     }
 
@@ -1094,7 +1094,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
             nr.push_str(&format!("\ndf b={value}\n"));
-            nr.push_str(&format!("\nc {{\n    n{value} A{value}\n}}\n"));
+            nr.push_str(&format!("\nn {{\n    n{value} A{value}\n}}\n"));
         }
         let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 300);
@@ -1143,7 +1143,7 @@ cr "B" pi=0 mi=8 sg=1 t="main" {{
     /// test-visibility workaround. `assert_nr_error` below takes the same precaution.
     #[test]
     fn a_stale_vocabulary_reports_the_version_not_the_unknown_property() {
-        let stale = format!("{MINIMAL_LTE}\nc {{\n    B1 dm=A4 um=off\n}}\n").replacen(
+        let stale = format!("{MINIMAL_LTE}\nl {{\n    B1 dm=A4 um=off\n}}\n").replacen(
             "\nversion 1",
             "\nversion 2",
             1,
@@ -1269,7 +1269,7 @@ bf 1 {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "PROFILED" t="main" {
+c "PROFILED" t="main" {
     pf "66813533" x=66813533 u=0
 }
 "#,
@@ -1279,7 +1279,7 @@ cr "PROFILED" t="main" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "PROFILED" sg=1 {
+c "PROFILED" sg=1 {
     pf "66813533" x=66813533 u=0
 }
 "#,
@@ -1289,7 +1289,7 @@ cr "PROFILED" sg=1 {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "ORPHAN" sg=1 t="main"
+c "ORPHAN" sg=1 t="main"
 "#,
             ),
             "without profiles",
@@ -1297,7 +1297,7 @@ cr "ORPHAN" sg=1 t="main"
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "MAPPING" {
+c "MAPPING" {
     ps
 }
 "#,
@@ -1307,7 +1307,7 @@ cr "MAPPING" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "MAPPING" mi=7
+c "MAPPING" mi=7
 "#,
             ),
             "must provide mapping_id and plmns together",
@@ -1315,7 +1315,7 @@ cr "MAPPING" mi=7
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "MAPPING" pi=7
+c "MAPPING" pi=7
 "#,
             ),
             "has profiled_id but no profiled NR files",
@@ -1323,7 +1323,7 @@ cr "MAPPING" pi=7
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "NOT_LEGACY" bi=1
+c "NOT_LEGACY" bi=1
 "#,
             ),
             "bitmask_carriers",
@@ -1331,7 +1331,7 @@ cr "NOT_LEGACY" bi=1
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "LEGACY" bi=2147483648
+c "LEGACY" bi=2147483648
 "#,
             ),
             "int32",
@@ -1339,7 +1339,7 @@ cr "LEGACY" bi=2147483648
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "PROFILED" pi=2147483648 sg=1 t="main" {
+c "PROFILED" pi=2147483648 sg=1 t="main" {
     pf "66813533" x=66813533 u=0
 }
 "#,
@@ -1350,7 +1350,7 @@ cr "PROFILED" pi=2147483648 sg=1 t="main" {
         parse_sources(
             &nr_with_carrier_sections(
                 r#"
-cr "MAPPING" mi=18446744073709551615 {
+c "MAPPING" mi=18446744073709551615 {
     ps
 }
 "#,
@@ -1372,7 +1372,7 @@ cr "MAPPING" mi=18446744073709551615 {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "PROFILED" sg=1 t="main" {
+c "PROFILED" sg=1 t="main" {
     pf "167" x=308449 u=0
 }
 "#,
@@ -1382,7 +1382,7 @@ cr "PROFILED" sg=1 t="main" {
         assert_nr_error(
             &nr_with_carrier_sections(
                 r#"
-cr "PROFILED" sg=18446744073709551615 t="main" {
+c "PROFILED" sg=18446744073709551615 t="main" {
     pf "167" x=2 u=0
 }
 "#,
@@ -1396,7 +1396,7 @@ cr "PROFILED" sg=18446744073709551615 t="main" {
         parse_sources(
             &nr_with_carrier_sections(
                 r#"
-cr "MAPPING" mi=7 {
+c "MAPPING" mi=7 {
     p mcc=302 mnc=220
     p mcc=250 mnc=1
     p mcc=302 mnc=220
@@ -1417,7 +1417,7 @@ cr "MAPPING" mi=7 {
             parse_sources(
                 &nr_with_carrier_sections(
                     r#"
-cr "MAPPING" mi=7 {
+c "MAPPING" mi=7 {
     p mcc=302 mnc=99999
 }
 "#,
@@ -1431,7 +1431,7 @@ cr "MAPPING" mi=7 {
 
     #[test]
     fn modern_nr_bitmasks_cannot_be_stored_in_source() {
-        let nr = format!("{MINIMAL_NR}\nc bm=1 {{\n    n78\n}}\n");
+        let nr = format!("{MINIMAL_NR}\nn bm=1 {{\n    n78\n}}\n");
         assert!(parse_sources(&nr, MINIMAL_LTE).is_err());
     }
 
@@ -1465,11 +1465,11 @@ cr "MAPPING" mi=7 {
     #[test]
     fn selections_are_resolved_and_cached_during_validation() {
         let nr = format!(
-            "{}\nc {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78 A\n}}\n",
+            "{}\nn {{\n    s {{\n        c \"PROFILED\"\n        m \"G2YBB\"\n    }}\n    n78 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte = format!(
-            "{}\nc {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 A4\n}}\n",
+            "{}\nl {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 A4\n}}\n",
             lte_with_complete_domain()
         );
         let sources = parse_sources(&nr, &lte).unwrap();
@@ -1504,7 +1504,7 @@ cr "MAPPING" mi=7 {
             ("n0 A\n", "band must be positive"),
             ("B1 A st=5\n", "unknown property `st`"),
         ] {
-            let nr = format!("{MINIMAL_NR}\nc {{\n{combo_body}}}\n");
+            let nr = format!("{MINIMAL_NR}\nn {{\n{combo_body}}}\n");
             // `{:#}` for the whole chain: the third case is rejected while still inside
             // `nr_from_kdl` (wrapped in "parsing nr.kdl"), while the first two are rejected by
             // `validate_documents`, downstream and unwrapped. The alternate format finds the
@@ -1516,7 +1516,7 @@ cr "MAPPING" mi=7 {
             );
         }
 
-        let nr = format!("{MINIMAL_NR}\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\n");
+        let nr = format!("{MINIMAL_NR}\ndf s=3\nn {{\n    n78 A1\n    B1 A\n}}\n");
         let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
@@ -1529,17 +1529,17 @@ cr "MAPPING" mi=7 {
     #[test]
     fn duplicate_canonical_nr_payload_records_are_rejected() {
         let nr = format!(
-            "{MINIMAL_NR}\ndf s=3\ndf s=3\nc {{\n    n78 A1\n    B1 A\n}}\nc {{\n    B1 A\n    n78 A2\n}}\n"
+            "{MINIMAL_NR}\ndf s=3\ndf s=3\nn {{\n    n78 A1\n    B1 A\n}}\nn {{\n    B1 A\n    n78 A2\n}}\n"
         );
         assert_nr_error(&nr, "duplicate canonical NR payload");
     }
 
     #[test]
     fn lte_payloads_require_components_preserve_order_and_reject_exact_duplicates() {
-        let empty = format!("{MINIMAL_LTE}\nc {{\n}}\n");
+        let empty = format!("{MINIMAL_LTE}\nl {{\n}}\n");
         assert!(parse_sources(MINIMAL_NR, &empty).is_err());
 
-        let duplicate = format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc {{\n    B1 A4\n}}\n");
+        let duplicate = format!("{MINIMAL_LTE}\nl {{\n    B1 A4\n}}\nl {{\n    B1 A4\n}}\n");
         assert!(
             parse_sources(MINIMAL_NR, &duplicate)
                 .unwrap_err()
@@ -1548,7 +1548,7 @@ cr "MAPPING" mi=7 {
         );
 
         let ordered = format!(
-            "{MINIMAL_LTE}\nc {{\n    B1 A4\n    B3 A4\n}}\nc {{\n    B3 A4\n    B1 A4\n}}\n"
+            "{MINIMAL_LTE}\nl {{\n    B1 A4\n    B3 A4\n}}\nl {{\n    B3 A4\n    B1 A4\n}}\n"
         );
         let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
@@ -1559,7 +1559,7 @@ cr "MAPPING" mi=7 {
         // `Some(0)`. It is also what keeps these two combos distinct under `RawLteCombo`, now
         // that their components are identical.
         let optional_presence =
-            format!("{MINIMAL_LTE}\nc {{\n    B1 A4\n}}\nc b=\"\" {{\n    B1 A4\n}}\n");
+            format!("{MINIMAL_LTE}\nl {{\n    B1 A4\n}}\nl b=\"\" {{\n    B1 A4\n}}\n");
         let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
@@ -1616,7 +1616,7 @@ cr "MAPPING" mi=7 {
     fn validated_metadata_caches_derived_fingerprints_and_parsed_plmns() {
         let nr = nr_with_carrier_sections(
             r#"
-cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
+c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
     p mcc=302 mnc=220
     p mcc=250 mnc=1
     p mcc=302 mnc=220
@@ -1646,11 +1646,11 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
     #[test]
     fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
         let nr_text = format!(
-            "{}\ndf s=3\nc {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 A1\n    B1 A\n}}\nc {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3 A\n}}\n",
+            "{}\ndf s=3\nn {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 A1\n    B1 A\n}}\nn {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3 A\n}}\n",
             nr_with_complete_domain()
         );
         let lte_text = format!(
-            "{}\nc {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nc {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
+            "{}\nl {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nl {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
             lte_with_complete_domain()
         );
         let nr = nr_from_kdl(&nr_text).unwrap();
@@ -1693,13 +1693,13 @@ cr "PROFILED" pi=7 mi=7 sg=1 t="alt" {
     fn to_kdl_preserves_plmn_presence_order_duplicates_and_large_mapping_ids() {
         let nr_text = nr_with_carrier_sections(
             r#"
-cr "ABSENT" bi=1
+c "ABSENT" bi=1
 
-cr "MAP_ONLY" mi=18446744073709551615 {
+c "MAP_ONLY" mi=18446744073709551615 {
     ps
 }
 
-cr "ORDERED" mi=7 {
+c "ORDERED" mi=7 {
     p mcc=302 mnc=220
     p mcc=228
     p mcc=302 mnc=220

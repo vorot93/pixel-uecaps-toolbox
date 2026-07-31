@@ -17,10 +17,13 @@ pub(crate) mod nr_doc {
     pub(crate) const VERSION: &str = "version";
     pub(crate) const BITMASK_CARRIERS: &str = "bc";
     pub(crate) const BITMASK_FINGERPRINT: &str = "bf";
-    pub(crate) const CARRIER: &str = "cr";
+    /// Carrier. `c` at every level: here, inside a `bf` group, and inside an `s` selection.
+    /// Freed up by moving the two combo nodes to `n`/`l`.
+    pub(crate) const CARRIER: &str = "c";
     pub(crate) const DL_FEATURE: &str = "df";
     pub(crate) const UL_FEATURE: &str = "uf";
-    pub(crate) const COMBO: &str = "c";
+    /// NR / EN-DC combo. Mirrors the `n<band>` sub-block prefix.
+    pub(crate) const COMBO: &str = "n";
 }
 
 /// Children of a `bitmask-fingerprint`.
@@ -110,7 +113,9 @@ pub(crate) mod lte_doc {
     /// Not abbreviated, for the same reason as [`super::nr_doc::VERSION`].
     pub(crate) const VERSION: &str = "version";
     pub(crate) const FILE: &str = "f";
-    pub(crate) const COMBO: &str = "c";
+    /// LTE-fallback combo. Symmetric with `nr_doc::COMBO`; deliberately not `b`, which would
+    /// make the header line read `b b=""` against the combo's own `bcs` property.
+    pub(crate) const COMBO: &str = "l";
 }
 
 /// Properties of an `lte.kdl` `file`.
