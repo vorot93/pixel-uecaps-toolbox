@@ -86,10 +86,13 @@ $ pixel-uecaps-toolbox decompose \
 $ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 ```
 
-> Piping and early exit: `decompose` writes the document with `print!`, so a reader that closes
-> the pipe before the end — quitting the pager early, or `| head` — ends the process with a
-> broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. Nothing is
-> written or corrupted when that happens; `-o FILE` is unaffected. `matrix` behaves the same way.
+> Piping and early exit: every command that writes to stdout does so with `print!`, so a reader
+> that closes the pipe before the end — quitting the pager early, or `| head` — ends the process
+> with a broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. That
+> covers `decompose`, `matrix`, `inspect` (with and without `--full`) and `check`. Whether a given
+> run trips it depends on there still being output to write when the reader goes away, so a short
+> report can finish into the pipe buffer first and exit `0`. Nothing is written or corrupted
+> either way; `-o FILE` is unaffected.
 
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled
@@ -142,7 +145,9 @@ the LTE file whitelist, the two feature catalogs, then every NR combo (`n`) and 
 LTE combo (`l`). Everything a human can read sits in the first screenful; the combos
 below it are the bulk of the ~19 MB.
 
-Keys are abbreviated — see the table below. `bc` (bitmask-carriers) is the exact legacy output whitelist, and the fingerprint
+Keys are abbreviated — they are walked through under
+[Reading the source format](#reading-the-source-format). `bc` (bitmask-carriers) is
+the exact legacy output whitelist, and the fingerprint
 groups must form a disjoint, complete partition of it. A carrier's `profile`
 children are the exact whitelist for that carrier/anchor output. A profile's key
 (the anchor number) is a quoted string argument — KDL requires quoting because it's
@@ -211,12 +216,12 @@ too — `b=""` is the empty set, present but not emitted on the air, and an omit
 is a genuinely absent field.
 LTE component order is significant.
 
-In either kind of combo, `selection` is zero or more child `selection { … }`
-nodes, each with an optional `carriers` child list-node and an optional `skus` child
-list-node. Each `selection` node must constrain at least one nonempty axis; LTE
-selections may use only `skus`. Omitting one axis means unrestricted on that axis,
+In either kind of combo, the selection is zero or more child `s { … }`
+nodes, each with an optional `c` (carriers) child list-node and an optional `m`
+(skus) child list-node. Each `s` node must constrain at least one nonempty axis; LTE
+selections may use only `m`. Omitting one axis means unrestricted on that axis,
 the nodes are unioned as a set of eligible carrier/SKU pairs, and omitting
-`selection` entirely means the payload applies everywhere. Decompose canonicalizes that
+`s` entirely means the payload applies everywhere. Decompose canonicalizes that
 relation, so its output does not depend on rectangle order, overlap, duplicates, or
 input file order. `legacy`, `prime:<anchor>`, and `lte:<id>` may appear as internal
 applicability tokens, but none is accepted as a `provision` model argument.
@@ -552,6 +557,15 @@ shim for any of them. Two things to know if you had scripted one of the removed 
   single-file edit, patch, or repackage command to move `patch`, the old `provision`, `magisk`,
   `mapping encode`, or `mapping inject-plmn` onto — the replacement workflow for all of them is
   `decompose` → hand-edit the source document → `provision`.
+
+The source is now **one file**, not a directory of two, which breaks every existing invocation:
+
+- `decompose -o DIR` is now `decompose -o FILE` — or omit `-o` entirely and read it on stdout.
+- `provision MODEL DIR` is now `provision MODEL FILE`.
+- An old `nr.kdl` or `lte.kdl` is not readable on its own, and concatenating the two trips
+  `` duplicate `version` `` — the format version deliberately stayed `1`, so none of these
+  failures names a remedy.
+- The remedy in every case is to re-run `decompose` and regenerate the document.
 
 An older, unrelated rename (already in place before this branch) is still worth knowing if
 you're carrying very old scripts or library calls:

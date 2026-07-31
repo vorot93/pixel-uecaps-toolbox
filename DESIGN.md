@@ -382,10 +382,25 @@ vocabulary, and those die in the strict reader as `unknown property` / `missing 
 property` with no remedy attached.
 
 The two-document merge is where that cost became concrete and was accepted anyway. Holding at 1
-means a pre-merge NR document's top-level `c` combos are now claimed by the *carrier* reader and
-fail inside it (`` `c` is missing a required argument ``) rather than at the dispatch with
-`` unknown top-level node `c` ``. It still fails closed; only the message is worse. The remedy,
-if that ever bites in practice, is the branch rejected above — bump the number.
+means every way a pre-merge tree can arrive dies on the vocabulary or the shape, never on the
+number, so **none of them names the `re-run decompose` remedy** — README's migration note carries
+it instead. Reproduced against the binary:
+
+| stale input | what it actually reports |
+| --- | --- |
+| pre-merge `nr.kdl` | `` unknown top-level node `cr` in the source document `` |
+| pre-merge `lte.kdl` | `` `c` is missing a required argument `` |
+| pre-merge source *directory* | `reading source document <dir>: Is a directory (os error 21)` |
+| `cat nr.kdl lte.kdl` | `` duplicate `version` `` |
+
+Only the LTE half degrades, and the reason is node order. A pre-merge LTE combo was spelled `c`,
+which now names the *carrier* node, and `lte.kdl`'s order is `version, f…, c…` — so its combos
+are claimed by the carrier reader and fail inside it, with a message about a missing argument
+that says nothing about the merge. The NR half gets the *better* message: its order is
+`version, bc, bf, cr…, df, uf, c…`, so the dispatch loop meets the pre-merge carrier spelling
+`cr` — a node that no longer exists at all — and bails on it long before reaching any `c` combo.
+Every case fails closed. The remedy, if the LTE message ever bites in practice, is the branch
+rejected above — bump the number.
 
 **A key spelling is not a diagnostic.** Error messages say "carrier", "profile", "bitmask" —
 words, not KDL keys. A mechanical rename that rewrites both leaves the suite green while
@@ -566,8 +581,8 @@ The band is the node name's suffix, so a source line reads as the 3GPP band desi
 describes, and an E-UTRA sub-block is spelled the same way under either kind of combo:
 
 ```kdl
-n257 H30,30,30 G26,26     NR n257, DL class H (FR2, 3 CC), UL class G (2 CC)
-B66  C2                    E-UTRA B66, class C, feature index 2
+n257 H30,30,30 G26,26   // NR n257, DL class H (FR2, 3 CC), UL class G (2 CC)
+B66  C2                 // E-UTRA B66, class C, feature index 2
 ```
 
 **The two directions are positional arguments, not properties: argument 0 is DL, argument 1 is
