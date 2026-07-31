@@ -582,7 +582,7 @@ mod tests {
     use std::{collections::BTreeMap, fs};
 
     use prost::Message;
-    use tempfile::tempdir;
+    use tempfile::{NamedTempFile, tempdir};
 
     use super::{decode_documents, decompose};
     use crate::{
@@ -609,13 +609,13 @@ mod tests {
     fn assert_prewrite_failure(corpus: MiniCorpus, expected: &str) -> String {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
-        let out = temp.path().join("uecaps.kdl");
-        fs::write(&out, b"old source\n").unwrap();
+        let out = NamedTempFile::new_in(temp.path()).unwrap();
+        fs::write(out.path(), b"old source\n").unwrap();
 
-        let error = decompose(&bitmask, &profiled, Some(out.as_path())).unwrap_err();
+        let error = decompose(&bitmask, &profiled, Some(out.path())).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains(expected), "unexpected error: {error}");
-        assert_eq!(fs::read(&out).unwrap(), b"old source\n");
+        assert_eq!(fs::read(out.path()).unwrap(), b"old source\n");
         error
     }
 
@@ -737,24 +737,19 @@ mod tests {
         fs::write(first_profiled.join("notes.txt"), b"ignored").unwrap();
         fs::create_dir(first_profiled.join("nested")).unwrap();
 
-        let first_out = first.path().join("uecaps.kdl");
-        let second_out = second.path().join("uecaps.kdl");
+        let first_out = NamedTempFile::new_in(first.path()).unwrap();
+        let second_out = NamedTempFile::new_in(second.path()).unwrap();
         assert_eq!(
-            decompose(&first_bitmask, &first_profiled, Some(first_out.as_path())).unwrap(),
+            decompose(&first_bitmask, &first_profiled, Some(first_out.path())).unwrap(),
             Outcome::Clean
         );
         assert_eq!(
-            decompose(
-                &second_bitmask,
-                &second_profiled,
-                Some(second_out.as_path())
-            )
-            .unwrap(),
+            decompose(&second_bitmask, &second_profiled, Some(second_out.path())).unwrap(),
             Outcome::Clean
         );
         assert_eq!(
-            fs::read(&first_out).unwrap(),
-            fs::read(&second_out).unwrap()
+            fs::read(first_out.path()).unwrap(),
+            fs::read(second_out.path()).unwrap()
         );
     }
 
@@ -830,24 +825,35 @@ mod tests {
     fn decompose_writes_exactly_one_newline_terminated_idempotent_document() {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
-        let out = temp.path().join("uecaps.kdl");
+        let out = NamedTempFile::new_in(temp.path()).unwrap();
 
         assert_eq!(
-            decompose(&bitmask, &profiled, Some(out.as_path())).unwrap(),
+            decompose(&bitmask, &profiled, Some(out.path())).unwrap(),
             Outcome::Clean
         );
 
         // Exactly one document: the two corpus folders and the output, and nothing else. This is
         // what catches a leftover `.tmpXXXX` sibling from `write_bytes_atomic`'s temp-then-rename,
-        // which the reparse below would happily ignore.
+        // which the reparse below would happily ignore. Compared against the output's own
+        // basename, because nothing requires the source document to have a particular name.
         let mut names: Vec<String> = fs::read_dir(temp.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort_unstable();
-        assert_eq!(names, ["bitmask", "profiled", "uecaps.kdl"]);
+        let mut expected = vec![
+            "bitmask".to_owned(),
+            "profiled".to_owned(),
+            out.path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        expected.sort_unstable();
+        assert_eq!(names, expected);
 
-        let text = fs::read_to_string(&out).unwrap();
+        let text = fs::read_to_string(out.path()).unwrap();
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
         // Through the *validating* `to_kdl`, not `ValidatedSources::to_kdl`: the assertion is
         // that a second validate + canonicalize pass over the written document is a fixed point.
