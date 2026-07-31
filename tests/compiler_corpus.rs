@@ -17,6 +17,8 @@ use zip::ZipArchive;
 
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
+/// The basename `decompose` writes into its output directory.
+const SOURCE_BASENAME: &str = "uecaps.kdl";
 
 fn read_lte_sequences(dir: &Path) -> BTreeMap<u64, Vec<Vec<u8>>> {
     let mut sequences = BTreeMap::new();
@@ -314,13 +316,11 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
                 .expect("re-decomposing both optional corpora")
         },
     );
-    for document in ["nr.kdl", "lte.kdl"] {
-        assert_eq!(
-            fs::read(first_source.join(document)).expect("reading first canonical source"),
-            fs::read(second_source.join(document)).expect("reading second canonical source"),
-            "canonical source must be byte-idempotent"
-        );
-    }
+    assert_eq!(
+        fs::read(first_source.join(SOURCE_BASENAME)).expect("reading first canonical source"),
+        fs::read(second_source.join(SOURCE_BASENAME)).expect("reading second canonical source"),
+        "canonical source must be byte-idempotent"
+    );
 
     let sequences = read_lte_sequences(profiled);
     assert_lte_invariants(&sequences);

@@ -17,7 +17,7 @@ use crate::{
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
 
-/// The source-document format version both `nr.kdl` and `lte.kdl` carry.
+/// The source document's format version.
 ///
 /// This number identifies *the* format, not a count of revisions — it is reset rather than
 /// advanced when a format change lands in an unpublished series, because this repo's history is
@@ -93,9 +93,28 @@ pub(crate) struct NrSourceCombo {
     pub(crate) sub_blocks: Vec<NrSourceSubBlock>,
 }
 
+/// One source document: the format version, plus the NR and LTE halves it carries.
+///
+/// `version` lives here and nowhere else. One file has one format version, so the halves cannot
+/// disagree about it — a state the two-document format had to reject at runtime.
 #[derive(Clone, Debug)]
-pub(crate) struct NrDocument {
+pub(crate) struct SourceDocument {
+    /// By the time anything downstream sees this it is always [`SOURCE_FORMAT_VERSION`]: the
+    /// reader (`kdl_source::checked_version`) refuses any other value before returning, and every
+    /// in-process construction sets it from the constant. It is a field anyway so the parsed
+    /// document stays a faithful image of the file and the round-trip test can re-emit exactly
+    /// the version it read — which is also the only place that reads it back, hence the `allow`.
+    #[allow(dead_code)]
     pub(crate) version: u32,
+    pub(crate) nr: NrDocument,
+    pub(crate) lte: LteDocument,
+}
+
+/// The NR half. `Default` is the empty half, which the tests that exercise only the LTE half
+/// pass to [`source_to_kdl`](super::source_to_kdl) — the writer always emits `bc`, so an empty
+/// half still produces a parseable document.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NrDocument {
     pub(crate) bitmask_carriers: Vec<String>,
     pub(crate) bitmask_fingerprints: Vec<BitmaskFingerprint>,
     pub(crate) carriers: BTreeMap<String, CarrierSource>,
@@ -119,9 +138,9 @@ pub(crate) struct LteSourceCombo {
     pub(crate) components: Vec<LteComponent>,
 }
 
-#[derive(Clone, Debug)]
+/// The LTE half. `Default` is the empty half — see [`NrDocument`].
+#[derive(Clone, Debug, Default)]
 pub(crate) struct LteDocument {
-    pub(crate) version: u32,
     pub(crate) files: BTreeMap<String, LteFileSource>,
     pub(crate) combo: Vec<LteSourceCombo>,
 }
@@ -262,34 +281,32 @@ pub struct ValidatedSources {
 }
 
 impl ValidatedSources {
-    /// Serialize these already-validated, canonical sources to `(nr.kdl, lte.kdl)` **without**
-    /// re-validating. `validate_documents` leaves `nr.source`/`lte.source` canonical, so serializing
-    /// them directly reproduces exactly what [`to_kdl`] would — letting `decompose` drop a redundant
-    /// third `validate_documents` pass while its byte-idempotence assertion still proves the emitted
-    /// documents are a fixed point.
-    pub(crate) fn to_kdl(&self) -> anyhow::Result<(String, String)> {
-        Ok((
-            super::nr_to_kdl(&self.nr.source)?,
-            super::lte_to_kdl(&self.lte.source)?,
-        ))
+    /// Serialize these already-validated, canonical sources **without** re-validating.
+    /// `validate_documents` leaves `nr.source`/`lte.source` canonical, so serializing them
+    /// directly reproduces exactly what [`to_kdl`] would — letting `decompose` drop a redundant
+    /// third `validate_documents` pass while its byte-idempotence assertion still proves the
+    /// emitted document is a fixed point.
+    pub(crate) fn to_kdl(&self) -> anyhow::Result<String> {
+        super::source_to_kdl(SOURCE_FORMAT_VERSION, &self.nr.source, &self.lte.source)
     }
 }
 
-pub(crate) fn parse_sources(nr_text: &str, lte_text: &str) -> anyhow::Result<ValidatedSources> {
-    let nr = super::nr_from_kdl(nr_text).context("parsing nr.kdl")?;
-    let lte = super::lte_from_kdl(lte_text).context("parsing lte.kdl")?;
-    validate_documents(nr, lte)
+pub(crate) fn parse_sources(text: &str) -> anyhow::Result<ValidatedSources> {
+    let source = super::source_from_kdl(text).context("parsing the source document")?;
+    validate_documents(source)
 }
 
-pub(crate) fn validate_documents(
-    nr: NrDocument,
-    lte: LteDocument,
-) -> anyhow::Result<ValidatedSources> {
-    // The version check lives in the readers (`kdl_source::checked_version`), not here. It has to
+pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<ValidatedSources> {
+    // The version check lives in the reader (`kdl_source::checked_version`), not here. It has to
     // run before the document body is mapped: a stale tree fails the *vocabulary* first, so a
     // check at this point only ever saw documents that had already mapped cleanly. `decompose`
-    // reaches here with freshly-ingested documents whose version is `SOURCE_FORMAT_VERSION` by
+    // reaches here with a freshly-ingested document whose version is `SOURCE_FORMAT_VERSION` by
     // construction, so nothing is left for a check here to catch.
+    let SourceDocument {
+        version: _,
+        nr,
+        lte,
+    } = source;
     let bitmask_fingerprints = validate_fingerprint_partition(&nr)?;
     let carriers = validate_carriers(&nr)?;
     validate_mapping_projection(&carriers)?;
@@ -325,17 +342,17 @@ pub(crate) fn validate_documents(
 /// paths validate once and reuse via [`ValidatedSources::to_kdl`]); kept as a convenient fixture
 /// helper.
 #[cfg(test)]
-pub(crate) fn to_kdl(nr: &NrDocument, lte: &LteDocument) -> anyhow::Result<(String, String)> {
-    validate_documents(nr.clone(), lte.clone())?.to_kdl()
+pub(crate) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
+    validate_documents(source.clone())?.to_kdl()
 }
 
-/// A carrier's PLMNs in their canonical `mcc-mnc` spelling — what `nr.kdl` stores. `Plmn` has
-/// exactly one rendering, so this is `Display`, not a re-derivation that could fail.
+/// A carrier's PLMNs in their canonical `mcc-mnc` spelling — what the source document stores.
+/// `Plmn` has exactly one rendering, so this is `Display`, not a re-derivation that could fail.
 fn canonical_plmn_strings(plmns: &[Plmn]) -> Vec<String> {
     plmns.iter().map(Plmn::to_string).collect()
 }
 
-/// One `nr.kdl` combo projected from a payload and its relation: the selection in canonical
+/// One NR source combo projected from a payload and its relation: the selection in canonical
 /// rectangle form, the five combo-header fields verbatim, and per-component catalog references
 /// re-derived via `source_sub_block`. The write-side inverse of `validate_nr_combos`/`resolve`.
 ///
@@ -375,7 +392,7 @@ fn nr_source_combos(
         .collect()
 }
 
-/// Rebuilds `lte.kdl`'s `combo` list from validated data: only `selection` is re-derived (to
+/// Rebuilds the LTE half's `combo` list from validated data: only `selection` is re-derived (to
 /// its canonical rectangle form); every other field is a straight clone of the validated
 /// source combo, since LTE combos carry no catalog references to re-derive.
 fn lte_source_combos(
@@ -551,7 +568,8 @@ fn validate_lte_combos(
                 "LTE combo {} component band must be positive",
                 index + 1
             );
-            // Neither state is representable in `lte.kdl`, and neither occurs in the corpus.
+            // Neither state is representable in the source format, and neither occurs in the
+            // corpus.
             // Rejecting here — ahead of `to_kdl` — makes the omit-when-0 rule value-faithful by
             // construction rather than by assumption, and gives a message naming the component
             // instead of the codec's "value 0 has no known bandwidth-class letter".
@@ -872,14 +890,20 @@ mod tests {
     use std::collections::BTreeSet;
 
     use crate::{
-        compiler::{lte_from_kdl, nr_from_kdl, selection::Sku},
+        compiler::{selection::Sku, source_from_kdl},
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
     };
 
     use super::{LteSourceCombo, parse_sources, to_kdl};
 
+    /// Join an NR body and an LTE body into one source document. The constants and helpers below
+    /// are *bodies*, not documents: a merged document carries exactly one `version` marker, so
+    /// concatenating two complete documents would trip `duplicate \`version\``.
+    fn source(nr_body: &str, lte_body: &str) -> String {
+        format!("version 1\n{nr_body}\n{lte_body}\n")
+    }
+
     const MINIMAL_NR: &str = r#"
-version 1
 bc "LEGACY"
 
 bf 715188856 {
@@ -888,15 +912,12 @@ bf 715188856 {
 "#;
 
     const MINIMAL_LTE: &str = r#"
-version 1
-
 f "400907661" fp=862505271 bm=4082165014
 "#;
 
     fn profiled_nr(profile_key: &str) -> String {
         format!(
             r#"
-version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -913,8 +934,6 @@ c "PROFILED" pi=7 sg=1 t="main" {{
     fn lte_with_file_key(file_key: &str) -> String {
         format!(
             r#"
-version 1
-
 f "{file_key}" fp=862505271 bm=4082165014
 "#
         )
@@ -923,7 +942,6 @@ f "{file_key}" fp=862505271 bm=4082165014
     fn nr_with_carrier_sections(sections: &str) -> String {
         format!(
             r#"
-version 1
 bc "LEGACY"
 
 bf 715188856 {{
@@ -952,8 +970,6 @@ c "MAPPING" mi=8 {
 
     fn lte_with_complete_domain() -> String {
         r#"
-version 1
-
 f "400907661" fp=862505271 bm=1
 f "564260317" fp=874888686 bm=2
 "#
@@ -961,8 +977,8 @@ f "564260317" fp=874888686 bm=2
     }
 
     #[test]
-    fn parses_the_minimal_version_one_documents() {
-        parse_sources(MINIMAL_NR, MINIMAL_LTE).unwrap();
+    fn parses_the_minimal_version_one_document() {
+        parse_sources(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
     }
 
     #[test]
@@ -980,7 +996,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
 }}
 "#
         );
-        let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(parsed.nr.carriers["A"].profiled_id, Some(0));
         assert_eq!(parsed.nr.carriers["B"].profiled_id, Some(0));
         assert_eq!(
@@ -1002,7 +1018,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     #[test]
     fn mapping_id_requires_plmns_and_must_be_unique() {
         let missing = format!("{MINIMAL_NR}\nc \"MAP\" mi=7\n");
-        let error = parse_sources(&missing, MINIMAL_LTE)
+        let error = parse_sources(&source(&missing, MINIMAL_LTE))
             .unwrap_err()
             .to_string();
         assert!(
@@ -1011,7 +1027,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         );
 
         let missing_id = format!("{MINIMAL_NR}\nc \"MAP\" {{\n    ps\n}}\n");
-        let error = parse_sources(&missing_id, MINIMAL_LTE)
+        let error = parse_sources(&source(&missing_id, MINIMAL_LTE))
             .unwrap_err()
             .to_string();
         assert!(
@@ -1021,7 +1037,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
 
         let duplicate =
             format!("{MINIMAL_NR}\nc \"A\" mi=7 {{\n    ps\n}}\nc \"B\" mi=7 {{\n    ps\n}}\n");
-        let error = parse_sources(&duplicate, MINIMAL_LTE)
+        let error = parse_sources(&source(&duplicate, MINIMAL_LTE))
             .unwrap_err()
             .to_string();
         assert!(error.contains("mapping_id 7 is used by both"), "{error}");
@@ -1038,8 +1054,8 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
              n {{\n    n77 A1\n}}\n\
              n {{\n    n78 A3\n}}\n"
         );
-        let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
-        let (canonical, _) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
+        let canonical = parsed.to_kdl().unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 1);
         assert!(parsed.nr.features.ul.is_empty());
         assert_eq!(parsed.nr.features.dl[0].max_scs, Some(3));
@@ -1058,7 +1074,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
              n {{\n    n77 A2\n}}\n\
              n {{\n    n78 A1\n}}\n"
         );
-        let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 2);
         assert_eq!(
             parsed.nr.features.dl[0],
@@ -1080,13 +1096,16 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         ] {
             let nr = format!("{MINIMAL_NR}\ndf s=3\nuf s=4\nn {{\n    {cc_line}\n}}\n");
             // `{:#}` for the whole chain: a parse-time rejection is wrapped in
-            // "parsing nr.kdl", so `to_string()` alone would show only that.
-            let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
+            // "parsing the source document", so `to_string()` alone would show only that.
+            let error = format!(
+                "{:#}",
+                parse_sources(&source(&nr, MINIMAL_LTE)).unwrap_err()
+            );
             assert!(error.contains(expected), "{error}");
         }
 
         let old = format!("{MINIMAL_NR}\nn {{\n    n78 dl-max-scs=3\n}}\n");
-        assert!(nr_from_kdl(&old).is_err());
+        assert!(source_from_kdl(&source(&old, MINIMAL_LTE)).is_err());
     }
 
     #[test]
@@ -1096,39 +1115,27 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
             nr.push_str(&format!("\ndf b={value}\n"));
             nr.push_str(&format!("\nn {{\n    n{value} A{value}\n}}\n"));
         }
-        let parsed = parse_sources(&nr, MINIMAL_LTE).unwrap();
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(parsed.nr.features.dl.len(), 300);
     }
 
     #[test]
-    fn versions_are_required_and_only_the_current_one_is_supported() {
-        let missing = MINIMAL_NR.replacen("version 1\n", "", 1);
-        assert!(parse_sources(&missing, MINIMAL_LTE).is_err());
+    fn the_version_is_required_and_only_the_current_one_is_supported() {
+        let document = source(MINIMAL_NR, MINIMAL_LTE);
 
-        // `{:#}`, not bare `to_string()`: since the version check moved into the readers
-        // (`kdl_source::checked_version`), this error now comes from inside `nr_from_kdl`, which
-        // `parse_sources` wraps in a "parsing nr.kdl" context. Plain `Display` would show only
-        // that outer layer; see `a_stale_vocabulary_reports_the_version_not_the_unknown_property`
-        // below for the same point made explicitly.
-        let unsupported_nr = MINIMAL_NR.replacen("\nversion 1", "\nversion 2", 1);
+        let missing = document.replacen("version 1\n", "", 1);
+        assert!(parse_sources(&missing).is_err());
+
+        // `{:#}`, not bare `to_string()`: since the version check moved into the reader
+        // (`kdl_source::checked_version`), this error comes from inside `source_from_kdl`, which
+        // `parse_sources` wraps in a "parsing the source document" context. Plain `Display` would
+        // show only that outer layer; see
+        // `a_stale_vocabulary_reports_the_version_not_the_unknown_property` below for the same
+        // point made explicitly.
+        let unsupported = document.replacen("version 1\n", "version 2\n", 1);
         assert!(
-            format!(
-                "{:#}",
-                parse_sources(&unsupported_nr, MINIMAL_LTE).unwrap_err()
-            )
-            .contains("source-format version 2")
-        );
-
-        let missing = MINIMAL_LTE.replacen("version 1\n", "", 1);
-        assert!(parse_sources(MINIMAL_NR, &missing).is_err());
-
-        let unsupported_lte = MINIMAL_LTE.replacen("\nversion 1", "\nversion 2", 1);
-        assert!(
-            format!(
-                "{:#}",
-                parse_sources(MINIMAL_NR, &unsupported_lte).unwrap_err()
-            )
-            .contains("source-format version 2")
+            format!("{:#}", parse_sources(&unsupported).unwrap_err())
+                .contains("source-format version 2")
         );
     }
 
@@ -1136,19 +1143,19 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     /// version marker and the vocabulary; before the check moved into the reader, the vocabulary
     /// failed first and the remedy sentence never printed.
     ///
-    /// `{:#}`, not bare `to_string()`: `parse_sources` wraps each reader's errors in its own
-    /// context — "parsing nr.kdl" for `nr_from_kdl`, "parsing lte.kdl" for `lte_from_kdl` — so
-    /// plain `Display` shows only that outer layer, never the version text underneath. `main.rs`
-    /// prints top-level errors with `{:#}` too, so this is the user's-eye view of the fix, not a
-    /// test-visibility workaround. `assert_nr_error` below takes the same precaution.
+    /// `{:#}`, not bare `to_string()`: `parse_sources` wraps the reader's errors in its own
+    /// "parsing the source document" context, so plain `Display` shows only that outer layer,
+    /// never the version text underneath. `main.rs` prints top-level errors with `{:#}` too, so
+    /// this is the user's-eye view of the fix, not a test-visibility workaround. `assert_nr_error`
+    /// below takes the same precaution.
     #[test]
     fn a_stale_vocabulary_reports_the_version_not_the_unknown_property() {
-        let stale = format!("{MINIMAL_LTE}\nl {{\n    B1 dm=A4 um=off\n}}\n").replacen(
-            "\nversion 1",
-            "\nversion 2",
-            1,
-        );
-        let error = format!("{:#}", parse_sources(MINIMAL_NR, &stale).unwrap_err());
+        let stale = source(
+            MINIMAL_NR,
+            &format!("{MINIMAL_LTE}\nl {{\n    B1 dm=A4 um=off\n}}\n"),
+        )
+        .replacen("version 1\n", "version 2\n", 1);
+        let error = format!("{:#}", parse_sources(&stale).unwrap_err());
         assert!(
             error.contains("source-format version 2") && error.contains("re-run `decompose`"),
             "{error}"
@@ -1158,11 +1165,11 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
 
     #[test]
     fn numeric_map_keys_use_shortest_decimal_u64_syntax() {
-        parse_sources(&profiled_nr("66813533"), MINIMAL_LTE).unwrap();
-        parse_sources(MINIMAL_NR, &lte_with_file_key("400907661")).unwrap();
+        parse_sources(&source(&profiled_nr("66813533"), MINIMAL_LTE)).unwrap();
+        parse_sources(&source(MINIMAL_NR, &lte_with_file_key("400907661"))).unwrap();
 
         for key in ["066813533", "+66813533", " 66813533", "66813533 ", "anchor"] {
-            let error = parse_sources(&profiled_nr(key), MINIMAL_LTE)
+            let error = parse_sources(&source(&profiled_nr(key), MINIMAL_LTE))
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("profile key"), "{key:?}: {error}");
@@ -1175,7 +1182,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
             "400907661 ",
             "file",
         ] {
-            let error = parse_sources(MINIMAL_NR, &lte_with_file_key(key))
+            let error = parse_sources(&source(MINIMAL_NR, &lte_with_file_key(key)))
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("LTE file key"), "{key:?}: {error}");
@@ -1183,9 +1190,9 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     }
 
     fn assert_nr_error(nr: &str, needle: &str) {
-        // `{:#}` for the whole chain: a parse-time rejection is wrapped in "parsing nr.kdl",
-        // so `to_string()` alone would show only that.
-        let error = format!("{:#}", parse_sources(nr, MINIMAL_LTE).unwrap_err());
+        // `{:#}` for the whole chain: a parse-time rejection is wrapped in "parsing the source
+        // document", so `to_string()` alone would show only that.
+        let error = format!("{:#}", parse_sources(&source(nr, MINIMAL_LTE)).unwrap_err());
         assert!(error.contains(needle), "expected {needle:?} in {error:?}");
     }
 
@@ -1193,7 +1200,6 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     fn fingerprint_groups_are_nonempty_disjoint_and_exhaustive() {
         assert_nr_error(
             r#"
-version 1
 bc "A"
 bf 1 {
     c
@@ -1204,7 +1210,6 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1218,7 +1223,6 @@ bf 2 {
 
         assert_nr_error(
             r#"
-version 1
 bc "A" "B"
 bf 1 {
     c "A"
@@ -1229,7 +1233,6 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 1
 bc "A"
 bf 1 {
     c "A" "B"
@@ -1240,7 +1243,6 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 1
 bc "A" "A"
 bf 1 {
     c "A"
@@ -1251,7 +1253,6 @@ bf 1 {
 
         assert_nr_error(
             r#"
-version 1
 bc "A"
 bf 1 {
     c "A"
@@ -1347,7 +1348,7 @@ c "PROFILED" pi=2147483648 sg=1 t="main" {
             "int32",
         );
 
-        parse_sources(
+        parse_sources(&source(
             &nr_with_carrier_sections(
                 r#"
 c "MAPPING" mi=18446744073709551615 {
@@ -1356,13 +1357,13 @@ c "MAPPING" mi=18446744073709551615 {
 "#,
             ),
             MINIMAL_LTE,
-        )
+        ))
         .unwrap();
     }
 
     #[test]
     fn profile_products_resolve_exactly_the_keyed_registered_anchor() {
-        parse_sources(&profiled_nr("66813533"), MINIMAL_LTE).unwrap();
+        parse_sources(&source(&profiled_nr("66813533"), MINIMAL_LTE)).unwrap();
 
         assert_nr_error(&profiled_nr("123"), "u profile anchor");
         assert_nr_error(
@@ -1393,7 +1394,7 @@ c "PROFILED" sg=18446744073709551615 t="main" {
 
     #[test]
     fn plmns_are_parsed_but_order_and_duplicates_are_legal() {
-        parse_sources(
+        parse_sources(&source(
             &nr_with_carrier_sections(
                 r#"
 c "MAPPING" mi=7 {
@@ -1404,17 +1405,17 @@ c "MAPPING" mi=7 {
 "#,
             ),
             MINIMAL_LTE,
-        )
+        ))
         .unwrap();
 
         // A syntactically well-formed `plmn` node whose mcc/mnc reconstruct into a string
         // `Plmn::from_str` rejects (mnc has more than 3 digits) now fails inside
-        // `nr_from_kdl` itself (`read_plmn` re-validates), not in the later semantic
+        // `source_from_kdl` itself (`read_plmn` re-validates), not in the later semantic
         // carrier validation, so unwrap the full chain rather than using
         // `assert_nr_error`'s plain (unwrapped) `Display`.
         let error = format!(
             "{:#}",
-            parse_sources(
+            parse_sources(&source(
                 &nr_with_carrier_sections(
                     r#"
 c "MAPPING" mi=7 {
@@ -1423,7 +1424,7 @@ c "MAPPING" mi=7 {
 "#,
                 ),
                 MINIMAL_LTE,
-            )
+            ))
             .unwrap_err()
         );
         assert!(error.contains("PLMN"), "{error}");
@@ -1432,13 +1433,16 @@ c "MAPPING" mi=7 {
     #[test]
     fn modern_nr_bitmasks_cannot_be_stored_in_source() {
         let nr = format!("{MINIMAL_NR}\nn bm=1 {{\n    n78\n}}\n");
-        assert!(parse_sources(&nr, MINIMAL_LTE).is_err());
+        assert!(parse_sources(&source(&nr, MINIMAL_LTE)).is_err());
     }
 
     #[test]
     fn domains_expand_only_registered_models_or_one_synthetic_token() {
-        let sources =
-            parse_sources(&nr_with_complete_domain(), &lte_with_complete_domain()).unwrap();
+        let sources = parse_sources(&source(
+            &nr_with_complete_domain(),
+            &lte_with_complete_domain(),
+        ))
+        .unwrap();
         let nr = sources.nr.domain.denorm_members();
         assert_eq!(
             nr,
@@ -1472,7 +1476,7 @@ c "MAPPING" mi=7 {
             "{}\nl {{\n    s {{\n        m \"G2YBB\" \"lte:564260317\"\n    }}\n    B1 A4\n}}\n",
             lte_with_complete_domain()
         );
-        let sources = parse_sources(&nr, &lte).unwrap();
+        let sources = parse_sources(&source(&nr, &lte)).unwrap();
         assert_eq!(
             sources
                 .nr
@@ -1506,10 +1510,14 @@ c "MAPPING" mi=7 {
         ] {
             let nr = format!("{MINIMAL_NR}\nn {{\n{combo_body}}}\n");
             // `{:#}` for the whole chain: the third case is rejected while still inside
-            // `nr_from_kdl` (wrapped in "parsing nr.kdl"), while the first two are rejected by
+            // `source_from_kdl` (wrapped in "parsing the source document"), while the first two
+            // are rejected by
             // `validate_documents`, downstream and unwrapped. The alternate format finds the
             // substring either way, matching `assert_nr_error` elsewhere in this module.
-            let error = format!("{:#}", parse_sources(&nr, MINIMAL_LTE).unwrap_err());
+            let error = format!(
+                "{:#}",
+                parse_sources(&source(&nr, MINIMAL_LTE)).unwrap_err()
+            );
             assert!(
                 error.contains(expected),
                 "body {combo_body:?} expected {expected:?} in {error:?}"
@@ -1517,7 +1525,7 @@ c "MAPPING" mi=7 {
         }
 
         let nr = format!("{MINIMAL_NR}\ndf s=3\nn {{\n    n78 A1\n    B1 A\n}}\n");
-        let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
+        let sources = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
             cc.iter().map(|cc| cc.band_label()).collect::<Vec<_>>(),
@@ -1537,11 +1545,11 @@ c "MAPPING" mi=7 {
     #[test]
     fn lte_payloads_require_components_preserve_order_and_reject_exact_duplicates() {
         let empty = format!("{MINIMAL_LTE}\nl {{\n}}\n");
-        assert!(parse_sources(MINIMAL_NR, &empty).is_err());
+        assert!(parse_sources(&source(MINIMAL_NR, &empty)).is_err());
 
         let duplicate = format!("{MINIMAL_LTE}\nl {{\n    B1 A4\n}}\nl {{\n    B1 A4\n}}\n");
         assert!(
-            parse_sources(MINIMAL_NR, &duplicate)
+            parse_sources(&source(MINIMAL_NR, &duplicate))
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate canonical LTE payload")
@@ -1550,7 +1558,7 @@ c "MAPPING" mi=7 {
         let ordered = format!(
             "{MINIMAL_LTE}\nl {{\n    B1 A4\n    B3 A4\n}}\nl {{\n    B3 A4\n    B1 A4\n}}\n"
         );
-        let sources = parse_sources(MINIMAL_NR, &ordered).unwrap();
+        let sources = parse_sources(&source(MINIMAL_NR, &ordered)).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
         assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
@@ -1560,7 +1568,7 @@ c "MAPPING" mi=7 {
         // that their components are identical.
         let optional_presence =
             format!("{MINIMAL_LTE}\nl {{\n    B1 A4\n}}\nl b=\"\" {{\n    B1 A4\n}}\n");
-        let sources = parse_sources(MINIMAL_NR, &optional_presence).unwrap();
+        let sources = parse_sources(&source(MINIMAL_NR, &optional_presence)).unwrap();
         assert_eq!(sources.lte.combo.len(), 2);
         assert_eq!(sources.lte.combo[0].source.bcs, None);
         assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
@@ -1576,8 +1584,7 @@ c "MAPPING" mi=7 {
     /// error instead of a quiet re-encode.
     #[test]
     fn lte_components_reject_a_disabled_dl_and_an_absent_ul_class() {
-        let nr = nr_from_kdl(MINIMAL_NR).unwrap();
-        let base = lte_from_kdl(MINIMAL_LTE).unwrap();
+        let base = source_from_kdl(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
 
         let bad_combo = |component: LteComponent| LteSourceCombo {
             selection: None,
@@ -1588,24 +1595,24 @@ c "MAPPING" mi=7 {
         };
 
         let mut disabled_dl = base.clone();
-        disabled_dl.combo.push(bad_combo(LteComponent {
+        disabled_dl.lte.combo.push(bad_combo(LteComponent {
             band: 7,
             dl_bw_class_mimo: 0,
             ul_bw_class_mimo: Some(0),
         }));
-        let error = to_kdl(&nr, &disabled_dl).unwrap_err().to_string();
+        let error = to_kdl(&disabled_dl).unwrap_err().to_string();
         assert!(
             error.contains("band 7") && error.contains("dl_bw_class_mimo 0"),
             "{error}"
         );
 
         let mut absent_ul = base;
-        absent_ul.combo.push(bad_combo(LteComponent {
+        absent_ul.lte.combo.push(bad_combo(LteComponent {
             band: 7,
             dl_bw_class_mimo: 32_769,
             ul_bw_class_mimo: None,
         }));
-        let error = to_kdl(&nr, &absent_ul).unwrap_err().to_string();
+        let error = to_kdl(&absent_ul).unwrap_err().to_string();
         assert!(
             error.contains("band 7") && error.contains("omits ul_bw_class_mimo"),
             "{error}"
@@ -1624,7 +1631,7 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
 }
 "#,
         );
-        let sources = parse_sources(&nr, MINIMAL_LTE).unwrap();
+        let sources = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(sources.nr.bitmask_fingerprints["LEGACY"], 715_188_856);
         let carrier = &sources.nr.carriers["PROFILED"];
         let legend_plmns: Vec<u64> = carrier
@@ -1653,14 +1660,11 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
             "{}\nl {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nl {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
             lte_with_complete_domain()
         );
-        let nr = nr_from_kdl(&nr_text).unwrap();
-        let lte = lte_from_kdl(&lte_text).unwrap();
-        let (nr_text, lte_text) = to_kdl(&nr, &lte).unwrap();
+        let text = to_kdl(&source_from_kdl(&source(&nr_text, &lte_text)).unwrap()).unwrap();
 
-        assert!(nr_text.ends_with('\n') && !nr_text.ends_with("\n\n"));
-        assert!(lte_text.ends_with('\n') && !lte_text.ends_with("\n\n"));
+        assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
 
-        let canonical = parse_sources(&nr_text, &lte_text).unwrap();
+        let canonical = parse_sources(&text).unwrap();
         assert_eq!(
             canonical.nr.combo[0]
                 .payload
@@ -1681,12 +1685,7 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
         assert_eq!(canonical.lte.combo[0].source.components[0].band, 3);
         assert_eq!(canonical.lte.combo[1].source.components[0].band, 7);
 
-        let canonical_nr = nr_from_kdl(&nr_text).unwrap();
-        let canonical_lte = lte_from_kdl(&lte_text).unwrap();
-        assert_eq!(
-            to_kdl(&canonical_nr, &canonical_lte).unwrap(),
-            (nr_text, lte_text)
-        );
+        assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
     }
 
     #[test]
@@ -1708,10 +1707,8 @@ c "ORDERED" mi=7 {
         )
         .replace("bc \"LEGACY\"", "bc \"ABSENT\" \"LEGACY\"")
         .replace("c \"LEGACY\"", "c \"ABSENT\" \"LEGACY\"");
-        let nr = nr_from_kdl(&nr_text).unwrap();
-        let lte = lte_from_kdl(MINIMAL_LTE).unwrap();
-        let (nr_text, _) = to_kdl(&nr, &lte).unwrap();
-        let nr = nr_from_kdl(&nr_text).unwrap();
+        let text = to_kdl(&source_from_kdl(&source(&nr_text, MINIMAL_LTE)).unwrap()).unwrap();
+        let nr = source_from_kdl(&text).unwrap().nr;
         assert_eq!(nr.carriers["ABSENT"].plmns, None);
         assert_eq!(nr.carriers["MAP_ONLY"].plmns, Some(Vec::new()));
         assert_eq!(
@@ -1720,6 +1717,6 @@ c "ORDERED" mi=7 {
         );
         assert_eq!(nr.carriers["MAP_ONLY"].profiled_id, None);
         assert_eq!(nr.carriers["MAP_ONLY"].mapping_id, Some(u64::MAX));
-        assert!(nr_text.contains("mi=18446744073709551615"));
+        assert!(text.contains("mi=18446744073709551615"));
     }
 }

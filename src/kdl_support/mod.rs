@@ -249,7 +249,7 @@ impl<'a> NodeReader<'a> {
     /// returns the *last* matching entry, and each `opt_*` reader then marks the key consumed,
     /// so a duplicated property used to be silently last-wins with nothing left for `finish` to
     /// object to — and the shadowed entry was never even type-checked, so `mcc="oops" mcc=310`
-    /// parsed clean. Since `nr.kdl`/`lte.kdl` are the only editing surface in the tool, that
+    /// parsed clean. Since the source document is the only editing surface in the tool, that
     /// turned a duplicated line into silent data loss.
     ///
     /// The check is unconditional: no property in either document is multi-valued. It once
@@ -390,7 +390,7 @@ mod reader_tests {
 
     #[test]
     fn autoformat_keeps_leading_positional_arg() {
-        // Several nr.kdl/lte.kdl nodes carry a sole leading positional arg — `carrier <name>`,
+        // Several source-document nodes carry a sole leading positional arg — `carrier <name>`,
         // `bitmask-fingerprint <n>`, `profile "<n>"`, `file "<n>"`. (Sub-blocks no longer do:
         // their band is part of the node name.) The autoformatter must keep that arg leading
         // and stay idempotent, or a reformatted source would misparse.

@@ -1,4 +1,4 @@
-//! KDL (de)serialization boundary for the folder-compiler source documents.
+//! KDL (de)serialization boundary for the folder-compiler source document.
 //! Hand-mapped over the `kdl` crate (KDL v2); replaces the former TOML/serde path.
 
 use std::collections::BTreeMap;
@@ -18,6 +18,7 @@ use crate::{
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
             LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION,
+            SourceDocument,
         },
         selection::SelectionRect,
     },
@@ -80,7 +81,7 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
     node
 }
 
-/// Emit one `nr.kdl` sub-block node. The node name is the kind prefix (`n`/`B`) plus the band
+/// Emit one NR-combo sub-block node. The node name is the kind prefix (`n`/`B`) plus the band
 /// (`n78`, `B66`); DL and UL are then positional arguments — DL required, UL omitted when its
 /// bandwidth class is 0 — followed by `srs-tx-switch`. Order is load-bearing for byte-identity.
 ///
@@ -157,7 +158,7 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
     let mut node = KdlNode::new(sub_block_node_name(lte_combo::SUB_BLOCK_PREFIX, band));
     // The bitfield becomes `<letter><mimo>`: 32769 -> `A4`. The number told you nothing
     // without the table in `report::lte::lte_class`. Positional, DL first — the same shape
-    // `nr.kdl` sub-blocks use.
+    // NR-combo sub-blocks use.
     node.push(KdlEntry::new(
         format_class_mimo(comp.dl_bw_class_mimo)?.as_str(),
     ));
@@ -334,6 +335,18 @@ fn fingerprint_node(fp: &BitmaskFingerprint) -> KdlNode {
     node
 }
 
+/// One `f "KEY" fp=… bm=…` node — the LTE file whitelist entry.
+fn lte_file_node(key: &str, f: &LteFileSource) -> KdlNode {
+    let mut node = KdlNode::new(doc::LTE_FILE);
+    node.push(KdlEntry::new(key));
+    node.push(KdlEntry::new_prop(
+        lte_file::FINGERPRINT,
+        f.fingerprint as i128,
+    ));
+    node.push(KdlEntry::new_prop(lte_file::BITMASK, f.bitmask as i128));
+    node
+}
+
 /// One carrier's `plmns` children: either a bare, childless `plmns` marker for a
 /// present-but-empty list (distinguishing it from no list at all — see `read_carrier`'s
 /// inverse), or one `plmn mcc=… mnc=…` node per entry.
@@ -384,12 +397,21 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
     Ok(node)
 }
 
-pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
+/// Serialize one source document. Node order is canonical and load-bearing: the version marker,
+/// then the whitelist and identity nodes (`bc`, `bf`, `c`, `f`), then the two feature catalogs —
+/// which sit immediately above the combos that index into them — then every NR combo, then every
+/// LTE combo. Order *within* each group is the caller's (`BTreeMap` iteration for carriers and
+/// files, `Vec` order for the rest), so canonicality holds by construction.
+///
+/// Takes the halves by reference rather than a `&SourceDocument`: `ValidatedSources` stores them
+/// separately, and `decompose` calls this twice, so a wrapper parameter would mean cloning the
+/// whole ~19 MB model each time.
+pub(crate) fn source_to_kdl(version: u32, nr: &NrDocument, lte: &LteDocument) -> Result<String> {
     let mut document = KdlDocument::new();
 
-    let mut version = KdlNode::new(doc::VERSION);
-    version.push(KdlEntry::new(nr.version as i128));
-    document.nodes_mut().push(version);
+    let mut version_node = KdlNode::new(doc::VERSION);
+    version_node.push(KdlEntry::new(version as i128));
+    document.nodes_mut().push(version_node);
 
     document
         .nodes_mut()
@@ -403,6 +425,10 @@ pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
         document.nodes_mut().push(carrier_node(name, c)?);
     }
 
+    for (key, f) in &lte.files {
+        document.nodes_mut().push(lte_file_node(key, f));
+    }
+
     for f in &nr.dl_features {
         document.nodes_mut().push(emit_dl_feature(f));
     }
@@ -413,6 +439,10 @@ pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
 
     for combo in &nr.combo {
         document.nodes_mut().push(emit_nr_combo(combo)?);
+    }
+
+    for combo in &lte.combo {
+        document.nodes_mut().push(emit_lte_combo(combo)?);
     }
 
     Ok(finish_doc(document))
@@ -734,11 +764,9 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     })
 }
 
-/// Parses a `version N` node's payload, or errors if `version` was already read once — shared
-/// by `nr_from_kdl` and `lte_from_kdl`, whose sole `version` node is identical in shape. Takes
-/// the field's current value (not a pre-computed flag) so the duplicate check runs BEFORE
-/// parsing, matching the single inline check this replaces in both readers: a malformed
-/// second `version` node still reports "duplicate", not a parse error.
+/// Parses a `version N` node's payload, or errors if `version` was already read once. Takes the
+/// field's current value (not a pre-computed flag) so the duplicate check runs BEFORE parsing: a
+/// malformed second `version` node still reports "duplicate", not a parse error.
 fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
     if existing.is_some() {
         bail!("duplicate `version`");
@@ -757,15 +785,19 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
 /// the check that exists to diagnose exactly that case sat downstream in `validate_documents` and
 /// never ran. Scanning for the marker up front is also order-independent, so the diagnosis holds
 /// for a hand-written document that puts `version` somewhere other than the top.
-fn checked_version(doc: &KdlDocument, file: &str, key: &str) -> Result<u32> {
+fn checked_version(document: &KdlDocument, key: &str) -> Result<u32> {
     let mut found: Option<u32> = None;
-    for node in doc.nodes().iter().filter(|node| node.name().value() == key) {
+    for node in document
+        .nodes()
+        .iter()
+        .filter(|node| node.name().value() == key)
+    {
         found = Some(read_version(node, found)?);
     }
-    let version = found.ok_or_else(|| anyhow!("{file} missing `{key}`"))?;
+    let version = found.ok_or_else(|| anyhow!("the source document is missing `{key}`"))?;
     ensure!(
         version == SOURCE_FORMAT_VERSION,
-        "{file} is source-format version {version} but this build reads version \
+        "the source document is source-format version {version} but this build reads version \
          {SOURCE_FORMAT_VERSION}; re-run `decompose` to regenerate it"
     );
     Ok(version)
@@ -792,74 +824,6 @@ fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, 
         bail!("duplicate {what} `{k}`");
     }
     Ok(())
-}
-
-pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
-    let document: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
-    let version = checked_version(&document, "nr.kdl", doc::VERSION)?;
-    let mut bitmask_carriers: Option<Vec<String>> = None;
-    let mut bitmask_fingerprints = Vec::new();
-    let mut carriers = BTreeMap::new();
-    let mut dl_features = Vec::new();
-    let mut ul_features = Vec::new();
-    let mut combo = Vec::new();
-    for node in document.nodes() {
-        // An if/else chain rather than a `match`: the arms compare against `kdl_keys`
-        // constants, which are not valid `match` patterns.
-        let name = node.name().value();
-        if name == doc::VERSION {
-            // Already read, duplicate-checked, and version-checked by `checked_version` above.
-        } else if name == doc::BITMASK_CARRIERS {
-            bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
-        } else if name == doc::BITMASK_FINGERPRINT {
-            bitmask_fingerprints.push(read_fingerprint(node)?);
-        } else if name == doc::CARRIER {
-            insert_unique(&mut carriers, "carrier", read_carrier(node)?)?;
-        } else if name == doc::DL_FEATURE {
-            dl_features.push(read_dl_feature(node)?);
-        } else if name == doc::UL_FEATURE {
-            ul_features.push(read_ul_feature(node)?);
-        } else if name == doc::NR_COMBO {
-            combo.push(read_combo(node)?);
-        } else {
-            bail!("unknown top-level node `{name}` in nr.kdl");
-        }
-    }
-    Ok(NrDocument {
-        version,
-        bitmask_carriers: bitmask_carriers
-            .ok_or_else(|| anyhow!("nr.kdl missing `bitmask-carriers`"))?,
-        bitmask_fingerprints,
-        carriers,
-        dl_features,
-        ul_features,
-        combo,
-    })
-}
-
-pub(crate) fn lte_to_kdl(lte: &LteDocument) -> Result<String> {
-    let mut document = KdlDocument::new();
-
-    let mut version = KdlNode::new(doc::VERSION);
-    version.push(KdlEntry::new(lte.version as i128));
-    document.nodes_mut().push(version);
-
-    for (key, f) in &lte.files {
-        let mut node = KdlNode::new(doc::LTE_FILE);
-        node.push(KdlEntry::new(key.as_str()));
-        node.push(KdlEntry::new_prop(
-            lte_file::FINGERPRINT,
-            f.fingerprint as i128,
-        ));
-        node.push(KdlEntry::new_prop(lte_file::BITMASK, f.bitmask as i128));
-        document.nodes_mut().push(node);
-    }
-
-    for combo in &lte.combo {
-        document.nodes_mut().push(emit_lte_combo(combo)?);
-    }
-
-    Ok(finish_doc(document))
 }
 
 fn read_file(node: &KdlNode) -> Result<(String, LteFileSource)> {
@@ -946,28 +910,62 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
     })
 }
 
-pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
-    let document: KdlDocument = text.parse().context("lte.kdl is not valid KDL")?;
-    let version = checked_version(&document, "lte.kdl", doc::VERSION)?;
+/// Read one source document. The inverse of [`source_to_kdl`], and order-independent: node
+/// *order* is the writer's canonical form, not something the reader relies on.
+pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
+    let document: KdlDocument = text
+        .parse()
+        .context("the source document is not valid KDL")?;
+    let version = checked_version(&document, doc::VERSION)?;
+    let mut bitmask_carriers: Option<Vec<String>> = None;
+    let mut bitmask_fingerprints = Vec::new();
+    let mut carriers = BTreeMap::new();
     let mut files = BTreeMap::new();
-    let mut combo = Vec::new();
+    let mut dl_features = Vec::new();
+    let mut ul_features = Vec::new();
+    let mut nr_combo = Vec::new();
+    let mut lte_combo = Vec::new();
     for node in document.nodes() {
-        // See the `nr_from_kdl` twin: constants are not valid `match` patterns.
+        // An if/else chain rather than a `match`: the arms compare against `kdl_keys`
+        // constants, which are not valid `match` patterns.
         let name = node.name().value();
         if name == doc::VERSION {
             // Already read, duplicate-checked, and version-checked by `checked_version` above.
+        } else if name == doc::BITMASK_CARRIERS {
+            bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
+        } else if name == doc::BITMASK_FINGERPRINT {
+            bitmask_fingerprints.push(read_fingerprint(node)?);
+        } else if name == doc::CARRIER {
+            insert_unique(&mut carriers, "carrier", read_carrier(node)?)?;
         } else if name == doc::LTE_FILE {
             insert_unique(&mut files, "LTE file", read_file(node)?)?;
+        } else if name == doc::DL_FEATURE {
+            dl_features.push(read_dl_feature(node)?);
+        } else if name == doc::UL_FEATURE {
+            ul_features.push(read_ul_feature(node)?);
+        } else if name == doc::NR_COMBO {
+            nr_combo.push(read_combo(node)?);
         } else if name == doc::LTE_COMBO {
-            combo.push(read_lte_combo(node)?);
+            lte_combo.push(read_lte_combo(node)?);
         } else {
-            bail!("unknown top-level node `{name}` in lte.kdl");
+            bail!("unknown top-level node `{name}` in the source document");
         }
     }
-    Ok(LteDocument {
+    Ok(SourceDocument {
         version,
-        files,
-        combo,
+        nr: NrDocument {
+            bitmask_carriers: bitmask_carriers
+                .ok_or_else(|| anyhow!("the source document is missing `bitmask-carriers`"))?,
+            bitmask_fingerprints,
+            carriers,
+            dl_features,
+            ul_features,
+            combo: nr_combo,
+        },
+        lte: LteDocument {
+            files,
+            combo: lte_combo,
+        },
     })
 }
 
@@ -1000,7 +998,7 @@ mod combinator_tests {
         assert!(r.finish().is_err());
     }
 
-    /// `nr.kdl`/`lte.kdl` are the only editing surface in the tool, and a duplicated property
+    /// The source document is the only editing surface in the tool, and a duplicated property
     /// was silently last-wins: `node.get(key)` returns the last entry and `props_used` then
     /// marks the key consumed, so `finish()` could not object either. A hand edit that
     /// duplicated a line lost a value with no diagnostic.
@@ -1089,9 +1087,21 @@ mod nr_tests {
     };
     use std::collections::BTreeMap;
 
-    fn sample() -> NrDocument {
+    /// The NR half on its own. `source_to_kdl` always takes both halves; these tests exercise
+    /// only the NR one, so the LTE half is empty. Returns `Result` rather than unwrapping so it
+    /// stays a drop-in for the writer it replaced, whose failures some tests assert on.
+    fn nr_only(nr: &NrDocument) -> Result<String> {
+        source_to_kdl(SOURCE_FORMAT_VERSION, nr, &LteDocument::default())
+    }
+
+    /// Read a document and keep the NR half. The reader is document-level now, so the LTE half
+    /// (empty in every fixture here) is simply dropped.
+    fn nr_from(text: &str) -> Result<NrDocument> {
+        Ok(source_from_kdl(text)?.nr)
+    }
+
+    pub(super) fn sample() -> NrDocument {
         NrDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["ATT".into(), "VZW".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 715_188_856,
@@ -1159,9 +1169,9 @@ mod nr_tests {
     #[test]
     fn nr_round_trips_byte_identically() {
         let doc = sample();
-        let text = nr_to_kdl(&doc).unwrap();
-        let back = nr_from_kdl(&text).expect("read back");
-        assert_eq!(nr_to_kdl(&back).unwrap(), text, "byte-identity");
+        let text = nr_only(&doc).unwrap();
+        let back = nr_from(&text).expect("read back");
+        assert_eq!(nr_only(&back).unwrap(), text, "byte-identity");
         // spot-check the readable shape:
         assert!(text.contains("c VZW bi=1"), "{text}");
         assert!(text.contains("pf \"66813533\" x=66813533 u=0"), "{text}");
@@ -1187,7 +1197,7 @@ mod nr_tests {
         // provision path; see `resolve_derives_the_omitted_placeholder` in
         // `compiler::features`) — and re-emitting must stay a byte-identical fixed point.
         let text = "version 1\nbc ATT\nn {\n    n48 B5,8\n    B66 A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
+        let doc = nr_from(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         let NrSourceSubBlock::Nr(nr) = &cc[0] else {
             panic!("first sub-block is an `nr` node, got {:?}", cc[0])
@@ -1196,7 +1206,7 @@ mod nr_tests {
         // The `lte` variant has no per-CC feature list to be empty — that is the point.
         assert!(matches!(cc[1], NrSourceSubBlock::Lte(_)));
         assert_eq!(
-            nr_to_kdl(&doc).unwrap(),
+            nr_only(&doc).unwrap(),
             text,
             "re-emitting must not resurrect the omitted LTE placeholder (fixed point)"
         );
@@ -1209,7 +1219,7 @@ mod nr_tests {
         // and re-defaults to `Some(0)`. No per-CC list is read on LTE. Byte-identical fixed
         // point.
         let text = "version 1\nbc ATT\nn {\n    B7 B1 A2\n    B66 A3\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
+        let doc = nr_from(text).expect("parse");
         let cc = &doc.combo[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
         // variant simply has no such field.
@@ -1225,7 +1235,7 @@ mod nr_tests {
             "absent ul_feature on an lte node defaults to Some(0)"
         );
         assert_eq!(
-            nr_to_kdl(&doc).unwrap(),
+            nr_only(&doc).unwrap(),
             text,
             "byte-identical fixed point: ul=0 stays omitted"
         );
@@ -1236,7 +1246,7 @@ mod nr_tests {
         let mut doc = sample();
         doc.carriers.get_mut("VZW").unwrap().plmns =
             Some(vec!["311-480".into(), "310-004".into(), "228-ff".into()]);
-        let text = nr_to_kdl(&doc).unwrap();
+        let text = nr_only(&doc).unwrap();
         assert!(text.contains("p mcc=311 mnc=480"), "{text}");
         assert!(text.contains("p mcc=310 mnc=4 mnc-digits=3"), "{text}");
         assert!(
@@ -1248,7 +1258,7 @@ mod nr_tests {
             "old plmns list node must be gone: {text}"
         );
         // round-trips
-        let back = nr_from_kdl(&text).unwrap();
+        let back = nr_from(&text).unwrap();
         let carrier = back.carriers.values().next().unwrap();
         assert_eq!(
             carrier.plmns.as_deref().unwrap(),
@@ -1262,8 +1272,8 @@ mod nr_tests {
         doc.carriers.get_mut("VZW").unwrap().plmns = Some(Vec::new());
         doc.carriers
             .insert("NOPLMN".to_string(), CarrierSource::default());
-        let text = nr_to_kdl(&doc).unwrap();
-        let back = nr_from_kdl(&text).unwrap();
+        let text = nr_only(&doc).unwrap();
+        let back = nr_from(&text).unwrap();
         assert_eq!(
             back.carriers["VZW"].plmns,
             Some(Vec::new()),
@@ -1282,16 +1292,16 @@ mod nr_tests {
         // a hand-editor could still type — must be a hard parse error, never a silent
         // `Some(vec![])` that drops the listed PLMNs.
         let text = "version 1\nbc \"LEGACY\"\nc \"MAP\" mi=7 {\n    ps \"310-260\"\n}\n";
-        let err = format!("{:#}", nr_from_kdl(text).unwrap_err());
+        let err = format!("{:#}", nr_from(text).unwrap_err());
         assert!(err.contains("ps"), "{err}");
     }
 
     #[test]
     fn nr_rejects_unknown_property() {
-        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let unmodified = nr_only(&sample()).unwrap();
         let text = unmodified.replace("n78", "n78 bogus=9");
         assert_ne!(text, unmodified);
-        assert!(nr_from_kdl(&text).is_err());
+        assert!(nr_from(&text).is_err());
     }
 
     /// This began as the sharpest instance of the duplicate-property hole: `dl-feature` was a
@@ -1305,7 +1315,7 @@ mod nr_tests {
     fn lte_sub_block_rejects_a_repeated_feature_property() {
         let text = "version 1\nbc ATT\nn {\n    B66 B3,4\n}\n";
 
-        let error = nr_from_kdl(text).unwrap_err().to_string();
+        let error = nr_from(text).unwrap_err().to_string();
 
         assert!(error.contains("at most one index"), "{error}");
         assert!(error.contains("E-UTRA"), "{error}");
@@ -1317,7 +1327,7 @@ mod nr_tests {
     fn sub_block_node_name_carries_the_band() {
         let text = "version 1\nbc ATT\nn {\n    n257 G1,1 A1\n    B66 A2\n}\n";
 
-        let doc = nr_from_kdl(text).expect("bands parse out of the node name");
+        let doc = nr_from(text).expect("bands parse out of the node name");
         let combo = &doc.combo[0];
 
         assert_eq!(combo.sub_blocks[0].band(), 257);
@@ -1325,7 +1335,7 @@ mod nr_tests {
         assert_eq!(combo.sub_blocks[1].band(), 66);
         assert_eq!(combo.sub_blocks[1].kind(), SubBlockKind::Lte);
 
-        let out = nr_to_kdl(&doc).unwrap();
+        let out = nr_only(&doc).unwrap();
         assert!(out.contains("n257 "), "{out}");
         assert!(out.contains("B66 "), "{out}");
     }
@@ -1337,7 +1347,7 @@ mod nr_tests {
         for bad in ["nr", "n257x", "nrfoo", "lte", "x99", "n99999999"] {
             let text = format!("version 1\nbc ATT\nn {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
             assert!(
-                nr_from_kdl(&text).is_err(),
+                nr_from(&text).is_err(),
                 "`{bad}` must not parse as a sub-block"
             );
         }
@@ -1354,7 +1364,7 @@ mod nr_tests {
             "ul-cc-id=1",
         ] {
             let text = format!("version 1\nbc ATT\nn {{\n    n78 A {key}\n}}\n");
-            let err = nr_from_kdl(&text).unwrap_err().to_string();
+            let err = nr_from(&text).unwrap_err().to_string();
             assert!(
                 err.contains("unknown property"),
                 "{key} should be rejected: {err}"
@@ -1364,16 +1374,16 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_unknown_top_level_node() {
-        let text = format!("{}\nmystery 1\n", nr_to_kdl(&sample()).unwrap());
-        assert!(nr_from_kdl(&text).is_err());
+        let text = format!("{}\nmystery 1\n", nr_only(&sample()).unwrap());
+        assert!(nr_from(&text).is_err());
     }
 
     /// Duplicates are rejected, and the message names the *concept*, not the key — a rename
     /// that let this degrade to `duplicate c` would violate DESIGN.md's diagnostics rule.
     #[test]
     fn nr_rejects_duplicate_carrier_by_name_not_by_key() {
-        let text = format!("{}\nc VZW\n", nr_to_kdl(&sample()).unwrap());
-        let error = format!("{:#}", nr_from_kdl(&text).unwrap_err());
+        let text = format!("{}\nc VZW\n", nr_only(&sample()).unwrap());
+        let error = format!("{:#}", nr_from(&text).unwrap_err());
         assert!(error.contains("duplicate carrier"), "{error}");
         assert!(!error.contains("duplicate c "), "{error}");
     }
@@ -1382,7 +1392,7 @@ mod nr_tests {
     /// document, a `bf` group, and a `s` selection — which is why the combos had to move off it.
     #[test]
     fn renamed_node_names_are_emitted() {
-        let text = nr_to_kdl(&sample()).unwrap();
+        let text = nr_only(&sample()).unwrap();
         assert!(text.contains("\nc VZW"), "{text}");
         assert!(
             text.lines()
@@ -1394,58 +1404,28 @@ mod nr_tests {
 
     #[test]
     fn nr_rejects_unknown_cc_kind() {
-        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let unmodified = nr_only(&sample()).unwrap();
         let text = unmodified.replace("n78", "bogus78");
         assert_ne!(text, unmodified);
-        assert!(nr_from_kdl(&text).is_err());
+        assert!(nr_from(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_unknown_tier() {
-        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let unmodified = nr_only(&sample()).unwrap();
         let text = unmodified.replace("t=main", "t=bogus");
         assert_ne!(text, unmodified);
-        assert!(nr_from_kdl(&text).is_err());
-    }
-
-    #[test]
-    fn nr_rejects_missing_version() {
-        let unmodified = nr_to_kdl(&sample()).unwrap();
-        let text = unmodified.replacen("version 1\n", "", 1);
-        assert_ne!(text, unmodified);
-        let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
-        assert!(err.contains("missing `version`"), "{err}");
-    }
-
-    #[test]
-    fn nr_rejects_duplicate_version() {
-        let text = format!("version 1\n{}", nr_to_kdl(&sample()).unwrap());
-        let err = format!("{:#}", nr_from_kdl(&text).unwrap_err());
-        assert!(err.contains("duplicate `version`"), "{err}");
-    }
-
-    /// `checked_version` *scans* for the marker rather than reading the first node, so the version
-    /// is diagnosed even in a document that puts it somewhere else. Every other fixture in the
-    /// suite opens with `version`, so without this one a "simplification" to `doc.nodes().first()`
-    /// would silently defeat the scan — and defeat it exactly where it matters, since a stale tree
-    /// whose vocabulary also changed would go back to failing on the vocabulary instead.
-    #[test]
-    fn the_version_marker_is_found_wherever_it_sits() {
-        let good = nr_from_kdl("bc ATT\nversion 1\n").expect("`version` may follow another node");
-        assert_eq!(good.version, 1);
-
-        let err = format!("{:#}", nr_from_kdl("bc ATT\nversion 2\n").unwrap_err());
-        assert!(err.contains("source-format version 2"), "{err}");
+        assert!(nr_from(&text).is_err());
     }
 
     #[test]
     fn nr_rejects_bare_numeric_profile_key() {
         // A map key (the profile anchor) must be a quoted string arg, never a bare
         // integer — the reader rejects `profile 66813533` in favor of `profile "66813533"`.
-        let unmodified = nr_to_kdl(&sample()).unwrap();
+        let unmodified = nr_only(&sample()).unwrap();
         let text = unmodified.replace("pf \"66813533\"", "pf 66813533");
         assert_ne!(text, unmodified);
-        assert!(nr_from_kdl(&text).is_err());
+        assert!(nr_from(&text).is_err());
     }
 
     fn combo_with(
@@ -1528,24 +1508,24 @@ mod nr_tests {
     #[test]
     fn bcs_nr_and_eutra_round_trip_as_index_lists() {
         let text = "version 1\nbc ATT\nn bn=b0,1 be=b0 {\n    n78 A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
+        let doc = nr_from(text).expect("parse");
         assert_eq!(doc.combo[0].bcs_nr, Some(3_221_225_472));
         assert_eq!(doc.combo[0].bcs_eutra, Some(2_147_483_648));
         assert_eq!(
-            nr_to_kdl(&doc).unwrap(),
+            nr_only(&doc).unwrap(),
             text,
             "index lists are a fixed point"
         );
 
         // An omitted property is the zero, and stays omitted on the way back out.
         let zero = "version 1\nbc ATT\nn {\n    n78 A\n}\n";
-        let doc = nr_from_kdl(zero).expect("parse");
+        let doc = nr_from(zero).expect("parse");
         assert_eq!(doc.combo[0].bcs_nr, Some(0));
-        assert_eq!(nr_to_kdl(&doc).unwrap(), zero);
+        assert_eq!(nr_only(&doc).unwrap(), zero);
 
         for key in ["bn", "be"] {
             let text = format!("version 1\nbc ATT\nn {key}=\"\" {{\n    n78 A\n}}\n");
-            let error = nr_from_kdl(&text).unwrap_err().to_string();
+            let error = nr_from(&text).unwrap_err().to_string();
             assert!(error.contains("omitting the property"), "{error}");
         }
     }
@@ -1556,16 +1536,16 @@ mod nr_tests {
     fn bcs_intra_endc_round_trips_as_an_index_list() {
         // Nonzero, written explicitly.
         let text = "version 1\nbc ATT\nn bi=b0,1 ie=1 {\n    n78 A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
+        let doc = nr_from(text).expect("parse");
         assert_eq!(doc.combo[0].bcs_intra_endc, Some(3_221_225_472));
-        assert_eq!(nr_to_kdl(&doc).unwrap(), text);
+        assert_eq!(nr_only(&doc).unwrap(), text);
 
         // The exceptional zero: `ie` is not 1, so `Some(0)` is NOT derivable and must be
         // spelled. The empty set is `""`.
         let text = "version 1\nbc ATT\nn bi=\"\" {\n    n78 A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
+        let doc = nr_from(text).expect("parse");
         assert_eq!(doc.combo[0].bcs_intra_endc, Some(0));
-        assert_eq!(nr_to_kdl(&doc).unwrap(), text);
+        assert_eq!(nr_only(&doc).unwrap(), text);
     }
 
     /// Stating the value the reader would derive anyway gives that value two spellings. The
@@ -1573,7 +1553,7 @@ mod nr_tests {
     #[test]
     fn an_explicitly_derivable_bcs_intra_endc_is_rejected() {
         // `ie=1` derives `Some(0)`, so an explicit empty value is the redundant spelling.
-        let error = nr_from_kdl("version 1\nbc ATT\nn bi=\"\" ie=1 {\n    n78 A\n}\n")
+        let error = nr_from("version 1\nbc ATT\nn bi=\"\" ie=1 {\n    n78 A\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("omit"), "{error}");
@@ -1583,9 +1563,9 @@ mod nr_tests {
     fn bw_class_is_direction_first_and_old_spelling_rejected() {
         // Directions are positional, DL then UL, and round-trip byte-identically.
         let text = "version 1\nbc ATT\nn {\n    n78 A A\n}\n";
-        let doc = nr_from_kdl(text).expect("parse positional spelling");
+        let doc = nr_from(text).expect("parse positional spelling");
         assert_eq!(
-            nr_to_kdl(&doc).unwrap(),
+            nr_only(&doc).unwrap(),
             text,
             "positional spelling is a fixed point"
         );
@@ -1597,13 +1577,13 @@ mod nr_tests {
             "version 1\nbc ATT\nn {\n    n78 bw-class-dl=1 bw-class-ul=1\n}\n",
             "version 1\nbc ATT\nn {\n    n78 d=A u=A\n}\n",
         ] {
-            let err = nr_from_kdl(old).unwrap_err().to_string();
+            let err = nr_from(old).unwrap_err().to_string();
             assert!(err.contains("missing its DL"), "got: {err}");
         }
 
         // Once a DL argument is present, a leftover key is reported as the unknown property
         // it is — the strict reader still has no alias for it.
-        let err = nr_from_kdl("version 1\nbc ATT\nn {\n    n78 A d=A\n}\n")
+        let err = nr_from("version 1\nbc ATT\nn {\n    n78 A d=A\n}\n")
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown property `d`"), "got: {err}");
@@ -1614,8 +1594,8 @@ mod nr_tests {
     /// second UL. Nothing else distinguishes them, so this is the only thing pinning it.
     fn nr_emits_direction_grouped_order() {
         let text = "version 1\nbc ATT\nn {\n    n78 A2 A3\n}\n";
-        let doc = nr_from_kdl(text).expect("parse");
-        let out = nr_to_kdl(&doc).unwrap();
+        let doc = nr_from(text).expect("parse");
+        let out = nr_only(&doc).unwrap();
         let dl = out.find("A2").expect("DL argument present");
         let ul = out.find("A3").expect("UL argument present");
         assert!(dl < ul, "expected dl before ul:\n{out}");
@@ -1625,7 +1605,7 @@ mod nr_tests {
     /// sub-block's meaning, so the reader refuses a sub-block with no arguments at all.
     #[test]
     fn a_sub_block_without_a_dl_argument_is_rejected() {
-        let error = nr_from_kdl("version 1\nbc ATT\nn {\n    n78\n}\n")
+        let error = nr_from("version 1\nbc ATT\nn {\n    n78\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing"), "{error}");
@@ -1634,74 +1614,10 @@ mod nr_tests {
     /// A third argument has no meaning and must not be silently dropped.
     #[test]
     fn a_sub_block_with_a_third_argument_is_rejected() {
-        let error = nr_from_kdl("version 1\nbc ATT\nn {\n    n78 A2 A3 A4\n}\n")
+        let error = nr_from("version 1\nbc ATT\nn {\n    n78 A2 A3 A4\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("extra argument"), "{error}");
-    }
-
-    /// A sub-block's first argument means different things depending on which document reads
-    /// it: in `nr.kdl` a bandwidth class plus a per-CC feature-index list (`parse_direction`);
-    /// in `lte.kdl` a bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing
-    /// else in the suite ties the two codecs together, so an editor who noticed the shared
-    /// spelling and "unified" them would break nothing visible here — only every real
-    /// `lte.kdl` combo, silently. The collision is a deliberate trade, not an oversight: the
-    /// *document* fixes the interpretation, the same way a sub-block node name carries no
-    /// radio-kind tag. This test is where that trade is meant to be learned before anyone
-    /// "fixes" it.
-    #[test]
-    fn identical_d_equals_text_means_different_things_in_each_document() {
-        // The exact same positional text, `C2`, fed to each document's reader.
-        let nr_text = "version 1\nbc ATT\nn {\n    B66 C2\n}\n";
-        let lte_text = "version 1\nl {\n    B66 C2\n}\n";
-
-        // nr.kdl: `C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
-        // always parses to the `Lte` variant of `NrSourceSubBlock`.
-        let nr_doc = nr_from_kdl(nr_text).expect("nr.kdl parses");
-        let NrSourceSubBlock::Lte(sub_block) = &nr_doc.combo[0].sub_blocks[0] else {
-            panic!(
-                "a `B66` node parses to the `Lte` variant, got {:?}",
-                nr_doc.combo[0].sub_blocks[0]
-            )
-        };
-        assert_eq!(sub_block.band, 66);
-        assert_eq!(sub_block.dl_bw_class, Some(3));
-        assert_eq!(sub_block.dl_feature, Some(2));
-
-        // lte.kdl: the identical text `C2` is class C + 2x2 MIMO, the bitfield 8192.
-        let lte_doc = lte_from_kdl(lte_text).expect("lte.kdl parses");
-        let component = &lte_doc.combo[0].components[0];
-        assert_eq!(component.band, 66);
-        assert_eq!(component.dl_bw_class_mimo, 8192);
-
-        // Spell out that these are different INTERPRETATIONS of identical text, not merely
-        // different incidental numbers: nr.kdl's value is a small 1-based catalog reference,
-        // lte.kdl's is a bitfield. If the two positional codecs were ever unified, this is the
-        // assertion that would catch it.
-        assert_ne!(
-            i64::from(sub_block.dl_feature.unwrap()),
-            i64::from(component.dl_bw_class_mimo),
-            "nr.kdl's per-CC feature index and lte.kdl's class+MIMO bitfield must stay disjoint \
-             decodings of the same `C2` text — if they ever match, the two codecs have merged"
-        );
-
-        // `B66 A` parses in nr.kdl: class A (1), with an empty per-CC list — the all-zero
-        // placeholder that `features::resolve` re-materializes later. The resulting
-        // `dl_feature` is incidental to this test's point and deliberately not pinned here.
-        let nr_placeholder = nr_from_kdl("version 1\nbc ATT\nn {\n    B66 A\n}\n")
-            .expect("`A` parses as a class with no per-CC list");
-        let NrSourceSubBlock::Lte(placeholder_sub_block) = &nr_placeholder.combo[0].sub_blocks[0]
-        else {
-            panic!("still a `B66`/`Lte` sub-block")
-        };
-        assert_eq!(placeholder_sub_block.dl_bw_class, Some(1));
-
-        // The identical `B66 A` is rejected by lte_from_kdl: a class+MIMO value always needs
-        // the MIMO digit that nr.kdl's bare-class placeholder spelling never carries.
-        let error = lte_from_kdl("version 1\nl {\n    B66 A\n}\n")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("MIMO width"), "{error}");
     }
 }
 
@@ -1714,9 +1630,20 @@ mod lte_tests {
     };
     use std::collections::BTreeMap;
 
-    fn sample() -> LteDocument {
+    /// The LTE half on its own — the mirror of `nr_tests::nr_only`. The empty NR half still
+    /// emits its `bc` node (an empty list, not an omission), which is why every inline fixture
+    /// below carries a bare `bc` line: without one the reader rejects the document outright.
+    fn lte_only(lte: &LteDocument) -> Result<String> {
+        source_to_kdl(SOURCE_FORMAT_VERSION, &NrDocument::default(), lte)
+    }
+
+    /// Read a document and keep the LTE half — the mirror of `nr_tests::nr_from`.
+    fn lte_from(text: &str) -> Result<LteDocument> {
+        Ok(source_from_kdl(text)?.lte)
+    }
+
+    pub(super) fn sample() -> LteDocument {
         LteDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 "3".to_string(),
                 LteFileSource {
@@ -1752,42 +1679,42 @@ mod lte_tests {
     #[test]
     fn lte_round_trips_byte_identically() {
         let doc = sample();
-        let text = lte_to_kdl(&doc).unwrap();
-        let back = lte_from_kdl(&text).expect("read back");
-        assert_eq!(lte_to_kdl(&back).unwrap(), text, "byte-identity");
+        let text = lte_only(&doc).unwrap();
+        let back = lte_from(&text).expect("read back");
+        assert_eq!(lte_only(&back).unwrap(), text, "byte-identity");
         assert!(text.contains("f \"3\" fp=715188856 bm=1"), "{text}");
         assert!(text.contains("B1 A4 A4"), "{text}");
         assert!(text.contains("B3 A4\n"), "{text}");
     }
 
-    /// `lte.kdl`'s `b` distinguishes an explicit zero from an absent field — DESIGN.md
+    /// An LTE combo's `b` distinguishes an explicit zero from an absent field — DESIGN.md
     /// requires that fidelity for the bit-for-bit LTE round trip — so unlike `bn`/`be` its
     /// empty set IS spelled, as `""`.
     #[test]
     fn lte_bcs_round_trips_as_an_index_list_and_keeps_absent_distinct() {
-        let text = "version 1\nl b=b0,1 u1=0 u2=0 {\n    B1 A4\n}\n";
-        let doc = lte_from_kdl(text).expect("parse");
+        let text = "version 1\nbc\nl b=b0,1 u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from(text).expect("parse");
         assert_eq!(doc.combo[0].bcs, Some(3_221_225_472));
-        assert_eq!(lte_to_kdl(&doc).unwrap(), text);
+        assert_eq!(lte_only(&doc).unwrap(), text);
 
-        let explicit_zero = "version 1\nl b=\"\" u1=0 u2=0 {\n    B1 A4\n}\n";
-        let doc = lte_from_kdl(explicit_zero).expect("parse");
+        let explicit_zero = "version 1\nbc\nl b=\"\" u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from(explicit_zero).expect("parse");
         assert_eq!(doc.combo[0].bcs, Some(0));
-        assert_eq!(lte_to_kdl(&doc).unwrap(), explicit_zero);
+        assert_eq!(lte_only(&doc).unwrap(), explicit_zero);
 
-        let absent = "version 1\nl u1=0 u2=0 {\n    B1 A4\n}\n";
-        let doc = lte_from_kdl(absent).expect("parse");
+        let absent = "version 1\nbc\nl u1=0 u2=0 {\n    B1 A4\n}\n";
+        let doc = lte_from(absent).expect("parse");
         assert_eq!(doc.combo[0].bcs, None, "an absent `b` is None, not Some(0)");
-        assert_eq!(lte_to_kdl(&doc).unwrap(), absent);
+        assert_eq!(lte_only(&doc).unwrap(), absent);
     }
 
     /// The guard exists because `LteCombo.bcs` is `uint64`; a value above 2^32 has never been
     /// observed and has no spelling, so the writer refuses it rather than truncating.
     #[test]
     fn an_lte_bcs_wider_than_32_bits_fails_closed() {
-        let mut doc = lte_from_kdl("version 1\nl u1=0 u2=0 {\n    B1 A4\n}\n").expect("parse");
+        let mut doc = lte_from("version 1\nbc\nl u1=0 u2=0 {\n    B1 A4\n}\n").expect("parse");
         doc.combo[0].bcs = Some(u64::from(u32::MAX) + 1);
-        let error = lte_to_kdl(&doc).unwrap_err().to_string();
+        let error = lte_only(&doc).unwrap_err().to_string();
         assert!(error.contains("32-bit"), "{error}");
     }
 
@@ -1797,8 +1724,8 @@ mod lte_tests {
         // `bcs = Some(2)` now spells as `b=b30` (2 is bit 1 of the 32-bit word, so index
         // 31-1 = 30), so a `.replace("b=2", …)` on the writer's own output would silently
         // become a no-op once the index-list codec landed.
-        let text = "version 1\nl b=b30 u1=0 u2=0 bogus=9 {\n    B1 A4\n}\n";
-        assert!(lte_from_kdl(text).is_err());
+        let text = "version 1\nbc\nl b=b30 u1=0 u2=0 bogus=9 {\n    B1 A4\n}\n";
+        assert!(lte_from(text).is_err());
     }
 
     #[test]
@@ -1811,8 +1738,8 @@ mod lte_tests {
         for dead in ["md", "mu", "dm", "um", "d", "u"] {
             // A valid positional sub-block with a leftover dead property appended, so the reader
             // reports the unknown property rather than a missing required one.
-            let text = format!("version 1\nl {{\n    B1 A4 A2 {dead}=A4\n}}\n");
-            let err = lte_from_kdl(&text).unwrap_err().to_string();
+            let text = format!("version 1\nbc\nl {{\n    B1 A4 A2 {dead}=A4\n}}\n");
+            let err = lte_from(&text).unwrap_err().to_string();
             assert!(
                 err.contains(&format!("unknown property `{dead}`")),
                 "{dead} must be rejected, got: {err}"
@@ -1820,26 +1747,22 @@ mod lte_tests {
         }
     }
 
-    /// `lte.kdl` spells its directions positionally too, and the superseded `d=`/`u=` keys are
-    /// rejected rather than silently ignored.
+    /// LTE sub-blocks spell their directions positionally too, and the superseded `d=`/`u=`
+    /// keys are rejected rather than silently ignored.
     #[test]
     fn lte_directions_are_positional_and_the_old_keys_are_rejected() {
-        let text = "version 1\nl {\n    B1 A4 A2\n}\n";
-        let doc = lte_from_kdl(text).expect("parse positional spelling");
-        assert_eq!(
-            lte_to_kdl(&doc).unwrap(),
-            text,
-            "positional is a fixed point"
-        );
+        let text = "version 1\nbc\nl {\n    B1 A4 A2\n}\n";
+        let doc = lte_from(text).expect("parse positional spelling");
+        assert_eq!(lte_only(&doc).unwrap(), text, "positional is a fixed point");
 
         // `B1 d=A4` has no positional argument at all, so the reader stops at the missing DL.
-        let error = lte_from_kdl("version 1\nl {\n    B1 d=A4\n}\n")
+        let error = lte_from("version 1\nbc\nl {\n    B1 d=A4\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing its DL"), "{error}");
 
         // With DL present, the leftover key is reported as the unknown property it is.
-        let error = lte_from_kdl("version 1\nl {\n    B1 A4 u=A2\n}\n")
+        let error = lte_from("version 1\nbc\nl {\n    B1 A4 u=A2\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown property `u`"), "{error}");
@@ -1849,19 +1772,19 @@ mod lte_tests {
     /// place and be read as the downlink.
     #[test]
     fn an_lte_sub_block_without_a_dl_argument_is_rejected() {
-        let error = lte_from_kdl("version 1\nl {\n    B1\n}\n")
+        let error = lte_from("version 1\nbc\nl {\n    B1\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing"), "{error}");
     }
 
-    /// The `lte.kdl` counterpart to `nr_tests::a_sub_block_with_a_third_argument_is_rejected`:
+    /// The LTE counterpart to `nr_tests::a_sub_block_with_a_third_argument_is_rejected`:
     /// a third argument has no meaning and must not be silently dropped. Both readers share the
     /// same `NodeReader::finish` mechanism, so the two documents' readers are pinned
     /// symmetrically here.
     #[test]
     fn an_lte_sub_block_with_a_third_argument_is_rejected() {
-        let error = lte_from_kdl("version 1\nl {\n    B1 A4 A2 A2\n}\n")
+        let error = lte_from("version 1\nbc\nl {\n    B1 A4 A2 A2\n}\n")
             .unwrap_err()
             .to_string();
         assert!(error.contains("extra argument"), "{error}");
@@ -1869,25 +1792,191 @@ mod lte_tests {
 
     #[test]
     fn lte_rejects_duplicate_file() {
-        let text = format!("{}\nf \"3\" fp=1 bm=1\n", lte_to_kdl(&sample()).unwrap());
-        assert!(lte_from_kdl(&text).is_err());
-    }
-
-    #[test]
-    fn lte_rejects_missing_version() {
-        let unmodified = lte_to_kdl(&sample()).unwrap();
-        let text = unmodified.replacen("version 1\n", "", 1);
-        assert_ne!(text, unmodified);
-        let err = format!("{:#}", lte_from_kdl(&text).unwrap_err());
-        assert!(err.contains("missing `version`"), "{err}");
+        let text = format!("{}\nf \"3\" fp=1 bm=1\n", lte_only(&sample()).unwrap());
+        assert!(lte_from(&text).is_err());
     }
 
     #[test]
     fn lte_rejects_bare_numeric_file_key() {
         // The LTE file id is a map key: a quoted string arg, not a bare integer.
-        let unmodified = lte_to_kdl(&sample()).unwrap();
+        let unmodified = lte_only(&sample()).unwrap();
         let text = unmodified.replace("f \"3\"", "f 3");
         assert_ne!(text, unmodified);
-        assert!(lte_from_kdl(&text).is_err());
+        assert!(lte_from(&text).is_err());
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::compiler::schema::SOURCE_FORMAT_VERSION;
+
+    /// One document, both halves, in canonical order: version, the whitelists and identity
+    /// nodes, the two catalogs, then every NR combo, then every LTE combo.
+    #[test]
+    fn source_round_trips_byte_identically() {
+        let nr = super::nr_tests::sample();
+        let lte = super::lte_tests::sample();
+        let text = source_to_kdl(SOURCE_FORMAT_VERSION, &nr, &lte).unwrap();
+        let parsed = source_from_kdl(&text).unwrap();
+        let reserialized = source_to_kdl(parsed.version, &parsed.nr, &parsed.lte).unwrap();
+        assert_eq!(text, reserialized);
+    }
+
+    /// Exactly one version marker, and the node order is the canonical one.
+    #[test]
+    fn node_order_is_canonical_with_one_version_marker() {
+        let text = source_to_kdl(
+            SOURCE_FORMAT_VERSION,
+            &super::nr_tests::sample(),
+            &super::lte_tests::sample(),
+        )
+        .unwrap();
+        // Top-level node names sit at column 0 — and so does the `}` that closes a block node,
+        // which is why it is filtered out too rather than read as a node name.
+        let kinds: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.starts_with(char::is_whitespace) && !line.is_empty())
+            .filter(|line| *line != "}")
+            .map(|line| line.split_whitespace().next().unwrap())
+            .map(|name| name.trim_end_matches('{'))
+            .collect();
+        assert_eq!(
+            kinds.iter().filter(|k| **k == "version").count(),
+            1,
+            "{kinds:?}"
+        );
+        let rank = |k: &str| match k {
+            "version" => 0,
+            "bc" => 1,
+            "bf" => 2,
+            "c" => 3,
+            "f" => 4,
+            "df" => 5,
+            "uf" => 6,
+            "n" => 7,
+            "l" => 8,
+            other => panic!("unexpected top-level node `{other}`"),
+        };
+        let ranks: Vec<u8> = kinds.iter().map(|k| rank(k)).collect();
+        assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{kinds:?}");
+    }
+
+    /// Two `version` markers is the failure mode of naively concatenating two old documents.
+    #[test]
+    fn two_version_markers_are_rejected() {
+        let text = format!(
+            "{}\nversion 1\n",
+            source_to_kdl(
+                SOURCE_FORMAT_VERSION,
+                &super::nr_tests::sample(),
+                &super::lte_tests::sample(),
+            )
+            .unwrap()
+        );
+        let error = format!("{:#}", source_from_kdl(&text).unwrap_err());
+        assert!(error.contains("duplicate `version`"), "{error}");
+    }
+
+    #[test]
+    fn a_document_without_a_version_marker_is_rejected() {
+        let unmodified = source_to_kdl(
+            SOURCE_FORMAT_VERSION,
+            &super::nr_tests::sample(),
+            &super::lte_tests::sample(),
+        )
+        .unwrap();
+        let text = unmodified.replacen("version 1\n", "", 1);
+        assert_ne!(text, unmodified);
+        let error = format!("{:#}", source_from_kdl(&text).unwrap_err());
+        assert!(error.contains("missing `version`"), "{error}");
+    }
+
+    /// `checked_version` *scans* for the marker rather than reading the first node, so the version
+    /// is diagnosed even in a document that puts it somewhere else. Every other fixture in the
+    /// suite opens with `version`, so without this one a "simplification" to `doc.nodes().first()`
+    /// would silently defeat the scan — and defeat it exactly where it matters, since a stale tree
+    /// whose vocabulary also changed would go back to failing on the vocabulary instead.
+    #[test]
+    fn the_version_marker_is_found_wherever_it_sits() {
+        let good =
+            source_from_kdl("bc ATT\nversion 1\n").expect("`version` may follow another node");
+        assert_eq!(good.version, 1);
+
+        let error = format!("{:#}", source_from_kdl("bc ATT\nversion 2\n").unwrap_err());
+        assert!(error.contains("source-format version 2"), "{error}");
+    }
+
+    /// A `bf` group's carrier dedented to top level becomes a second declaration of a carrier
+    /// that already exists — caught as a duplicate rather than silently absorbed. This hazard
+    /// is specific to `cr` -> `c`: before the rename the dedented node was simply unknown.
+    #[test]
+    fn a_dedented_fingerprint_carrier_is_rejected_as_a_duplicate() {
+        let text = "version 1\nbc ALPHA\nbf 1 {\n    c ALPHA\n}\nc ALPHA\nc ALPHA\n";
+        let error = format!("{:#}", source_from_kdl(text).unwrap_err());
+        assert!(error.contains("duplicate carrier"), "{error}");
+    }
+
+    /// The same sub-block text means two different things depending on which combo encloses it:
+    /// in an `n` combo a bandwidth class plus a per-CC feature index (`parse_direction`); in an
+    /// `l` combo a bandwidth class plus a MIMO-width bitfield (`parse_class_mimo`). Nothing in
+    /// the sub-block line says which. The enclosing `n`/`l` node settles it — the disambiguator
+    /// the two separate documents used to provide. Nothing else in the suite ties the two codecs
+    /// together, so an editor who noticed the shared spelling and "unified" them would break
+    /// nothing visible elsewhere — only every real LTE combo, silently. The collision is a
+    /// deliberate trade, not an oversight: the enclosing combo fixes the interpretation, the same
+    /// way a sub-block node name carries no radio-kind tag. This test is where that trade is meant
+    /// to be learned before anyone "fixes" it. See DESIGN.md.
+    #[test]
+    fn identical_sub_block_text_means_different_things_under_n_and_l() {
+        // The exact same positional text, `C2`, under each combo kind — in ONE document now.
+        let text = "version 1\nbc\nn {\n    B66 C2\n}\nl b=\"\" {\n    B66 C2\n}\n";
+        let parsed = source_from_kdl(text).expect("the source document parses");
+
+        // Under `n`: `C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
+        // always parses to the `Lte` variant of `NrSourceSubBlock`.
+        let NrSourceSubBlock::Lte(sub_block) = &parsed.nr.combo[0].sub_blocks[0] else {
+            panic!(
+                "a `B66` node parses to the `Lte` variant, got {:?}",
+                parsed.nr.combo[0].sub_blocks[0]
+            )
+        };
+        assert_eq!(sub_block.band, 66);
+        assert_eq!(sub_block.dl_bw_class, Some(3));
+        assert_eq!(sub_block.dl_feature, Some(2));
+
+        // Under `l`: the identical text `C2` is class C + 2x2 MIMO, the bitfield 8192.
+        let component = &parsed.lte.combo[0].components[0];
+        assert_eq!(component.band, 66);
+        assert_eq!(component.dl_bw_class_mimo, 8192);
+
+        // Spell out that these are different INTERPRETATIONS of identical text, not merely
+        // different incidental numbers: the NR value is a small 1-based catalog reference, the
+        // LTE one a bitfield. If the two positional codecs were ever unified, this is the
+        // assertion that would catch it.
+        assert_ne!(
+            i64::from(sub_block.dl_feature.unwrap()),
+            i64::from(component.dl_bw_class_mimo),
+            "the per-CC feature index and the class+MIMO bitfield must stay disjoint decodings \
+             of the same `C2` text — if they ever match, the two codecs have merged"
+        );
+
+        // `B66 A` parses under `n`: class A (1), with an empty per-CC list — the all-zero
+        // placeholder that `features::resolve` re-materializes later. The resulting
+        // `dl_feature` is incidental to this test's point and deliberately not pinned here.
+        let placeholder = source_from_kdl("version 1\nbc ATT\nn {\n    B66 A\n}\n")
+            .expect("`A` parses as a class with no per-CC list");
+        let NrSourceSubBlock::Lte(placeholder_sub_block) = &placeholder.nr.combo[0].sub_blocks[0]
+        else {
+            panic!("still a `B66`/`Lte` sub-block")
+        };
+        assert_eq!(placeholder_sub_block.dl_bw_class, Some(1));
+
+        // The identical `B66 A` is rejected under `l`: a class+MIMO value always needs the MIMO
+        // digit that the NR bare-class placeholder spelling never carries.
+        let error = source_from_kdl("version 1\nbc\nl {\n    B66 A\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("MIMO width"), "{error}");
     }
 }

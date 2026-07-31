@@ -15,8 +15,8 @@ use crate::{
 };
 
 /// An LTE combo's identity: everything but its `selection`. Field order is load-bearing — the
-/// derived `Ord` drives `topological_order`'s `BTreeSet::pop_first`, which fixes `lte.kdl`'s
-/// combo order and hence the generated LTE bytes. Do not reorder.
+/// derived `Ord` drives `topological_order`'s `BTreeSet::pop_first`, which fixes the source
+/// document's LTE combo order and hence the generated LTE bytes. Do not reorder.
 ///
 /// This is also the dedup key `validate_lte_combos` builds from an `LteSourceCombo`, so the
 /// ingest side and the validate side compare payloads by exactly the same definition.
@@ -83,8 +83,9 @@ fn group_files_by_id(files: Vec<DecodedLteFile>) -> anyhow::Result<BTreeMap<u64,
 }
 
 /// The cross-file accumulations one scan over every LTE file builds: each file's persisted
-/// source metadata (string-keyed, matching `nr.kdl`'s file-key spelling), the applicability
-/// domain, which SKUs use each distinct payload, and the same-file adjacency edges that fix
+/// source metadata (string-keyed, matching the source document's file-key spelling), the
+/// applicability domain, which SKUs use each distinct payload, and the same-file adjacency
+/// edges that fix
 /// payloads' relative order across files (topologically sorted next, by the caller).
 #[derive(Default)]
 struct LteScan {
@@ -213,7 +214,6 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
         canonical_lte_combos(order, scan.payload_skus, &domain)?;
 
     let source = LteDocument {
-        version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
         files: scan.file_sources,
         combo: source_combos,
     };
@@ -356,7 +356,8 @@ mod tests {
     use crate::{
         compiler::{
             schema::{
-                BitmaskFingerprint, LteDocument, NrDocument, ValidatedLte, parse_sources, to_kdl,
+                BitmaskFingerprint, LteDocument, NrDocument, SOURCE_FORMAT_VERSION, SourceDocument,
+                ValidatedLte, parse_sources, to_kdl,
             },
             selection::Sku,
         },
@@ -401,7 +402,6 @@ mod tests {
 
     fn minimal_nr() -> NrDocument {
         NrDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["LEGACY".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 1,
@@ -415,8 +415,13 @@ mod tests {
     }
 
     fn validated(document: &LteDocument) -> ValidatedLte {
-        let (nr, lte) = to_kdl(&minimal_nr(), document).unwrap();
-        parse_sources(&nr, &lte).unwrap().lte
+        let text = to_kdl(&SourceDocument {
+            version: SOURCE_FORMAT_VERSION,
+            nr: minimal_nr(),
+            lte: document.clone(),
+        })
+        .unwrap();
+        parse_sources(&text).unwrap().lte
     }
 
     fn bands(document: &LteDocument) -> Vec<i32> {
@@ -433,8 +438,8 @@ mod tests {
         let reverse = RawLteCombo::from(&combo(&[3, 1]));
         assert_ne!(forward, reverse);
 
-        // `None` vs `Some(0)` stays a raw-identity distinction even though `lte.kdl` cannot spell
-        // `None`: the source format omits `u` for `Some(0)`, and `validate_lte_combos` rejects a
+        // `None` vs `Some(0)` stays a raw-identity distinction even though the source format
+        // cannot spell `None`: it omits `u` for `Some(0)`, and `validate_lte_combos` rejects a
         // `None` outright. Different layers, both claims true.
         let absent = RawLteCombo::from(&LteCombo {
             components: vec![LteComponent {
@@ -583,7 +588,7 @@ mod tests {
     fn generation_filters_global_order_restores_metadata_and_is_byte_identical() {
         let shared = combo(&[1]);
         // A real corpus bitfield (class B, 4x4). This combo only has to differ from `shared`; a
-        // disabled DL and an absent UL are states `lte.kdl` cannot represent and
+        // disabled DL and an absent UL are states the source format cannot represent and
         // `validate_lte_combos` rejects, and `validated()` below round-trips through the source
         // format.
         let first_only = LteCombo {

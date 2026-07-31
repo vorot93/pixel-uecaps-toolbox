@@ -16,7 +16,7 @@ pub(crate) const SYNTHETIC_ANCHOR: u64 = 8_969;
 pub(crate) const FIRST_LTE_ID: u64 = 400_907_661;
 pub(crate) const SECOND_LTE_ID: u64 = 92;
 
-const EXPECTED_NR_KDL: &str = r#"version 1
+const EXPECTED_SOURCE_KDL: &str = r#"version 1
 bc ALPHA BETA
 bf 702152537 {
     c BETA
@@ -35,6 +35,8 @@ c BETA bi=2 pi=8 mi=8 sg=13 t=main {
     pf "66813533" x=66813533 u=33
     pf "8969" x=8969 u=44
 }
+f "400907661" fp=101 bm=201
+f "92" fp=102 bm=202
 n {
     s {
         m prime:8969
@@ -55,11 +57,6 @@ n {
     }
     n78 A A
 }
-"#;
-
-const EXPECTED_LTE_KDL: &str = r#"version 1
-f "400907661" fp=101 bm=201
-f "92" fp=102 bm=202
 l b="" u1=0 u2=0 {
     s {
         m G2YBB GGX8B GR83Y
@@ -98,8 +95,7 @@ pub(crate) struct ExpectedMiniCorpus {
     pub(crate) lte_ids: Vec<u64>,
     pub(crate) nr_payloads: usize,
     pub(crate) lte_payloads: usize,
-    pub(crate) nr_kdl: String,
-    pub(crate) lte_kdl: String,
+    pub(crate) source_kdl: String,
 }
 
 impl MiniCorpus {
@@ -171,8 +167,7 @@ impl MiniCorpus {
                 lte_ids: vec![FIRST_LTE_ID, SECOND_LTE_ID],
                 nr_payloads: 3,
                 lte_payloads: 3,
-                nr_kdl: EXPECTED_NR_KDL.into(),
-                lte_kdl: EXPECTED_LTE_KDL.into(),
+                source_kdl: EXPECTED_SOURCE_KDL.into(),
             },
         }
     }

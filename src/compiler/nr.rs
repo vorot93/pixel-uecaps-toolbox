@@ -703,7 +703,6 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(NrDocument {
-        version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
         bitmask_carriers,
         bitmask_fingerprints,
         carriers,
@@ -862,8 +861,8 @@ mod tests {
         compiler::{
             features::NrSourceSubBlock,
             schema::{
-                CarrierTier, DecimalU64, LteDocument, LteFileSource, ValidatedNr, ValidatedNrCombo,
-                parse_sources, to_kdl,
+                CarrierTier, DecimalU64, LteDocument, LteFileSource, SOURCE_FORMAT_VERSION,
+                SourceDocument, ValidatedNr, ValidatedNrCombo, parse_sources, to_kdl,
             },
         },
         mapping::{MappingEntry, MappingRoot},
@@ -974,7 +973,6 @@ mod tests {
 
     fn validated_nr(document: NrDocument) -> ValidatedNr {
         let lte = LteDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 "1".into(),
                 LteFileSource {
@@ -984,8 +982,13 @@ mod tests {
             )]),
             combo: vec![],
         };
-        let (nr_text, lte_text) = to_kdl(&document, &lte).unwrap();
-        parse_sources(&nr_text, &lte_text).unwrap().nr
+        let text = to_kdl(&SourceDocument {
+            version: SOURCE_FORMAT_VERSION,
+            nr: document,
+            lte,
+        })
+        .unwrap();
+        parse_sources(&text).unwrap().nr
     }
 
     fn generation_source() -> ValidatedNr {

@@ -191,22 +191,21 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
 
     let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
-    let mut source_names = fs::read_dir(&fixture.source)
+    let source_names = fs::read_dir(&fixture.source)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect::<Vec<_>>();
-    source_names.sort();
-    assert_eq!(source_names, ["lte.kdl", "nr.kdl"]);
-    let nr_source = fs::read_to_string(fixture.source.join("nr.kdl")).unwrap();
-    assert!(nr_source.contains("mi=7"), "{nr_source}");
-    assert!(!nr_source.contains("pi="), "{nr_source}");
+    assert_eq!(source_names, ["uecaps.kdl"]);
+    let source = fs::read_to_string(fixture.source.join("uecaps.kdl")).unwrap();
+    assert!(source.contains("mi=7"), "{source}");
+    assert!(!source.contains("pi="), "{source}");
     // The catalog NODE keeps its name; only the sub-block's DL reference became the
     // node's first positional argument.
-    assert!(nr_source.contains("df s=3"), "{nr_source}");
-    assert!(!nr_source.contains("s=1"), "{nr_source}");
+    assert!(source.contains("df s=3"), "{source}");
+    assert!(!source.contains("s=1"), "{source}");
     // Anchored to the full sub-block line, not a bare `" A1"`: that fragment matches almost
     // any output, while `n78 A1` pins down which band's DL reference was renumbered.
-    assert!(nr_source.contains("n78 A1"), "{nr_source}");
+    assert!(source.contains("n78 A1"), "{source}");
 
     let provisioned = fixture.provision(MODEL);
     assert!(provisioned.status.success(), "{}", stderr(&provisioned));

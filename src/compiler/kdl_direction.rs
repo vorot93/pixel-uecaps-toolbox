@@ -17,13 +17,14 @@
 //! non-uniform per-CC lists in the corpus are exactly the rows an earlier CC0-only projection
 //! dropped silently, so a parser that collapses a list is the failure mode to guard against.
 //!
-//! **The same text means different things in the two documents.** `B66 C2` is a bandwidth
-//! class plus a per-CC feature index in `nr.kdl` and a class+MIMO bitfield in `lte.kdl`. That
-//! is a deliberate trade, not an oversight: the *document* fixes the interpretation, the same
-//! way a sub-block node name carries no radio-kind tag. `format_direction`/`parse_direction`
-//! serve the first, `format_class_mimo`/`parse_class_mimo` the second, and
-//! `identical_d_equals_text_means_different_things_in_each_document` in `kdl_source.rs` is
-//! where the trade is meant to be learned before anyone "unifies" the two codecs.
+//! **The same text means different things under the two combo kinds.** `B66 C2` is a bandwidth
+//! class plus a per-CC feature index inside an `n` combo and a class+MIMO bitfield inside an
+//! `l` one. That is a deliberate trade, not an oversight: the *enclosing combo* fixes the
+//! interpretation, the same way a sub-block node name carries no radio-kind tag.
+//! `format_direction`/`parse_direction` serve the first, `format_class_mimo`/`parse_class_mimo`
+//! the second, and `identical_sub_block_text_means_different_things_under_n_and_l` in
+//! `kdl_source.rs` is where the trade is meant to be learned before anyone "unifies" the two
+//! codecs.
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -108,8 +109,9 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
     Ok(Direction { bw_class, indices })
 }
 
-/// `lte.kdl`'s class+MIMO bitfield, highest bit first: 32768→A … 1024→F, low bit selects 4x4.
-/// Corpus-verified: those six bases with either MIMO width are the only values observed.
+/// An LTE component's class+MIMO bitfield, highest bit first: 32768→A … 1024→F, low bit
+/// selects 4x4. Corpus-verified: those six bases with either MIMO width are the only values
+/// observed.
 ///
 /// Note this runs the OPPOSITE way from the sub-block bandwidth class above, where the class is
 /// a small ascending integer. Two encodings of the same 3GPP concept, in one toolbox.
@@ -125,8 +127,8 @@ const CLASS_MIMO_BASES: [(i32, char); 6] = [
 /// Render the class+MIMO bitfield as `<letter><mimo>`, e.g. 32769 → `A4`.
 ///
 /// Fails closed on an unobserved value rather than inventing a letter — including 0, which is
-/// UL-disabled. `lte.kdl` spells that by *omitting* the argument, so 0 has no rendering here and
-/// no value has two spellings. A 0 reaching this function is a disabled downlink, which
+/// UL-disabled. The source spells that by *omitting* the argument, so 0 has no rendering here
+/// and no value has two spellings. A 0 reaching this function is a disabled downlink, which
 /// `validate_lte_combos` rejects first with a message naming the combo and band.
 pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
     let base = value & !1;
@@ -285,7 +287,7 @@ mod tests {
     #[test]
     fn class_mimo_fails_closed_on_an_unknown_bitfield() {
         assert!(format_class_mimo(999).is_err());
-        // 0 is UL-disabled. It has no letter and no spelling: `lte.kdl` omits the argument.
+        // 0 is UL-disabled. It has no letter and no spelling: the source omits the argument.
         assert!(format_class_mimo(0).is_err());
         assert!(parse_class_mimo("Z2", "DL").is_err());
         assert!(parse_class_mimo("A3", "DL").is_err());

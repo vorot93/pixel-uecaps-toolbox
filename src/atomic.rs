@@ -33,7 +33,7 @@ fn default_file_mode() -> u32 {
 /// `NamedTempFile` hardcodes 0600 (correct for a temp file), and `persist` is a bare rename, so
 /// without this every atomic write silently narrowed the permissions of whatever it replaced —
 /// `provision -o module.zip` over a world-readable ZIP made it owner-only, and `decompose`'s
-/// `nr.kdl`/`lte.kdl` ignored the umask entirely.
+/// `uecaps.kdl` ignored the umask entirely.
 #[cfg(unix)]
 fn adopt_destination_mode(temporary: &NamedTempFile, path: &Path) -> Result<()> {
     use std::{fs::Permissions, os::unix::fs::PermissionsExt};

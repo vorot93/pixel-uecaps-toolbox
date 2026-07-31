@@ -1601,7 +1601,7 @@ mod tests {
         let nr: RawSubBlock = nr.into();
         // There is no stored NR index to prefer, so the binary-bound value IS the derivation.
         // (There is no source-bound counterpart to check: `SourceNrSubBlock` has no index
-        // field at all, so `nr.kdl` cannot spell one.)
+        // field at all, so the source document cannot spell one.)
         assert_eq!(nr.dl_feature_index(), Some(2));
         assert_eq!(nr.ul_feature_index(), Some(2));
 

@@ -17,7 +17,7 @@ pub(crate) enum Sku {
     Lte(u64),
 }
 
-/// The canonical source-format spelling of an SKU — what `nr.kdl`/`lte.kdl` carry in a
+/// The canonical source-format spelling of an SKU — what the source document carries in a
 /// `selection` block's `skus` list, and what error messages name it by. `parse_nr_sku` /
 /// `parse_lte_sku` are the inverse, but they need the surrounding domain to disambiguate, so
 /// there is deliberately no `FromStr`.

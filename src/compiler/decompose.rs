@@ -12,13 +12,13 @@ use super::{
     lte::{DecodedLteFile, generate_lte_file, ingest_lte},
     nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
     schema::{
-        LteDocument, NrDocument, ValidatedLte, ValidatedNr, ValidatedSources, legend_root,
-        parse_sources, validate_documents,
+        SOURCE_FORMAT_VERSION, SourceDocument, ValidatedLte, ValidatedNr, ValidatedSources,
+        legend_root, parse_sources, validate_documents,
     },
     selection::Sku,
 };
 use crate::{
-    atomic::prepare_sibling_atomic,
+    atomic::write_bytes_atomic,
     magisk::validate_module_basename,
     mapping::{MappingRoot, map_to_root, root_to_map},
     model::{lte_model_codes, profile_model_codes},
@@ -148,13 +148,12 @@ fn decode_profiled_files(
     })
 }
 
-/// Decode one complete legacy bitmask folder and one complete profiled folder into the two
-/// canonical compiler source documents. No output path is touched by this pure orchestration
-/// seam.
+/// Decode one complete legacy bitmask folder and one complete profiled folder into the canonical
+/// compiler source document. No output path is touched by this pure orchestration seam.
 pub(crate) fn decode_documents(
     bitmask_dir: &Path,
     profiled_dir: &Path,
-) -> anyhow::Result<(NrDocument, LteDocument, String, String)> {
+) -> anyhow::Result<(SourceDocument, String)> {
     let bitmask_files = classify_bitmask_dir(bitmask_dir)?;
     let profiled_files = classify_profiled_dir(profiled_dir)?;
 
@@ -175,17 +174,18 @@ pub(crate) fn decode_documents(
     // emitted source through the strict public schema, and require byte-idempotence before using
     // the validated representation for every internal generation self-check. The reparse's
     // `validated.to_kdl()` serializes an already-canonical source, so no third `validate_documents`
-    // pass is needed — the assertions below still prove the emitted documents are a fixed point.
-    let (nr_text, lte_text) = validate_documents(nr, lte)?.to_kdl()?;
-    let validated = parse_sources(&nr_text, &lte_text).context("reparsing decoded sources")?;
-    let (canonical_nr, canonical_lte) = validated.to_kdl()?;
+    // pass is needed — the assertion below still proves the emitted document is a fixed point.
+    let text = validate_documents(SourceDocument {
+        version: SOURCE_FORMAT_VERSION,
+        nr,
+        lte,
+    })?
+    .to_kdl()?;
+    let validated = parse_sources(&text).context("reparsing the decoded source")?;
+    let canonical = validated.to_kdl()?;
     ensure!(
-        canonical_nr.as_bytes() == nr_text.as_bytes(),
-        "nr.kdl changed when reparsed and reserialized"
-    );
-    ensure!(
-        canonical_lte.as_bytes() == lte_text.as_bytes(),
-        "lte.kdl changed when reparsed and reserialized"
+        canonical.as_bytes() == text.as_bytes(),
+        "the source document changed when reparsed and reserialized"
     );
 
     verify_internal_targets(
@@ -195,21 +195,30 @@ pub(crate) fn decode_documents(
         &original_legacy_nr,
         &original_profiled_nr,
     )?;
-    // `nr_text`/`lte_text` are the canonical documents already validated above (reparse +
-    // reserialize byte-idempotent). Return them so `decompose` need not recompute to_kdl.
-    Ok((validated.nr.source, validated.lte.source, nr_text, lte_text))
+    // `text` is the canonical document already validated above (reparse + reserialize
+    // byte-idempotent). Return it so `decompose` need not recompute `to_kdl`.
+    Ok((
+        SourceDocument {
+            version: SOURCE_FORMAT_VERSION,
+            nr: validated.nr.source,
+            lte: validated.lte.source,
+        },
+        text,
+    ))
 }
 
-/// Decompose both required folders and atomically replace the two canonical source documents.
+/// The canonical source document's basename. **Temporary** — Task 5 replaces the output
+/// directory with a file path and deletes this.
+const SOURCE_BASENAME: &str = "uecaps.kdl";
+
+/// Decompose both required folders and atomically replace the canonical source document.
 /// Validation, encoding, and self-verification finish before the output directory is created.
 pub fn decompose(
     bitmask_dir: &Path,
     profiled_dir: &Path,
     out_dir: &Path,
 ) -> anyhow::Result<Outcome> {
-    let (_nr, _lte, nr_text, lte_text) = decode_documents(bitmask_dir, profiled_dir)?;
-    let nr_bytes = nr_text.into_bytes();
-    let lte_bytes = lte_text.into_bytes();
+    let (_source, text) = decode_documents(bitmask_dir, profiled_dir)?;
 
     if out_dir.exists() {
         ensure!(
@@ -223,18 +232,7 @@ pub fn decompose(
         })?;
     }
 
-    let nr_path = out_dir.join("nr.kdl");
-    let lte_path = out_dir.join("lte.kdl");
-    let prepared_nr = prepare_sibling_atomic(&nr_path, |writer| {
-        writer.write_all(&nr_bytes)?;
-        Ok(())
-    })?;
-    let prepared_lte = prepare_sibling_atomic(&lte_path, |writer| {
-        writer.write_all(&lte_bytes)?;
-        Ok(())
-    })?;
-    prepared_nr.persist()?;
-    prepared_lte.persist()?;
+    write_bytes_atomic(&out_dir.join(SOURCE_BASENAME), text.as_bytes())?;
     Ok(Outcome::Clean)
 }
 
@@ -601,10 +599,11 @@ mod tests {
     use prost::Message;
     use tempfile::tempdir;
 
-    use super::{decode_documents, decompose};
+    use super::{SOURCE_BASENAME, decode_documents, decompose};
     use crate::{
         compiler::{
             schema::{parse_sources, to_kdl},
+            source_from_kdl,
             test_support::{
                 FIRST_LTE_ID, MiniCorpus, SECOND_LTE_ID, SYNTHETIC_ANCHOR, decode_lte,
                 decode_mapping, decode_nr, inject_unknown_nr_cc_field,
@@ -627,20 +626,20 @@ mod tests {
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
         let out = temp.path().join("out");
         fs::create_dir(&out).unwrap();
-        fs::write(out.join("nr.kdl"), b"old nr\n").unwrap();
-        fs::write(out.join("lte.kdl"), b"old lte\n").unwrap();
+        fs::write(out.join(SOURCE_BASENAME), b"old source\n").unwrap();
 
         let error = decompose(&bitmask, &profiled, &out).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains(expected), "unexpected error: {error}");
-        assert_eq!(fs::read(out.join("nr.kdl")).unwrap(), b"old nr\n");
-        assert_eq!(fs::read(out.join("lte.kdl")).unwrap(), b"old lte\n");
-        let mut names = fs::read_dir(&out)
+        assert_eq!(
+            fs::read(out.join(SOURCE_BASENAME)).unwrap(),
+            b"old source\n"
+        );
+        let names = fs::read_dir(&out)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect::<Vec<_>>();
-        names.sort_unstable();
-        assert_eq!(names, ["lte.kdl", "nr.kdl"]);
+        assert_eq!(names, [SOURCE_BASENAME]);
         error
     }
 
@@ -662,11 +661,11 @@ mod tests {
         let expected = corpus.expected.clone();
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
 
-        let (nr, lte, _, _) = decode_documents(&bitmask, &profiled).unwrap();
+        let (source, _) = decode_documents(&bitmask, &profiled).unwrap();
 
-        assert_eq!(nr.bitmask_carriers, expected.bitmask_carriers);
+        assert_eq!(source.nr.bitmask_carriers, expected.bitmask_carriers);
         for (carrier, anchors) in expected.profiles {
-            let actual = nr.carriers[&carrier]
+            let actual = source.nr.carriers[&carrier]
                 .profiles
                 .keys()
                 .map(|key| key.parse::<u64>().unwrap())
@@ -674,20 +673,20 @@ mod tests {
             assert_eq!(actual, anchors);
         }
         for (carrier, plmns) in expected.plmns {
-            assert_eq!(nr.carriers[&carrier].plmns.as_ref(), Some(&plmns));
+            assert_eq!(source.nr.carriers[&carrier].plmns.as_ref(), Some(&plmns));
         }
-        assert_eq!(nr.combo.len(), expected.nr_payloads);
+        assert_eq!(source.nr.combo.len(), expected.nr_payloads);
         assert_eq!(
-            lte.files
+            source
+                .lte
+                .files
                 .keys()
                 .map(|key| key.parse::<u64>().unwrap())
                 .collect::<Vec<_>>(),
             expected.lte_ids
         );
-        assert_eq!(lte.combo.len(), expected.lte_payloads);
-        let (nr_kdl, lte_kdl) = to_kdl(&nr, &lte).unwrap();
-        assert_eq!(nr_kdl, expected.nr_kdl);
-        assert_eq!(lte_kdl, expected.lte_kdl);
+        assert_eq!(source.lte.combo.len(), expected.lte_payloads);
+        assert_eq!(to_kdl(&source).unwrap(), expected.source_kdl);
     }
 
     #[test]
@@ -773,12 +772,8 @@ mod tests {
             Outcome::Clean
         );
         assert_eq!(
-            fs::read(first_out.join("nr.kdl")).unwrap(),
-            fs::read(second_out.join("nr.kdl")).unwrap()
-        );
-        assert_eq!(
-            fs::read(first_out.join("lte.kdl")).unwrap(),
-            fs::read(second_out.join("lte.kdl")).unwrap()
+            fs::read(first_out.join(SOURCE_BASENAME)).unwrap(),
+            fs::read(second_out.join(SOURCE_BASENAME)).unwrap()
         );
     }
 
@@ -807,8 +802,8 @@ mod tests {
     fn nr_self_verification_is_tied_to_the_input_folder_not_re_derived() {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
-        let (_, _, nr_text, lte_text) = decode_documents(&bitmask, &profiled).unwrap();
-        let sources = parse_sources(&nr_text, &lte_text).unwrap();
+        let (_, text) = decode_documents(&bitmask, &profiled).unwrap();
+        let sources = parse_sources(&text).unwrap();
 
         // A folder that held nothing: everything the generator produces is unaccounted for.
         let empty = BTreeMap::new();
@@ -851,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn decompose_writes_exactly_two_newline_terminated_idempotent_documents() {
+    fn decompose_writes_exactly_one_newline_terminated_idempotent_document() {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
         let out = temp.path().join("source");
@@ -861,20 +856,16 @@ mod tests {
             Outcome::Clean
         );
 
-        let mut names = fs::read_dir(&out)
+        let names = fs::read_dir(&out)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect::<Vec<_>>();
-        names.sort_unstable();
-        assert_eq!(names, ["lte.kdl", "nr.kdl"]);
-        let nr = fs::read_to_string(out.join("nr.kdl")).unwrap();
-        let lte = fs::read_to_string(out.join("lte.kdl")).unwrap();
-        assert!(nr.ends_with('\n') && !nr.ends_with("\n\n"));
-        assert!(lte.ends_with('\n') && !lte.ends_with("\n\n"));
-        let parsed = parse_sources(&nr, &lte).unwrap();
-        let (canonical_nr, canonical_lte) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
-        assert_eq!(canonical_nr, nr);
-        assert_eq!(canonical_lte, lte);
+        assert_eq!(names, [SOURCE_BASENAME]);
+        let text = fs::read_to_string(out.join(SOURCE_BASENAME)).unwrap();
+        assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
+        // Through the *validating* `to_kdl`, not `ValidatedSources::to_kdl`: the assertion is
+        // that a second validate + canonicalize pass over the written document is a fixed point.
+        assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use crate::{
 };
 
 /// One sub-block as the KDL source spells it: proto field 6/7 as 1-based *references* into
-/// `nr.kdl`'s global feature catalogs rather than resolved values, and no raw selector bytes
-/// at all.
+/// the source document's global feature catalogs rather than resolved values, and no raw
+/// selector bytes at all.
 ///
 /// A closed sum over the two node kinds, mirroring [`RawSubBlock`] one layer down. The two
 /// kinds carry genuinely different data — an `lte` node has the scalar `dl_feature_index`
@@ -65,7 +65,7 @@ impl From<SourceNrSubBlock> for NrSourceSubBlock {
 }
 
 /// The shared read surface for code that treats both kinds alike (the KDL emitter, and
-/// `nr.kdl`'s band-collection pass). Anything that *builds* a sub-block matches on the variant.
+/// the NR band-collection pass). Anything that *builds* a sub-block matches on the variant.
 impl NrSourceSubBlock {
     pub(crate) const fn kind(&self) -> SubBlockKind {
         match self {
@@ -667,7 +667,7 @@ mod tests {
         // The all-zero placeholder is the ONLY unresolved selector that can reach
         // generation: decompose (`RawSubBlock::from_proto_sub_block`, via
         // `resolve_or_placeholder`) fails closed on a non-placeholder one. It must
-        // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside nr.kdl combos
+        // survive `reconstruct_sub_block` verbatim -- LTE sub-blocks inside `n` combos
         // and UL-disabled NR sub-blocks depend on this for byte-exact round-trip.
         let sb: RawSubBlock = RawLteSubBlock {
             band: 66,

@@ -14,7 +14,7 @@ pub(crate) mod selection;
 pub(crate) mod test_support;
 
 pub use decompose::decompose;
-pub(crate) use kdl_source::{lte_from_kdl, lte_to_kdl, nr_from_kdl, nr_to_kdl};
+pub(crate) use kdl_source::{source_from_kdl, source_to_kdl};
 pub use provision::{load_sources, provision, provision_from_sources};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

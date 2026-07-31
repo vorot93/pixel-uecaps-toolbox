@@ -24,7 +24,7 @@ enum Cmd {
         /// Profile-based Exynos 5400 uecapconfig folder
         #[arg(long)]
         profiled: PathBuf,
-        /// Write nr.kdl and lte.kdl into this directory
+        /// Write uecaps.kdl into this directory
         #[arg(short = 'o', long)]
         out: PathBuf,
     },
@@ -32,7 +32,7 @@ enum Cmd {
     Provision {
         /// Registered Google 5-character hardware model code
         model: String,
-        /// Directory containing nr.kdl and lte.kdl
+        /// Directory containing uecaps.kdl
         source: PathBuf,
         /// Write the replacement Magisk ZIP here
         #[arg(short = 'o', long)]

@@ -19,8 +19,7 @@ use crate::{
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
 
-const NR_SOURCE: &str = "nr.kdl";
-const LTE_SOURCE: &str = "lte.kdl";
+const SOURCE_BASENAME: &str = "uecaps.kdl";
 const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
 /// Provision one complete model-specific uecapconfig replacement module, persisted atomically.
@@ -67,25 +66,17 @@ fn write_module(
     Ok(Outcome::Clean)
 }
 
-/// Read and strictly validate both normalized source documents.
+/// Read and strictly validate the normalized source document.
 pub fn load_sources(source_dir: &Path) -> anyhow::Result<ValidatedSources> {
-    let nr_path = source_dir.join(NR_SOURCE);
-    let lte_path = source_dir.join(LTE_SOURCE);
-
-    // Finish both filesystem reads before parsing either document. In particular, no model
-    // lookup happens until this function has returned a completely validated source set.
-    let nr_bytes = read_source(&nr_path, NR_SOURCE)?;
-    let lte_bytes = read_source(&lte_path, LTE_SOURCE)?;
-    let nr_text = str::from_utf8(&nr_bytes).context("nr.kdl is not valid UTF-8")?;
-    let lte_text = str::from_utf8(&lte_bytes).context("lte.kdl is not valid UTF-8")?;
-    parse_sources(nr_text, lte_text)
+    let path = source_dir.join(SOURCE_BASENAME);
+    let bytes = fs::read(&path)
+        .with_context(|| format!("reading required source document {}", path.display()))?;
+    let text =
+        str::from_utf8(&bytes).with_context(|| format!("{} is not valid UTF-8", path.display()))?;
+    parse_sources(text)
 }
 
-fn read_source(path: &Path, basename: &str) -> anyhow::Result<Vec<u8>> {
-    fs::read(path).with_context(|| format!("reading required source document {basename}"))
-}
-
-/// Load both documents first, then resolve one real registered model and assemble its files.
+/// Load the document first, then resolve one real registered model and assemble its files.
 pub(crate) fn load_and_generate(
     source_dir: &Path,
     model_code: &str,
@@ -226,7 +217,9 @@ mod tests {
     use prost::Message;
     use tempfile::tempdir;
 
-    use super::{finalize_files, generate_files, load_and_generate, load_sources, provision};
+    use super::{
+        SOURCE_BASENAME, finalize_files, generate_files, load_and_generate, load_sources, provision,
+    };
     use crate::{
         compiler::{
             GeneratedFile,
@@ -235,9 +228,10 @@ mod tests {
             schema::{
                 BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
                 LteFileSource, LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
-                parse_sources, to_kdl,
+                SOURCE_FORMAT_VERSION, SourceDocument, ValidatedSources, parse_sources, to_kdl,
             },
             selection::SelectionRect,
+            source_from_kdl,
             test_support::{MiniCorpus, REGISTERED_ANCHOR},
         },
         model::{known_model_codes, phone_model},
@@ -309,9 +303,8 @@ mod tests {
         }
     }
 
-    fn miniature_documents() -> (NrDocument, LteDocument) {
+    fn miniature_source() -> SourceDocument {
         let nr = NrDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             bitmask_carriers: vec!["BETA".into(), "EMPTY_LEGACY".into(), "ALPHA".into()],
             bitmask_fingerprints: vec![BitmaskFingerprint {
                 fingerprint: 715_188_856,
@@ -369,7 +362,6 @@ mod tests {
             ],
         };
         let lte = LteDocument {
-            version: crate::compiler::schema::SOURCE_FORMAT_VERSION,
             files: BTreeMap::from([(
                 TARGET_LTE_ID.to_string(),
                 LteFileSource {
@@ -392,41 +384,31 @@ mod tests {
                 }],
             }],
         };
-        (nr, lte)
+        SourceDocument {
+            version: SOURCE_FORMAT_VERSION,
+            nr,
+            lte,
+        }
     }
 
-    fn validated_sources() -> crate::compiler::schema::ValidatedSources {
-        let (nr, lte) = miniature_documents();
-        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-        parse_sources(&nr, &lte).unwrap()
+    fn validated_sources() -> ValidatedSources {
+        parse_sources(&source_text()).unwrap()
     }
 
     fn write_sources(dir: &std::path::Path) {
-        let (nr, lte) = miniature_documents();
-        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-        fs::write(dir.join("nr.kdl"), nr).unwrap();
-        fs::write(dir.join("lte.kdl"), lte).unwrap();
+        fs::write(dir.join(SOURCE_BASENAME), source_text()).unwrap();
     }
 
-    fn source_texts() -> (String, String) {
-        let (nr, lte) = miniature_documents();
-        to_kdl(&nr, &lte).unwrap()
+    fn source_text() -> String {
+        to_kdl(&miniature_source()).unwrap()
     }
 
-    fn assert_provision_prewrite_failure(
-        nr: Option<String>,
-        lte: Option<String>,
-        model: &str,
-        expected: &str,
-    ) {
+    fn assert_provision_prewrite_failure(source_kdl: Option<String>, model: &str, expected: &str) {
         let temp = tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
-        if let Some(nr) = nr {
-            fs::write(source.join("nr.kdl"), nr).unwrap();
-        }
-        if let Some(lte) = lte {
-            fs::write(source.join("lte.kdl"), lte).unwrap();
+        if let Some(source_kdl) = source_kdl {
+            fs::write(source.join(SOURCE_BASENAME), source_kdl).unwrap();
         }
         let output = temp.path().join("module.zip");
         fs::write(&output, b"existing module bytes").unwrap();
@@ -538,25 +520,21 @@ mod tests {
         let second_source = second.path().join("source");
         for source in [&first_source, &second_source] {
             fs::create_dir(source).unwrap();
-            fs::write(source.join("nr.kdl"), b"old nr source").unwrap();
-            fs::write(source.join("lte.kdl"), b"old lte source").unwrap();
+            fs::write(source.join(SOURCE_BASENAME), b"old source").unwrap();
         }
 
         decompose(&first_bitmask, &first_profiled, &first_source).unwrap();
         decompose(&second_bitmask, &second_profiled, &second_source).unwrap();
 
-        let first_nr = fs::read(first_source.join("nr.kdl")).unwrap();
-        let first_lte = fs::read(first_source.join("lte.kdl")).unwrap();
-        assert_eq!(first_nr, fs::read(second_source.join("nr.kdl")).unwrap());
-        assert_eq!(first_lte, fs::read(second_source.join("lte.kdl")).unwrap());
-        let parsed = parse_sources(
-            std::str::from_utf8(&first_nr).unwrap(),
-            std::str::from_utf8(&first_lte).unwrap(),
-        )
-        .unwrap();
-        let (canonical_nr, canonical_lte) = to_kdl(&parsed.nr.source, &parsed.lte.source).unwrap();
-        assert_eq!(canonical_nr.as_bytes(), first_nr);
-        assert_eq!(canonical_lte.as_bytes(), first_lte);
+        let first_text = fs::read_to_string(first_source.join(SOURCE_BASENAME)).unwrap();
+        assert_eq!(
+            first_text,
+            fs::read_to_string(second_source.join(SOURCE_BASENAME)).unwrap()
+        );
+        assert_eq!(
+            to_kdl(&source_from_kdl(&first_text).unwrap()).unwrap(),
+            first_text
+        );
 
         let first_legacy = first.path().join("legacy.zip");
         let second_legacy = second.path().join("legacy.zip");
@@ -655,10 +633,9 @@ mod tests {
     #[test]
     fn legacy_generation_rejects_carriers_that_are_not_bitmask_filenames() {
         for carrier in ["ap_plmn_mapping", "FOO_123", "lte_123"] {
-            let (mut nr, lte) = miniature_documents();
-            rename_carrier(&mut nr, "EMPTY_LEGACY", carrier);
-            let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-            let sources = parse_sources(&nr, &lte).unwrap();
+            let mut document = miniature_source();
+            rename_carrier(&mut document.nr, "EMPTY_LEGACY", carrier);
+            let sources = parse_sources(&to_kdl(&document).unwrap()).unwrap();
 
             let error = generate_files(&sources, phone_model("G0DZQ").unwrap()).unwrap_err();
             let error = format!("{error:#}");
@@ -758,10 +735,9 @@ mod tests {
     #[test]
     fn profiled_generation_rejects_carriers_that_parse_as_lte_filenames() {
         for carrier in ["lte", "lte_PRIVATE"] {
-            let (mut nr, lte) = miniature_documents();
-            rename_carrier(&mut nr, "NO_COMBOS", carrier);
-            let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-            let sources = parse_sources(&nr, &lte).unwrap();
+            let mut document = miniature_source();
+            rename_carrier(&mut document.nr, "NO_COMBOS", carrier);
+            let sources = parse_sources(&to_kdl(&document).unwrap()).unwrap();
 
             let error = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap_err();
             let error = format!("{error:#}");
@@ -771,11 +747,10 @@ mod tests {
 
     #[test]
     fn classifier_validation_ignores_mapping_only_and_unselected_carriers() {
-        let (mut nr, lte) = miniature_documents();
-        rename_carrier(&mut nr, "MAP_ONLY", "ap_plmn_mapping");
-        rename_carrier(&mut nr, "BETA", "lte_NOT_SELECTED");
-        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-        let sources = parse_sources(&nr, &lte).unwrap();
+        let mut document = miniature_source();
+        rename_carrier(&mut document.nr, "MAP_ONLY", "ap_plmn_mapping");
+        rename_carrier(&mut document.nr, "BETA", "lte_NOT_SELECTED");
+        let sources = parse_sources(&to_kdl(&document).unwrap()).unwrap();
 
         let files = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap();
         let mapping = files
@@ -798,32 +773,30 @@ mod tests {
     }
 
     #[test]
-    fn sources_are_fully_loaded_and_validated_before_model_resolution() {
+    fn the_source_is_fully_loaded_and_validated_before_model_resolution() {
         let temp = tempdir().unwrap();
-        write_sources(temp.path());
-        fs::write(temp.path().join("lte.kdl"), "version 1\nu 1\n").unwrap();
+        fs::write(temp.path().join(SOURCE_BASENAME), "version 1\nu 1\n").unwrap();
 
         let error = load_and_generate(temp.path(), "NOT-A-MODEL").unwrap_err();
         let error = format!("{error:#}");
-        assert!(error.contains("parsing lte.kdl"), "{error}");
+        assert!(error.contains("parsing the source document"), "{error}");
         assert!(!error.contains("unknown model"), "{error}");
     }
 
     #[test]
-    fn source_loader_requires_both_utf8_strict_documents() {
+    fn source_loader_requires_a_present_utf8_strict_document() {
         let temp = tempdir().unwrap();
         write_sources(temp.path());
         assert!(load_sources(temp.path()).is_ok());
 
-        fs::remove_file(temp.path().join("nr.kdl")).unwrap();
+        fs::remove_file(temp.path().join(SOURCE_BASENAME)).unwrap();
         let error = load_sources(temp.path()).unwrap_err().to_string();
-        assert!(error.contains("nr.kdl"), "{error}");
+        assert!(error.contains(SOURCE_BASENAME), "{error}");
 
-        write_sources(temp.path());
-        fs::write(temp.path().join("lte.kdl"), [0xff]).unwrap();
+        fs::write(temp.path().join(SOURCE_BASENAME), [0xff]).unwrap();
         let error = load_sources(temp.path()).unwrap_err().to_string();
         assert!(
-            error.contains("UTF-8") && error.contains("lte.kdl"),
+            error.contains("UTF-8") && error.contains(SOURCE_BASENAME),
             "{error}"
         );
     }
@@ -955,10 +928,10 @@ mod tests {
         fs::write(&output, b"original zip bytes").unwrap();
         let original_names = directory_names(temp.path());
 
-        fs::write(source.join("lte.kdl"), "version 1\nu 1\n").unwrap();
+        fs::write(source.join(SOURCE_BASENAME), "version 1\nu 1\n").unwrap();
         let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(
-            format!("{error:#}").contains("parsing lte.kdl"),
+            format!("{error:#}").contains("parsing the source document"),
             "{error:#}"
         );
         assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
@@ -973,47 +946,38 @@ mod tests {
 
     #[test]
     fn source_validation_and_generation_failures_preserve_an_existing_zip() {
-        let (base_nr, base_lte) = source_texts();
-        assert_provision_prewrite_failure(
-            Some(base_nr.clone()),
-            None,
-            TARGET_MODEL,
-            "required source document lte.kdl",
-        );
+        let base = source_text();
+        assert_provision_prewrite_failure(None, TARGET_MODEL, "required source document");
 
-        let (_, mut missing_lte) = miniature_documents();
-        missing_lte.files = BTreeMap::from([(
+        let mut missing_lte = miniature_source();
+        missing_lte.lte.files = BTreeMap::from([(
             "92".into(),
             LteFileSource {
                 fingerprint: 102,
                 bitmask: 202,
             },
         )]);
-        missing_lte.combo.clear();
-        let (_, missing_lte) = to_kdl(&miniature_documents().0, &missing_lte).unwrap();
+        missing_lte.lte.combo.clear();
         assert_provision_prewrite_failure(
-            Some(base_nr.clone()),
-            Some(missing_lte),
+            Some(to_kdl(&missing_lte).unwrap()),
             TARGET_MODEL,
             "absent from the LTE source domain",
         );
 
         assert_provision_prewrite_failure(
-            Some(base_nr.replacen("pf \"66813533\"", "pf \"066813533\"", 1)),
-            Some(base_lte.clone()),
+            Some(base.replacen("pf \"66813533\"", "pf \"066813533\"", 1)),
             TARGET_MODEL,
             "shortest-decimal",
         );
 
-        let invalid_selection = base_nr.replacen(
+        let invalid_selection = base.replacen(
             "c ALPHA BETA\n        m legacy",
             "c ALPHA\n        m prime:8969",
             1,
         );
-        assert_ne!(invalid_selection, base_nr);
+        assert_ne!(invalid_selection, base);
         assert_provision_prewrite_failure(
             Some(invalid_selection),
-            Some(base_lte.clone()),
             TARGET_MODEL,
             "empty intersection",
         );
@@ -1021,31 +985,25 @@ mod tests {
         // ALPHA's PLMN list is `["250-01", "250-01"]`, written as two identical
         // `plmn mcc=250 mnc=1` nodes; corrupt the first into an out-of-range MNC so it
         // fails to reconstruct into a valid PLMN.
-        let invalid_plmn = base_nr.replacen("p mcc=250 mnc=1", "p mcc=250 mnc=99999", 1);
-        assert_ne!(invalid_plmn, base_nr);
-        assert_provision_prewrite_failure(
-            Some(invalid_plmn),
-            Some(base_lte.clone()),
-            TARGET_MODEL,
-            "invalid PLMN",
-        );
+        let invalid_plmn = base.replacen("p mcc=250 mnc=1", "p mcc=250 mnc=99999", 1);
+        assert_ne!(invalid_plmn, base);
+        assert_provision_prewrite_failure(Some(invalid_plmn), TARGET_MODEL, "invalid PLMN");
 
-        let overflow = base_nr.replacen("sg=11", "sg=18446744073709551615", 1);
+        let overflow = base.replacen("sg=11", "sg=18446744073709551615", 1);
         assert_provision_prewrite_failure(
             Some(overflow),
-            Some(base_lte.clone()),
             TARGET_MODEL,
             "filename product overflow",
         );
 
-        let (mut too_many_features, lte) = miniature_documents();
-        too_many_features.dl_features = (1..=256)
+        let mut too_many_features = miniature_source();
+        too_many_features.nr.dl_features = (1..=256)
             .map(|max_scs| ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(max_scs),
                 ..Default::default()
             })
             .collect();
-        too_many_features.combo = (1..=256)
+        too_many_features.nr.combo = (1..=256)
             .map(|max_scs| {
                 let mut combo = nr_combo(1, &["ALPHA"], &["legacy"]);
                 let NrSourceSubBlock::Nr(cc) = &mut combo.sub_blocks[0] else {
@@ -1055,10 +1013,8 @@ mod tests {
                 combo
             })
             .collect();
-        let (too_many_features, _) = to_kdl(&too_many_features, &lte).unwrap();
         assert_provision_prewrite_failure(
-            Some(too_many_features),
-            Some(base_lte),
+            Some(to_kdl(&too_many_features).unwrap()),
             "G0DZQ",
             "uses 256 distinct DL feature records; local limit is 255",
         );
@@ -1069,12 +1025,11 @@ mod tests {
         let temp = tempdir().unwrap();
         let source = temp.path().join("source");
         fs::create_dir(&source).unwrap();
-        let (mut nr, lte) = miniature_documents();
-        rename_carrier(&mut nr, "ALPHA", "BAD\nNAME");
-        let (nr, lte) = to_kdl(&nr, &lte).unwrap();
-        assert!(nr.contains(r#"BAD\nNAME"#), "{nr}");
-        fs::write(source.join("nr.kdl"), nr).unwrap();
-        fs::write(source.join("lte.kdl"), lte).unwrap();
+        let mut document = miniature_source();
+        rename_carrier(&mut document.nr, "ALPHA", "BAD\nNAME");
+        let text = to_kdl(&document).unwrap();
+        assert!(text.contains(r#"BAD\nNAME"#), "{text}");
+        fs::write(source.join(SOURCE_BASENAME), text).unwrap();
 
         let output = temp.path().join("module.zip");
         fs::write(&output, b"original zip bytes").unwrap();

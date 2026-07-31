@@ -1,4 +1,4 @@
-//! Every KDL node name and property key the compiler's two source documents use, in one place.
+//! Every KDL node name and property key the compiler's source document uses, in one place.
 //!
 //! The reader and the writer both consume these. They used to spell all 121 keys independently
 //! (`KdlNode::new("combo")` in the writer, `r.children("combo")` in the reader), which is a
@@ -87,8 +87,9 @@ pub(crate) mod selection {
     pub(crate) const SKUS: &str = "m";
 }
 
-/// Properties of an `nr.kdl` sub-block. The two directions are **positional arguments**, not
-/// properties — DL first, UL second — so `srs-tx-switch` is all that is left here. See
+/// Properties of a sub-block inside an `n` combo. The two directions are **positional
+/// arguments**, not properties — DL first, UL second — so `srs-tx-switch` is all that is left
+/// here. See
 /// `compiler::kdl_direction` for the value format.
 pub(crate) mod sub_block {
     pub(crate) const SRS_TX_SWITCH: &str = "st";
@@ -113,13 +114,13 @@ pub(crate) mod ul_catalog {
     pub(crate) const MAX_MIMO_NON_CB: &str = "nc";
 }
 
-/// Properties of an `lte.kdl` `file`.
+/// Properties of an LTE file whitelist entry.
 pub(crate) mod lte_file {
     pub(crate) const FINGERPRINT: &str = "fp";
     pub(crate) const BITMASK: &str = "bm";
 }
 
-/// Properties and children of an `lte.kdl` `combo`.
+/// Properties and children of an LTE-fallback combo.
 pub(crate) mod lte_combo {
     pub(crate) const BCS: &str = "b";
     pub(crate) const UNKNOWN1: &str = "u1";

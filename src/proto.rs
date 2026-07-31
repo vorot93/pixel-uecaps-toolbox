@@ -98,8 +98,9 @@ pub struct SubBlock {
 }
 
 /// **Field order is load-bearing.** The derived `Ord` on this type and its UL sibling fixes the
-/// canonical order of `nr.kdl`'s feature catalogs, which fixes the 1-based selector bytes that
-/// reference them, which fixes the generated `.binarypb` bytes. Reordering these fields changes
+/// canonical order of the source document's feature catalogs, which fixes the 1-based selector
+/// bytes that reference them, which fixes the generated `.binarypb` bytes. Reordering these
+/// fields changes
 /// generated output for every carrier — do not reorder to match a doc, a spec, or taste.
 ///
 /// The `Ord` derive is also why three hand-written `Ord`-only mirrors of these messages
