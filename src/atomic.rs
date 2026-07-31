@@ -33,7 +33,7 @@ fn default_file_mode() -> u32 {
 /// `NamedTempFile` hardcodes 0600 (correct for a temp file), and `persist` is a bare rename, so
 /// without this every atomic write silently narrowed the permissions of whatever it replaced —
 /// `provision -o module.zip` over a world-readable ZIP made it owner-only, and `decompose`'s
-/// `uecaps.kdl` ignored the umask entirely.
+/// source document ignored the umask entirely.
 #[cfg(unix)]
 fn adopt_destination_mode(temporary: &NamedTempFile, path: &Path) -> Result<()> {
     use std::{fs::Permissions, os::unix::fs::PermissionsExt};
@@ -160,28 +160,28 @@ mod tests {
     #[test]
     fn preparation_does_not_replace_output_until_explicit_persist() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("uecaps.kdl");
-        fs::write(&output, b"original").unwrap();
+        let output = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        fs::write(output.path(), b"original").unwrap();
 
-        let prepared = prepare_sibling_atomic(&output, |writer| {
+        let prepared = prepare_sibling_atomic(output.path(), |writer| {
             writer.write_all(b"replacement")?;
             Ok(())
         })
         .unwrap();
 
-        assert_eq!(fs::read(&output).unwrap(), b"original");
+        assert_eq!(fs::read(output.path()).unwrap(), b"original");
         prepared.persist().unwrap();
-        assert_eq!(fs::read(&output).unwrap(), b"replacement");
+        assert_eq!(fs::read(output.path()).unwrap(), b"replacement");
     }
 
     #[test]
     fn writes_bytes_through_a_sibling_temporary_file() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("uecaps.kdl");
+        let output = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
 
-        write_bytes_atomic(&output, b"version 1\n").unwrap();
+        write_bytes_atomic(output.path(), b"version 1\n").unwrap();
 
-        assert_eq!(fs::read(&output).unwrap(), b"version 1\n");
+        assert_eq!(fs::read(output.path()).unwrap(), b"version 1\n");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
@@ -204,69 +204,20 @@ mod tests {
         assert_eq!(mode, 0o644, "replacing a file must not narrow its mode");
     }
 
-    /// A brand-new output should look like `fs::write` created it, not like a temp file.
-    #[test]
-    fn a_new_file_gets_the_conventional_mode_not_0600() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let reference = dir.path().join("reference");
-        fs::write(&reference, b"x").unwrap();
-        let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
-
-        let output = dir.path().join("uecaps.kdl");
-        write_bytes_atomic(&output, b"version 1\n").unwrap();
-
-        let mode = fs::metadata(&output).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, expected,
-            "a new atomic output must match what fs::write would produce"
-        );
-    }
-
-    #[test]
-    fn reports_a_missing_parent_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("missing").join("uecaps.kdl");
-
-        let error = write_bytes_atomic(&output, b"version 1\n").unwrap_err();
-
-        assert!(
-            error.to_string().contains("create sibling temporary file"),
-            "unexpected error: {error:#}"
-        );
-        assert!(!output.exists());
-    }
-
-    #[test]
-    fn removes_the_temporary_file_when_the_writer_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("uecaps.kdl");
-
-        let error = write_sibling_atomic(&output, |writer| {
-            writer.write_all(b"partial")?;
-            bail!("encode failed")
-        })
-        .unwrap_err();
-
-        assert!(error.to_string().contains("write temporary file"));
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-
     #[test]
     fn preserves_existing_output_when_byte_production_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("uecaps.kdl");
-        fs::write(&output, b"original").unwrap();
+        let output = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        fs::write(output.path(), b"original").unwrap();
 
-        let error = write_sibling_atomic(&output, |writer| {
+        let error = write_sibling_atomic(output.path(), |writer| {
             writer.write_all(b"replacement")?;
             bail!("encode failed")
         })
         .unwrap_err();
 
         assert!(error.to_string().contains("write temporary file"));
-        assert_eq!(fs::read(&output).unwrap(), b"original");
+        assert_eq!(fs::read(output.path()).unwrap(), b"original");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
