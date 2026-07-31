@@ -78,9 +78,19 @@ fn parent_dir(path: &Path) -> &Path {
     }
 }
 
+/// The module's only entry point. The two-phase API below it exists so a writer can be fully
+/// flushed and synced before anything replaces the destination; it stopped having an outside
+/// caller when `decompose` went from writing a pair of files to writing one.
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_sibling_atomic(path, |writer| {
+        writer.write_all(bytes)?;
+        Ok(())
+    })
+}
+
 /// A fully written, flushed, and synchronized temporary sibling whose final path has not yet
 /// been replaced.
-pub(crate) struct PreparedSiblingAtomic {
+struct PreparedSiblingAtomic {
     temporary: NamedTempFile,
     path: PathBuf,
 }
@@ -88,7 +98,7 @@ pub(crate) struct PreparedSiblingAtomic {
 impl PreparedSiblingAtomic {
     /// Atomically replace the prepared final path. Dropping without persisting removes only the
     /// temporary sibling and leaves the final path unchanged.
-    pub(crate) fn persist(self) -> Result<()> {
+    fn persist(self) -> Result<()> {
         let path = self.path;
         let persisted = self
             .temporary
@@ -102,7 +112,7 @@ impl PreparedSiblingAtomic {
 
 /// Prepare a uniquely named temporary sibling without replacing `path`. The returned object is
 /// ready to persist only after the writer has succeeded and the file is flushed and synchronized.
-pub(crate) fn prepare_sibling_atomic(
+fn prepare_sibling_atomic(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<PreparedSiblingAtomic> {
@@ -132,18 +142,11 @@ pub(crate) fn prepare_sibling_atomic(
 
 /// Write a file through a uniquely named temporary sibling, replacing `path` only after the
 /// writer has succeeded and the temporary file has been flushed and synchronized.
-pub(crate) fn write_sibling_atomic(
+fn write_sibling_atomic(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<()> {
     prepare_sibling_atomic(path, write)?.persist()
-}
-
-pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    write_sibling_atomic(path, |writer| {
-        writer.write_all(bytes)?;
-        Ok(())
-    })
 }
 
 #[cfg(test)]
@@ -157,7 +160,7 @@ mod tests {
     #[test]
     fn preparation_does_not_replace_output_until_explicit_persist() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("nr.kdl");
+        let output = dir.path().join("uecaps.kdl");
         fs::write(&output, b"original").unwrap();
 
         let prepared = prepare_sibling_atomic(&output, |writer| {
@@ -174,7 +177,7 @@ mod tests {
     #[test]
     fn writes_bytes_through_a_sibling_temporary_file() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("nr.kdl");
+        let output = dir.path().join("uecaps.kdl");
 
         write_bytes_atomic(&output, b"version 1\n").unwrap();
 
@@ -211,7 +214,7 @@ mod tests {
         fs::write(&reference, b"x").unwrap();
         let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
 
-        let output = dir.path().join("nr.kdl");
+        let output = dir.path().join("uecaps.kdl");
         write_bytes_atomic(&output, b"version 1\n").unwrap();
 
         let mode = fs::metadata(&output).unwrap().permissions().mode() & 0o777;
@@ -224,7 +227,7 @@ mod tests {
     #[test]
     fn reports_a_missing_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("missing").join("nr.kdl");
+        let output = dir.path().join("missing").join("uecaps.kdl");
 
         let error = write_bytes_atomic(&output, b"version 1\n").unwrap_err();
 
@@ -238,7 +241,7 @@ mod tests {
     #[test]
     fn removes_the_temporary_file_when_the_writer_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("nr.kdl");
+        let output = dir.path().join("uecaps.kdl");
 
         let error = write_sibling_atomic(&output, |writer| {
             writer.write_all(b"partial")?;
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn preserves_existing_output_when_byte_production_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("nr.kdl");
+        let output = dir.path().join("uecaps.kdl");
         fs::write(&output, b"original").unwrap();
 
         let error = write_sibling_atomic(&output, |writer| {

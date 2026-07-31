@@ -19,23 +19,22 @@ use crate::{
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
 
-const SOURCE_BASENAME: &str = "uecaps.kdl";
 const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
 /// Provision one complete model-specific uecapconfig replacement module, persisted atomically.
 pub fn provision(
     model_code: &str,
-    source_dir: &Path,
+    source: &Path,
     out: &Path,
     name: Option<&str>,
 ) -> anyhow::Result<Outcome> {
-    let (model, files) = load_and_generate(source_dir, model_code)?;
+    let (model, files) = load_and_generate(source, model_code)?;
     write_module(model, files, out, name)
 }
 
 /// Provision one registered model's replacement module from **already-parsed** sources. A caller
-/// that provisions many models from the same folder — release tooling, or the corpus test —
-/// parses the ~19 MB source once with [`load_sources`] and calls this per model, rather than
+/// that provisions many models from the same source document — release tooling, or the corpus
+/// test — parses the ~19 MB source once with [`load_sources`] and calls this per model, rather than
 /// re-parsing and re-validating for every target. `provision` is the single-model convenience
 /// wrapper over `load_sources` + this.
 pub fn provision_from_sources(
@@ -67,21 +66,23 @@ fn write_module(
 }
 
 /// Read and strictly validate the normalized source document.
-pub fn load_sources(source_dir: &Path) -> anyhow::Result<ValidatedSources> {
-    let path = source_dir.join(SOURCE_BASENAME);
-    let bytes = fs::read(&path)
-        .with_context(|| format!("reading required source document {}", path.display()))?;
-    let text =
-        str::from_utf8(&bytes).with_context(|| format!("{} is not valid UTF-8", path.display()))?;
-    parse_sources(text)
+pub fn load_sources(source: &Path) -> anyhow::Result<ValidatedSources> {
+    let bytes = read_source(source)?;
+    let text = str::from_utf8(&bytes)
+        .with_context(|| format!("{} is not valid UTF-8", source.display()))?;
+    parse_sources(text).with_context(|| format!("parsing {}", source.display()))
+}
+
+fn read_source(path: &Path) -> anyhow::Result<Vec<u8>> {
+    fs::read(path).with_context(|| format!("reading source document {}", path.display()))
 }
 
 /// Load the document first, then resolve one real registered model and assemble its files.
 pub(crate) fn load_and_generate(
-    source_dir: &Path,
+    source: &Path,
     model_code: &str,
 ) -> anyhow::Result<(&'static PhoneModel, Vec<GeneratedFile>)> {
-    let sources = load_sources(source_dir)?;
+    let sources = load_sources(source)?;
     let model = resolve_model(model_code)?;
     let files = generate_files(&sources, model)?;
     Ok((model, files))
@@ -217,9 +218,7 @@ mod tests {
     use prost::Message;
     use tempfile::tempdir;
 
-    use super::{
-        SOURCE_BASENAME, finalize_files, generate_files, load_and_generate, load_sources, provision,
-    };
+    use super::{finalize_files, generate_files, load_and_generate, load_sources, provision};
     use crate::{
         compiler::{
             GeneratedFile,
@@ -395,8 +394,12 @@ mod tests {
         parse_sources(&source_text()).unwrap()
     }
 
-    fn write_sources(dir: &std::path::Path) {
-        fs::write(dir.join(SOURCE_BASENAME), source_text()).unwrap();
+    /// Write the canonical miniature source into `dir` under an arbitrary chosen basename and
+    /// return the resulting file path.
+    fn write_sources(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("uecaps.kdl");
+        fs::write(&path, source_text()).unwrap();
+        path
     }
 
     fn source_text() -> String {
@@ -405,10 +408,9 @@ mod tests {
 
     fn assert_provision_prewrite_failure(source_kdl: Option<String>, model: &str, expected: &str) {
         let temp = tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
+        let source = temp.path().join("uecaps.kdl");
         if let Some(source_kdl) = source_kdl {
-            fs::write(source.join(SOURCE_BASENAME), source_kdl).unwrap();
+            fs::write(&source, source_kdl).unwrap();
         }
         let output = temp.path().join("module.zip");
         fs::write(&output, b"existing module bytes").unwrap();
@@ -516,21 +518,17 @@ mod tests {
         let second = tempdir().unwrap();
         let (first_bitmask, first_profiled) = MiniCorpus::new().write_to(first.path(), false);
         let (second_bitmask, second_profiled) = MiniCorpus::new().write_to(second.path(), true);
-        let first_source = first.path().join("source");
-        let second_source = second.path().join("source");
+        let first_source = first.path().join("uecaps.kdl");
+        let second_source = second.path().join("uecaps.kdl");
         for source in [&first_source, &second_source] {
-            fs::create_dir(source).unwrap();
-            fs::write(source.join(SOURCE_BASENAME), b"old source").unwrap();
+            fs::write(source, b"old source").unwrap();
         }
 
         decompose(&first_bitmask, &first_profiled, &first_source).unwrap();
         decompose(&second_bitmask, &second_profiled, &second_source).unwrap();
 
-        let first_text = fs::read_to_string(first_source.join(SOURCE_BASENAME)).unwrap();
-        assert_eq!(
-            first_text,
-            fs::read_to_string(second_source.join(SOURCE_BASENAME)).unwrap()
-        );
+        let first_text = fs::read_to_string(&first_source).unwrap();
+        assert_eq!(first_text, fs::read_to_string(&second_source).unwrap());
         assert_eq!(
             to_kdl(&source_from_kdl(&first_text).unwrap()).unwrap(),
             first_text
@@ -775,9 +773,10 @@ mod tests {
     #[test]
     fn the_source_is_fully_loaded_and_validated_before_model_resolution() {
         let temp = tempdir().unwrap();
-        fs::write(temp.path().join(SOURCE_BASENAME), "version 1\nu 1\n").unwrap();
+        let source = temp.path().join("uecaps.kdl");
+        fs::write(&source, "version 1\nu 1\n").unwrap();
 
-        let error = load_and_generate(temp.path(), "NOT-A-MODEL").unwrap_err();
+        let error = load_and_generate(&source, "NOT-A-MODEL").unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains("parsing the source document"), "{error}");
         assert!(!error.contains("unknown model"), "{error}");
@@ -786,17 +785,17 @@ mod tests {
     #[test]
     fn source_loader_requires_a_present_utf8_strict_document() {
         let temp = tempdir().unwrap();
-        write_sources(temp.path());
-        assert!(load_sources(temp.path()).is_ok());
+        let source = write_sources(temp.path());
+        assert!(load_sources(&source).is_ok());
 
-        fs::remove_file(temp.path().join(SOURCE_BASENAME)).unwrap();
-        let error = load_sources(temp.path()).unwrap_err().to_string();
-        assert!(error.contains(SOURCE_BASENAME), "{error}");
+        fs::remove_file(&source).unwrap();
+        let error = load_sources(&source).unwrap_err().to_string();
+        assert!(error.contains(&source.display().to_string()), "{error}");
 
-        fs::write(temp.path().join(SOURCE_BASENAME), [0xff]).unwrap();
-        let error = load_sources(temp.path()).unwrap_err().to_string();
+        fs::write(&source, [0xff]).unwrap();
+        let error = load_sources(&source).unwrap_err().to_string();
         assert!(
-            error.contains("UTF-8") && error.contains(SOURCE_BASENAME),
+            error.contains("UTF-8") && error.contains(&source.display().to_string()),
             "{error}"
         );
     }
@@ -804,12 +803,10 @@ mod tests {
     #[test]
     fn unknown_model_error_lists_only_registered_real_codes() {
         let temp = tempdir().unwrap();
-        write_sources(temp.path());
+        let source = write_sources(temp.path());
 
         for token in ["NOT-A-MODEL", "legacy", "prime:66813533", "lte:400907661"] {
-            let error = load_and_generate(temp.path(), token)
-                .unwrap_err()
-                .to_string();
+            let error = load_and_generate(&source, token).unwrap_err().to_string();
             assert!(error.contains("unknown model"), "{error}");
             for code in known_model_codes() {
                 assert!(error.contains(code), "missing {code} from {error}");
@@ -890,9 +887,7 @@ mod tests {
     #[test]
     fn provision_writes_closed_replacement_zip_with_default_model_name() {
         let temp = tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
-        write_sources(&source);
+        let source = write_sources(temp.path());
         let output = temp.path().join("module.zip");
 
         assert_eq!(
@@ -921,14 +916,12 @@ mod tests {
     #[test]
     fn provision_failures_preserve_existing_zip_without_temporary_sibling() {
         let temp = tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
-        write_sources(&source);
+        let source = write_sources(temp.path());
         let output = temp.path().join("module.zip");
         fs::write(&output, b"original zip bytes").unwrap();
         let original_names = directory_names(temp.path());
 
-        fs::write(source.join(SOURCE_BASENAME), "version 1\nu 1\n").unwrap();
+        fs::write(&source, "version 1\nu 1\n").unwrap();
         let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(
             format!("{error:#}").contains("parsing the source document"),
@@ -937,7 +930,7 @@ mod tests {
         assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
         assert_eq!(directory_names(temp.path()), original_names);
 
-        write_sources(&source);
+        write_sources(temp.path());
         let error = provision("NOT-A-MODEL", &source, &output, None).unwrap_err();
         assert!(error.to_string().contains("unknown model"), "{error:#}");
         assert_eq!(fs::read(&output).unwrap(), b"original zip bytes");
@@ -947,7 +940,7 @@ mod tests {
     #[test]
     fn source_validation_and_generation_failures_preserve_an_existing_zip() {
         let base = source_text();
-        assert_provision_prewrite_failure(None, TARGET_MODEL, "required source document");
+        assert_provision_prewrite_failure(None, TARGET_MODEL, "reading source document");
 
         let mut missing_lte = miniature_source();
         missing_lte.lte.files = BTreeMap::from([(
@@ -1023,13 +1016,12 @@ mod tests {
     #[test]
     fn escaped_control_carrier_preserves_existing_zip_without_temporary_sibling() {
         let temp = tempdir().unwrap();
-        let source = temp.path().join("source");
-        fs::create_dir(&source).unwrap();
+        let source = temp.path().join("uecaps.kdl");
         let mut document = miniature_source();
         rename_carrier(&mut document.nr, "ALPHA", "BAD\nNAME");
         let text = to_kdl(&document).unwrap();
         assert!(text.contains(r#"BAD\nNAME"#), "{text}");
-        fs::write(source.join(SOURCE_BASENAME), text).unwrap();
+        fs::write(&source, text).unwrap();
 
         let output = temp.path().join("module.zip");
         fs::write(&output, b"original zip bytes").unwrap();

@@ -30,7 +30,7 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let bitmask = temp.path().join("bitmask");
         let profiled = temp.path().join("profiled");
-        let source = temp.path().join("source");
+        let source = temp.path().join("uecaps.kdl");
         let module = temp.path().join("module.zip");
         fs::create_dir(&bitmask).unwrap();
         fs::create_dir(&profiled).unwrap();
@@ -191,12 +191,8 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
 
     let decoded = fixture.decompose();
     assert!(decoded.status.success(), "{}", stderr(&decoded));
-    let source_names = fs::read_dir(&fixture.source)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(source_names, ["uecaps.kdl"]);
-    let source = fs::read_to_string(fixture.source.join("uecaps.kdl")).unwrap();
+    assert!(fixture.source.is_file(), "{}", fixture.source.display());
+    let source = fs::read_to_string(&fixture.source).unwrap();
     assert!(source.contains("mi=7"), "{source}");
     assert!(!source.contains("pi="), "{source}");
     // The catalog NODE keeps its name; only the sub-block's DL reference became the

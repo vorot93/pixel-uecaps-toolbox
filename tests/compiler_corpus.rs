@@ -17,8 +17,6 @@ use zip::ZipArchive;
 
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
-/// The basename `decompose` writes into its output directory.
-const SOURCE_BASENAME: &str = "uecaps.kdl";
 
 fn read_lte_sequences(dir: &Path) -> BTreeMap<u64, Vec<Vec<u8>>> {
     let mut sequences = BTreeMap::new();
@@ -302,13 +300,13 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
     let bitmask = Path::new(&bitmask);
     let profiled = Path::new(&profiled);
     let temp = tempfile::tempdir().expect("creating optional corpus test workspace");
-    let first_source = temp.path().join("source-a");
-    let second_source = temp.path().join("source-b");
+    let first_source = temp.path().join("uecaps-a.kdl");
+    let second_source = temp.path().join("uecaps-b.kdl");
 
     // A successful decompose has already reparsed/reserialized both canonical documents and
     // self-verified every internal NR anchor, LTE ID, and mapping target. Repeating it also pins
     // directory-order-independent source bytes at the public boundary. The two decompose runs are
-    // independent (distinct output dirs) and each is CPU-bound, so run them concurrently.
+    // independent (distinct output files) and each is CPU-bound, so run them concurrently.
     rayon::join(
         || decompose(bitmask, profiled, &first_source).expect("decomposing both optional corpora"),
         || {
@@ -317,8 +315,8 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
         },
     );
     assert_eq!(
-        fs::read(first_source.join(SOURCE_BASENAME)).expect("reading first canonical source"),
-        fs::read(second_source.join(SOURCE_BASENAME)).expect("reading second canonical source"),
+        fs::read(&first_source).expect("reading first canonical source"),
+        fs::read(&second_source).expect("reading second canonical source"),
         "canonical source must be byte-idempotent"
     );
 
@@ -594,9 +592,9 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
     // Run the real pipeline: decompose the full corpus into canonical sources, then provision a
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
     let temp = tempfile::tempdir().expect("creating regression test workspace");
-    let source_dir = temp.path().join("source");
-    decompose(bitmask, profiled, &source_dir).expect("decoding the corpus for the regression test");
-    let sources = load_sources(&source_dir).expect("parsing the decomposed canonical source");
+    let source = temp.path().join("uecaps.kdl");
+    decompose(bitmask, profiled, &source).expect("decoding the corpus for the regression test");
+    let sources = load_sources(&source).expect("parsing the decomposed canonical source");
     let model = PHONE_MODELS
         .iter()
         .find(|model| model.is_bitmask())
