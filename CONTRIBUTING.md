@@ -51,7 +51,27 @@ Also run `cargo run -- self-test` (subcommand is `self-test`): data-independent 
 
 **Tests are hermetic by default** — fixtures are built in-code or under a temp dir, and
 `pixel-bands` is compile-time data, so real codes like `GUL82` work with no external
-files. Full-corpus compiler verification activates only when **both**
+files.
+
+**No test names the source document.** Its path comes from `tempfile::NamedTempFile::new_in(…)`;
+`uecaps.kdl` is a docs convention and nothing more, so a fixture repeating it reads as a
+requirement that does not exist. The cost is paid in `src/atomic.rs`: `NamedTempFile` always
+creates the file, so the three cases that needed a *not-yet-existing* path are gone — the
+`adopt_destination_mode` branch that applies the umask to a brand-new output (the 0600-leak
+guard), the missing-parent-directory error, and the failed-writer cleanup with no destination.
+The first two are now untested on purpose; the third is covered by
+`preserves_existing_output_when_byte_production_fails`, which makes the same cleanup assertion
+against an existing destination. Do not "restore coverage" by reintroducing a hand-named path.
+
+**A `cargo test` name filter is a substring match on the test's *full* path.** A unit test inside
+a `#[cfg(test)] mod tests` block is `<module>::tests::<name>`, so a filter built by appending the
+test name to its module path — `cargo test --lib compiler::provision::some_test` — matches
+**nothing** and reports a green `0 passed; 0 failed`. Whole-target runs (`cargo test --lib
+compiler::provision::`, `cargo test --test compiler_cli`) have no such failure mode; when you do
+filter down to a single test, check that the reported count is non-zero before believing the
+result.
+
+Full-corpus compiler verification activates only when **both**
 `UECAPS_BITMASK_CORPUS` and `UECAPS_PROFILED_CORPUS` point at their respective input
 directories; with either unset, that one test (`tests/compiler_corpus.rs`) prints a single
 skip note and returns. With both set, it compares two independently decomposed canonical

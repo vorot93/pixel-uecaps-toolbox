@@ -291,10 +291,11 @@ from `Cargo.toml` entirely.
 until they merged; they were always written together, always read together, and always
 version-checked against the same constant, so the directory that held them was ceremony. The
 CLI therefore takes a *file path* on both sides (`decompose -o FILE`, `provision MODEL FILE`),
-and the filename is the user's choice at runtime — `uecaps.kdl` is the convention in these docs
-and in test fixtures only, and no constant in the crate holds it. `SOURCE_FORMAT_VERSION` was
-deliberately **not** bumped for the merge — see the `version` discussion under
-[The short vocabulary](#the-short-vocabulary) for the cost that carries.
+and the filename is the user's choice at runtime — `uecaps.kdl` is a convention of these docs
+alone: no constant in the crate holds it, nothing validates the extension, and the tests take
+their paths from `tempfile` precisely so that no fixture can imply otherwise.
+`SOURCE_FORMAT_VERSION` was deliberately **not** bumped for the merge — see the `version`
+discussion under [The short vocabulary](#the-short-vocabulary) for the cost that carries.
 
 The source document is one KDL v2 document (the `kdl` crate), (de)serialized by hand-written
 mapping in `src/compiler/kdl_source.rs` — **not** `serde`. It has one
