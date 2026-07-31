@@ -160,8 +160,9 @@ integer-millisecond arithmetic — neither `/usr/bin/time` nor `bc` is installed
 | `sha256 uecaps.kdl` | `d539d78c8720ddc67e20bbc25fe673096a18e22dc94191c78a97c3fe3e482db1` |
 | `sha256` GUL82 module ZIP | `8370491be05da0148eb20865835762bb0ca8d2c2253550c3c6af23cd6f5ac8ff` |
 
-**This table is a frozen 2026-07-23 snapshot; only the GUL82 ZIP row still describes HEAD.**
-Every format change since — the short vocabulary, the LTE direction keys, positional directions
+**This table is a frozen 2026-07-23 snapshot: the two hash rows still describe HEAD, the three
+timing rows do not.** Every format change since — the short vocabulary, the LTE direction keys,
+positional directions
 plus BCS index lists, and the 2026-07-31 document merge — moved the source bytes, and none of
 them moved the generated module. The `sha256 uecaps.kdl` row above is current as of the merge;
 the `decompose`/`provision`/corpus timings are the 2026-07-23 ones and were not re-derived. The

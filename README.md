@@ -125,7 +125,7 @@ n pc=3 bn=b0 ie=1 {
     s {
         m G2YBB
     }
-    n78 A3
+    n78 A1
     B66 C2
 }
 
