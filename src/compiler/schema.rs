@@ -23,7 +23,7 @@ use crate::{
 /// advanced when a format change lands in an unpublished series, because this repo's history is
 /// squashable and a reader at HEAD must see one coherent state. The check below is an
 /// inequality, not an ordering, so a reset still rejects a tree from any build that emitted a
-/// different number. That is also why `kdl_keys::nr_doc::VERSION` is the one key left
+/// different number. That is also why `kdl_keys::doc::VERSION` is the one key left
 /// unabbreviated — the marker announcing the version cannot be renamed by the change it
 /// describes, or the check below would be unreachable for exactly the documents it exists to
 /// diagnose.

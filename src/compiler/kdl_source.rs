@@ -12,7 +12,7 @@ use crate::{
         kdl_bcs::{format_bcs, parse_bcs},
         kdl_direction::{format_class_mimo, format_direction, parse_class_mimo, parse_direction},
         kdl_keys::{
-            carrier, combo, dl_catalog, fingerprint, lte_combo, lte_doc, lte_file, nr_doc, profile,
+            carrier, dl_catalog, doc, fingerprint, lte_combo, lte_file, nr_combo, profile,
             selection, sub_block, ul_catalog,
         },
         schema::{
@@ -63,9 +63,10 @@ fn parse_sub_block_name(name: &str, prefix: &str) -> Option<u16> {
     digits.parse().ok()
 }
 
-/// A `selection { carriers …; skus … }` block (shared by NR and LTE combos).
+/// A `s { c …; m … }` block, shared by NR and LTE combos. Both scopes spell it `"s"`; this names
+/// the NR one because a helper has to pick one, not because the block is NR-only.
 fn selection_to_node(rect: &SelectionRect) -> KdlNode {
-    let mut node = KdlNode::new(combo::SELECTION);
+    let mut node = KdlNode::new(nr_combo::SELECTION);
     if rect.carriers.is_some() || rect.skus.is_some() {
         let kids = node.ensure_children();
         if let Some(carriers) = &rect.carriers {
@@ -97,8 +98,8 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
 ///     no `srs-tx-switch`.
 fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
     let prefix = match cc.kind() {
-        SubBlockKind::Nr => combo::NR_PREFIX,
-        SubBlockKind::Lte => combo::LTE_PREFIX,
+        SubBlockKind::Nr => nr_combo::NR_PREFIX,
+        SubBlockKind::Lte => nr_combo::LTE_PREFIX,
     };
     // The band is the node NAME's suffix, not a positional argument.
     let mut node = KdlNode::new(sub_block_node_name(prefix, cc.band()));
@@ -181,7 +182,7 @@ fn lte_cc_to_node(comp: &LteComponent) -> Result<KdlNode> {
 }
 
 fn emit_dl_feature(f: &ShannonFeatureSetDlPerCcNr) -> KdlNode {
-    let mut node = KdlNode::new(nr_doc::DL_FEATURE);
+    let mut node = KdlNode::new(doc::DL_FEATURE);
     opt_int_prop(&mut node, dl_catalog::MAX_SCS, f.max_scs);
     opt_int_prop(&mut node, dl_catalog::MAX_MIMO, f.max_mimo);
     opt_int_prop(&mut node, dl_catalog::MAX_BW, f.max_bw);
@@ -195,7 +196,7 @@ fn emit_dl_feature(f: &ShannonFeatureSetDlPerCcNr) -> KdlNode {
 }
 
 fn emit_ul_feature(f: &ShannonFeatureSetUlPerCcNr) -> KdlNode {
-    let mut node = KdlNode::new(nr_doc::UL_FEATURE);
+    let mut node = KdlNode::new(doc::UL_FEATURE);
     opt_int_prop(&mut node, ul_catalog::MAX_SCS, f.max_scs);
     opt_int_prop(&mut node, ul_catalog::MAX_MIMO_CB, f.max_mimo_cb);
     opt_int_prop(&mut node, ul_catalog::MAX_BW, f.max_bw);
@@ -223,18 +224,18 @@ fn derive_bcs_intra_endc(intra_band_en_dc_support: Option<i32>) -> Option<u32> {
 }
 
 fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
-    let mut node = KdlNode::new(nr_doc::COMBO);
+    let mut node = KdlNode::new(doc::NR_COMBO);
     // `power-class`/`bcs-nr`/`bcs-eutra`/`intra-band-en-dc-support` are corpus-verified
     // always `Some` on a real combo header (never `None`), so `Some(0)` is omitted here and
     // re-defaulted to `Some(0)` by `read_combo` below (Task 8 omit-when-0).
     opt_int_prop(
         &mut node,
-        combo::POWER_CLASS,
+        nr_combo::POWER_CLASS,
         combo.power_class.filter(|&v| v != 0),
     );
     opt_str_prop(
         &mut node,
-        combo::BCS_NR,
+        nr_combo::BCS_NR,
         combo.bcs_nr.filter(|&v| v != 0).map(format_bcs).as_deref(),
     );
     // Task 2: `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
@@ -248,7 +249,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
         actual if actual == derived_bcs_intra_endc => {} // omit: derivable zeros + every None
         Some(v) => {
             let spelling = format_bcs(v);
-            opt_str_prop(&mut node, combo::BCS_INTRA_ENDC, Some(spelling.as_str()));
+            opt_str_prop(&mut node, nr_combo::BCS_INTRA_ENDC, Some(spelling.as_str()));
         }
         None => bail!(
             "bcs_intra_endc=None with ie=1 cannot be represented by \
@@ -264,7 +265,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     }
     opt_str_prop(
         &mut node,
-        combo::BCS_EUTRA,
+        nr_combo::BCS_EUTRA,
         combo
             .bcs_eutra
             .filter(|&v| v != 0)
@@ -273,7 +274,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     );
     opt_int_prop(
         &mut node,
-        combo::INTRA_BAND_EN_DC_SUPPORT,
+        nr_combo::INTRA_BAND_EN_DC_SUPPORT,
         combo.intra_band_en_dc_support.filter(|&v| v != 0),
     );
     if combo.selection.is_some() || !combo.sub_blocks.is_empty() {
@@ -291,7 +292,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
 }
 
 fn emit_lte_combo(combo: &LteSourceCombo) -> Result<KdlNode> {
-    let mut node = KdlNode::new(lte_doc::COMBO);
+    let mut node = KdlNode::new(doc::LTE_COMBO);
     // `LteCombo.bcs` is `uint64` on the wire but carries a 32-bit left-aligned 3GPP BIT
     // STRING; every one of the 3,878 corpus values fits. Fail closed rather than invent a
     // spelling for a width that has never been observed — the same stance `format_direction`
@@ -325,7 +326,7 @@ fn emit_lte_combo(combo: &LteSourceCombo) -> Result<KdlNode> {
 /// One `bitmask-fingerprint N { carriers … }` node: which bitmask-folder carriers share a
 /// given legacy fingerprint.
 fn fingerprint_node(fp: &BitmaskFingerprint) -> KdlNode {
-    let mut node = KdlNode::new(nr_doc::BITMASK_FINGERPRINT);
+    let mut node = KdlNode::new(doc::BITMASK_FINGERPRINT);
     node.push(KdlEntry::new(fp.fingerprint as i128));
     node.ensure_children()
         .nodes_mut()
@@ -358,7 +359,7 @@ fn profile_node(key: &str, p: &ProfileSource) -> KdlNode {
 
 /// One `carrier "NAME" …` node, with its `plmns`/`profile` children when it has either.
 fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
-    let mut node = KdlNode::new(nr_doc::CARRIER);
+    let mut node = KdlNode::new(doc::CARRIER);
     node.push(KdlEntry::new(name));
     opt_int_prop(&mut node, carrier::BITMASK_ID, c.bitmask_id);
     opt_int_prop(&mut node, carrier::PROFILED_ID, c.profiled_id);
@@ -384,38 +385,37 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
 }
 
 pub(crate) fn nr_to_kdl(nr: &NrDocument) -> Result<String> {
-    let mut doc = KdlDocument::new();
+    let mut document = KdlDocument::new();
 
-    let mut version = KdlNode::new(nr_doc::VERSION);
+    let mut version = KdlNode::new(doc::VERSION);
     version.push(KdlEntry::new(nr.version as i128));
-    doc.nodes_mut().push(version);
+    document.nodes_mut().push(version);
 
-    doc.nodes_mut().push(str_list_node(
-        nr_doc::BITMASK_CARRIERS,
-        &nr.bitmask_carriers,
-    ));
+    document
+        .nodes_mut()
+        .push(str_list_node(doc::BITMASK_CARRIERS, &nr.bitmask_carriers));
 
     for fp in &nr.bitmask_fingerprints {
-        doc.nodes_mut().push(fingerprint_node(fp));
+        document.nodes_mut().push(fingerprint_node(fp));
     }
 
     for (name, c) in &nr.carriers {
-        doc.nodes_mut().push(carrier_node(name, c)?);
+        document.nodes_mut().push(carrier_node(name, c)?);
     }
 
     for f in &nr.dl_features {
-        doc.nodes_mut().push(emit_dl_feature(f));
+        document.nodes_mut().push(emit_dl_feature(f));
     }
 
     for f in &nr.ul_features {
-        doc.nodes_mut().push(emit_ul_feature(f));
+        document.nodes_mut().push(emit_ul_feature(f));
     }
 
     for combo in &nr.combo {
-        doc.nodes_mut().push(emit_nr_combo(combo)?);
+        document.nodes_mut().push(emit_nr_combo(combo)?);
     }
 
-    Ok(finish_doc(doc))
+    Ok(finish_doc(document))
 }
 
 fn read_fingerprint(node: &KdlNode) -> Result<BitmaskFingerprint> {
@@ -545,15 +545,15 @@ fn read_selection(node: &KdlNode) -> Result<SelectionRect> {
 fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
     let name = node.name().value();
     // The band comes from the node name, so there is no positional argument to read.
-    let (kind, band) = if let Some(band) = parse_sub_block_name(name, combo::NR_PREFIX) {
+    let (kind, band) = if let Some(band) = parse_sub_block_name(name, nr_combo::NR_PREFIX) {
         (SubBlockKind::Nr, band)
-    } else if let Some(band) = parse_sub_block_name(name, combo::LTE_PREFIX) {
+    } else if let Some(band) = parse_sub_block_name(name, nr_combo::LTE_PREFIX) {
         (SubBlockKind::Lte, band)
     } else {
         bail!(
             "`{name}` is not a sub-block node name (expected `{}<band>` or `{}<band>`)",
-            combo::NR_PREFIX,
-            combo::LTE_PREFIX
+            nr_combo::NR_PREFIX,
+            nr_combo::LTE_PREFIX
         )
     };
     let mut r = NodeReader::new(node);
@@ -675,16 +675,16 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // always `Some`: an absent property is the writer's omitted-zero (Task 8), so it
     // defaults back to `Some(0)`. `bcs-intra-endc` derives from `intra-band-en-dc-support` —
     // see below.
-    let power_class = r.opt_int::<i32>(combo::POWER_CLASS)?.or(Some(0));
-    let bcs_nr = read_omitted_zero_bcs(&mut r, combo::BCS_NR, "bcs-nr")?.or(Some(0));
-    let bcs_eutra = read_omitted_zero_bcs(&mut r, combo::BCS_EUTRA, "bcs-eutra")?.or(Some(0));
+    let power_class = r.opt_int::<i32>(nr_combo::POWER_CLASS)?.or(Some(0));
+    let bcs_nr = read_omitted_zero_bcs(&mut r, nr_combo::BCS_NR, "bcs-nr")?.or(Some(0));
+    let bcs_eutra = read_omitted_zero_bcs(&mut r, nr_combo::BCS_EUTRA, "bcs-eutra")?.or(Some(0));
     let intra_band_en_dc_support = r
-        .opt_int::<i32>(combo::INTRA_BAND_EN_DC_SUPPORT)?
+        .opt_int::<i32>(nr_combo::INTRA_BAND_EN_DC_SUPPORT)?
         .or(Some(0));
     // An absent `bcs-intra-endc` re-derives via the shared `derive_bcs_intra_endc` — the
     // inverse of the omit rule in `emit_nr_combo`. Kept AFTER `intra-band-en-dc-support`,
     // the field it depends on.
-    let bcs_intra_endc = match r.opt_str(combo::BCS_INTRA_ENDC)? {
+    let bcs_intra_endc = match r.opt_str(nr_combo::BCS_INTRA_ENDC)? {
         Some(raw) => {
             let value = parse_bcs(&raw, "bcs-intra-endc")?;
             // Spelling out the derived value would give it two spellings. `emit_nr_combo`
@@ -701,7 +701,7 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
         None => derive_bcs_intra_endc(intra_band_en_dc_support),
     };
     let mut selection = Vec::new();
-    for snode in r.children(combo::SELECTION) {
+    for snode in r.children(nr_combo::SELECTION) {
         selection.push(read_selection(snode)?);
     }
     // Reading NR before E-UTRA preserves the previous behaviour; `validate_nr_combos` sorts
@@ -709,12 +709,12 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     // NR-first while real documents store E-UTRA first and still round-trip byte-identically.
     let mut sub_blocks = Vec::new();
     for cnode in r.children_matching("nr<band>", |name| {
-        parse_sub_block_name(name, combo::NR_PREFIX).is_some()
+        parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some()
     }) {
         sub_blocks.push(read_sub_block(cnode)?);
     }
     for cnode in r.children_matching("lte<band>", |name| {
-        parse_sub_block_name(name, combo::LTE_PREFIX).is_some()
+        parse_sub_block_name(name, nr_combo::LTE_PREFIX).is_some()
     }) {
         sub_blocks.push(read_sub_block(cnode)?);
     }
@@ -795,31 +795,31 @@ fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, 
 }
 
 pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
-    let doc: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
-    let version = checked_version(&doc, "nr.kdl", nr_doc::VERSION)?;
+    let document: KdlDocument = text.parse().context("nr.kdl is not valid KDL")?;
+    let version = checked_version(&document, "nr.kdl", doc::VERSION)?;
     let mut bitmask_carriers: Option<Vec<String>> = None;
     let mut bitmask_fingerprints = Vec::new();
     let mut carriers = BTreeMap::new();
     let mut dl_features = Vec::new();
     let mut ul_features = Vec::new();
     let mut combo = Vec::new();
-    for node in doc.nodes() {
+    for node in document.nodes() {
         // An if/else chain rather than a `match`: the arms compare against `kdl_keys`
         // constants, which are not valid `match` patterns.
         let name = node.name().value();
-        if name == nr_doc::VERSION {
+        if name == doc::VERSION {
             // Already read, duplicate-checked, and version-checked by `checked_version` above.
-        } else if name == nr_doc::BITMASK_CARRIERS {
+        } else if name == doc::BITMASK_CARRIERS {
             bitmask_carriers = Some(read_bitmask_carriers(node, bitmask_carriers.as_deref())?);
-        } else if name == nr_doc::BITMASK_FINGERPRINT {
+        } else if name == doc::BITMASK_FINGERPRINT {
             bitmask_fingerprints.push(read_fingerprint(node)?);
-        } else if name == nr_doc::CARRIER {
+        } else if name == doc::CARRIER {
             insert_unique(&mut carriers, "carrier", read_carrier(node)?)?;
-        } else if name == nr_doc::DL_FEATURE {
+        } else if name == doc::DL_FEATURE {
             dl_features.push(read_dl_feature(node)?);
-        } else if name == nr_doc::UL_FEATURE {
+        } else if name == doc::UL_FEATURE {
             ul_features.push(read_ul_feature(node)?);
-        } else if name == nr_doc::COMBO {
+        } else if name == doc::NR_COMBO {
             combo.push(read_combo(node)?);
         } else {
             bail!("unknown top-level node `{name}` in nr.kdl");
@@ -838,28 +838,28 @@ pub(crate) fn nr_from_kdl(text: &str) -> Result<NrDocument> {
 }
 
 pub(crate) fn lte_to_kdl(lte: &LteDocument) -> Result<String> {
-    let mut doc = KdlDocument::new();
+    let mut document = KdlDocument::new();
 
-    let mut version = KdlNode::new(lte_doc::VERSION);
+    let mut version = KdlNode::new(doc::VERSION);
     version.push(KdlEntry::new(lte.version as i128));
-    doc.nodes_mut().push(version);
+    document.nodes_mut().push(version);
 
     for (key, f) in &lte.files {
-        let mut node = KdlNode::new(lte_doc::FILE);
+        let mut node = KdlNode::new(doc::LTE_FILE);
         node.push(KdlEntry::new(key.as_str()));
         node.push(KdlEntry::new_prop(
             lte_file::FINGERPRINT,
             f.fingerprint as i128,
         ));
         node.push(KdlEntry::new_prop(lte_file::BITMASK, f.bitmask as i128));
-        doc.nodes_mut().push(node);
+        document.nodes_mut().push(node);
     }
 
     for combo in &lte.combo {
-        doc.nodes_mut().push(emit_lte_combo(combo)?);
+        document.nodes_mut().push(emit_lte_combo(combo)?);
     }
 
-    Ok(finish_doc(doc))
+    Ok(finish_doc(document))
 }
 
 fn read_file(node: &KdlNode) -> Result<(String, LteFileSource)> {
@@ -947,18 +947,18 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
 }
 
 pub(crate) fn lte_from_kdl(text: &str) -> Result<LteDocument> {
-    let doc: KdlDocument = text.parse().context("lte.kdl is not valid KDL")?;
-    let version = checked_version(&doc, "lte.kdl", lte_doc::VERSION)?;
+    let document: KdlDocument = text.parse().context("lte.kdl is not valid KDL")?;
+    let version = checked_version(&document, "lte.kdl", doc::VERSION)?;
     let mut files = BTreeMap::new();
     let mut combo = Vec::new();
-    for node in doc.nodes() {
+    for node in document.nodes() {
         // See the `nr_from_kdl` twin: constants are not valid `match` patterns.
         let name = node.name().value();
-        if name == lte_doc::VERSION {
+        if name == doc::VERSION {
             // Already read, duplicate-checked, and version-checked by `checked_version` above.
-        } else if name == lte_doc::FILE {
+        } else if name == doc::LTE_FILE {
             insert_unique(&mut files, "LTE file", read_file(node)?)?;
-        } else if name == lte_doc::COMBO {
+        } else if name == doc::LTE_COMBO {
             combo.push(read_lte_combo(node)?);
         } else {
             bail!("unknown top-level node `{name}` in lte.kdl");
