@@ -220,7 +220,8 @@ pub fn decompose(
         // Through the crate's atomic writer like every other file output, so a failure part-way
         // cannot leave a truncated document in place of a previously good one, and replacing an
         // existing file keeps its mode.
-        Some(path) => write_bytes_atomic(path, text.as_bytes())?,
+        Some(path) => write_bytes_atomic(path, text.as_bytes())
+            .with_context(|| format!("cannot write {}", path.display()))?,
         None => print!("{text}"),
     }
     Ok(Outcome::Clean)
