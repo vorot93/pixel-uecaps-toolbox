@@ -116,6 +116,16 @@ impl Fixture {
             .unwrap()
     }
 
+    fn decompose_to_stdout(&self) -> Output {
+        command()
+            .args(["decompose", "--bitmask"])
+            .arg(&self.bitmask)
+            .arg("--profiled")
+            .arg(&self.profiled)
+            .output()
+            .unwrap()
+    }
+
     fn provision(&self, model: &str) -> Output {
         command()
             .arg("provision")
@@ -255,4 +265,20 @@ fn provision_unknown_model_is_a_hard_error_that_lists_registered_models() {
     assert!(stderr.contains("unknown model"), "{stderr}");
     assert!(stderr.contains(MODEL), "{stderr}");
     assert!(!fixture.module.exists());
+}
+
+/// Omitting `-o` writes the document to stdout and touches no file. Asserting the stdout bytes
+/// equal what `-o` writes is what keeps the two paths from drifting.
+#[test]
+fn decompose_without_an_output_path_writes_the_document_to_stdout() {
+    let fixture = Fixture::new();
+
+    let to_file = fixture.decompose();
+    assert!(to_file.status.success(), "{}", stderr(&to_file));
+    let written = fs::read(&fixture.source).unwrap();
+
+    let to_stdout = fixture.decompose_to_stdout();
+    assert!(to_stdout.status.success(), "{}", stderr(&to_stdout));
+    assert_eq!(to_stdout.stdout, written);
+    assert!(to_stdout.stderr.is_empty(), "{}", stderr(&to_stdout));
 }

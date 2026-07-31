@@ -308,9 +308,12 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
     // directory-order-independent source bytes at the public boundary. The two decompose runs are
     // independent (distinct output files) and each is CPU-bound, so run them concurrently.
     rayon::join(
-        || decompose(bitmask, profiled, &first_source).expect("decomposing both optional corpora"),
         || {
-            decompose(bitmask, profiled, &second_source)
+            decompose(bitmask, profiled, Some(first_source.as_path()))
+                .expect("decomposing both optional corpora")
+        },
+        || {
+            decompose(bitmask, profiled, Some(second_source.as_path()))
                 .expect("re-decomposing both optional corpora")
         },
     );
@@ -593,7 +596,8 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
     let temp = tempfile::tempdir().expect("creating regression test workspace");
     let source = temp.path().join("uecaps.kdl");
-    decompose(bitmask, profiled, &source).expect("decoding the corpus for the regression test");
+    decompose(bitmask, profiled, Some(source.as_path()))
+        .expect("decoding the corpus for the regression test");
     let sources = load_sources(&source).expect("parsing the decomposed canonical source");
     let model = PHONE_MODELS
         .iter()

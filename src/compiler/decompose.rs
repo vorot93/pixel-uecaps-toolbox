@@ -207,11 +207,22 @@ pub(crate) fn decode_documents(
     ))
 }
 
-/// Decompose both required folders and atomically replace the canonical source document.
-/// Validation, encoding, and self-verification all finish before the output path is touched.
-pub fn decompose(bitmask_dir: &Path, profiled_dir: &Path, out: &Path) -> anyhow::Result<Outcome> {
+/// Decompose both required folders and emit the canonical source document — atomically replacing
+/// `out` when given, or on stdout when not. Validation, encoding, and self-verification all
+/// finish before either happens.
+pub fn decompose(
+    bitmask_dir: &Path,
+    profiled_dir: &Path,
+    out: Option<&Path>,
+) -> anyhow::Result<Outcome> {
     let (_source, text) = decode_documents(bitmask_dir, profiled_dir)?;
-    write_bytes_atomic(out, text.as_bytes())?;
+    match out {
+        // Through the crate's atomic writer like every other file output, so a failure part-way
+        // cannot leave a truncated document in place of a previously good one, and replacing an
+        // existing file keeps its mode.
+        Some(path) => write_bytes_atomic(path, text.as_bytes())?,
+        None => print!("{text}"),
+    }
     Ok(Outcome::Clean)
 }
 
@@ -606,7 +617,7 @@ mod tests {
         let out = temp.path().join("uecaps.kdl");
         fs::write(&out, b"old source\n").unwrap();
 
-        let error = decompose(&bitmask, &profiled, &out).unwrap_err();
+        let error = decompose(&bitmask, &profiled, Some(out.as_path())).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains(expected), "unexpected error: {error}");
         assert_eq!(fs::read(&out).unwrap(), b"old source\n");
@@ -734,11 +745,16 @@ mod tests {
         let first_out = first.path().join("uecaps.kdl");
         let second_out = second.path().join("uecaps.kdl");
         assert_eq!(
-            decompose(&first_bitmask, &first_profiled, &first_out).unwrap(),
+            decompose(&first_bitmask, &first_profiled, Some(first_out.as_path())).unwrap(),
             Outcome::Clean
         );
         assert_eq!(
-            decompose(&second_bitmask, &second_profiled, &second_out).unwrap(),
+            decompose(
+                &second_bitmask,
+                &second_profiled,
+                Some(second_out.as_path())
+            )
+            .unwrap(),
             Outcome::Clean
         );
         assert_eq!(
@@ -822,7 +838,7 @@ mod tests {
         let out = temp.path().join("uecaps.kdl");
 
         assert_eq!(
-            decompose(&bitmask, &profiled, &out).unwrap(),
+            decompose(&bitmask, &profiled, Some(out.as_path())).unwrap(),
             Outcome::Clean
         );
 
@@ -891,7 +907,7 @@ mod tests {
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
 
         assert_eq!(
-            decompose(&bitmask, &profiled, &temp.path().join("out")).unwrap(),
+            decompose(&bitmask, &profiled, Some(temp.path().join("out").as_path())).unwrap(),
             Outcome::Clean
         );
     }

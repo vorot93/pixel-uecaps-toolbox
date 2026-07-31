@@ -24,9 +24,9 @@ enum Cmd {
         /// Profile-based Exynos 5400 uecapconfig folder
         #[arg(long)]
         profiled: PathBuf,
-        /// Write the source document here
+        /// Write the source document here instead of stdout
         #[arg(short = 'o', long)]
-        out: PathBuf,
+        out: Option<PathBuf>,
     },
     /// Provision a complete model-specific replacement Magisk module from compiler sources
     Provision {
@@ -96,7 +96,7 @@ impl Cmd {
                 bitmask,
                 profiled,
                 out,
-            } => compiler::decompose(&bitmask, &profiled, &out),
+            } => compiler::decompose(&bitmask, &profiled, out.as_deref()),
             Self::Provision {
                 model,
                 source,
@@ -144,18 +144,26 @@ mod tests {
         };
         assert_eq!(bitmask, PathBuf::from("OLD"));
         assert_eq!(profiled, PathBuf::from("NEW"));
-        assert_eq!(out, PathBuf::from("SOURCE"));
+        assert_eq!(out, Some(PathBuf::from("SOURCE")));
     }
 
     #[test]
-    fn parses_compiler_decompose_requires_both_folders_and_output() {
+    fn parses_compiler_decompose_requires_both_folders() {
         for args in [
             vec!["x", "decompose", "--profiled", "NEW", "-o", "SOURCE"],
             vec!["x", "decompose", "--bitmask", "OLD", "-o", "SOURCE"],
-            vec!["x", "decompose", "--bitmask", "OLD", "--profiled", "NEW"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn decompose_output_path_is_optional() {
+        let cli = Cli::parse_from(["x", "decompose", "--bitmask", "B", "--profiled", "P"]);
+        let Cmd::Decompose { out, .. } = cli.cmd else {
+            panic!("expected decompose");
+        };
+        assert_eq!(out, None);
     }
 
     #[test]

@@ -524,8 +524,18 @@ mod tests {
             fs::write(source, b"old source").unwrap();
         }
 
-        decompose(&first_bitmask, &first_profiled, &first_source).unwrap();
-        decompose(&second_bitmask, &second_profiled, &second_source).unwrap();
+        decompose(
+            &first_bitmask,
+            &first_profiled,
+            Some(first_source.as_path()),
+        )
+        .unwrap();
+        decompose(
+            &second_bitmask,
+            &second_profiled,
+            Some(second_source.as_path()),
+        )
+        .unwrap();
 
         let first_text = fs::read_to_string(&first_source).unwrap();
         assert_eq!(first_text, fs::read_to_string(&second_source).unwrap());
