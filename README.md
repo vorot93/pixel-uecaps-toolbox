@@ -88,11 +88,16 @@ $ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 
 > Piping and early exit: every command that writes to stdout does so with `print!`, so a reader
 > that closes the pipe before the end — quitting the pager early, or `| head` — ends the process
-> with a broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. That
-> covers `decompose`, `matrix`, `inspect` (with and without `--full`) and `check`. Whether a given
-> run trips it depends on there still being output to write when the reader goes away, so a short
-> report can finish into the pipe buffer first and exit `0`. Nothing is written or corrupted
-> either way; `-o FILE` is unaffected.
+> with a broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. This
+> can happen in any of `decompose`, `matrix`, `inspect` (with and without `--full`), or `check`.
+> Whether a given run trips it depends on how the output is written, not how much of it there is:
+> a command whose entire output is one `print!` call that fits the kernel's pipe buffer can finish
+> before the reader's close has any effect and exit `0`, while one that writes through many
+> separate calls — or writes enough in one call to overrun the buffer — can still have output left
+> to send when the reader goes away, and panics on whichever write comes next. On the reference
+> corpus this is why `matrix` (one write, well under the buffer) exits `0` under `| head` while
+> `decompose`, `inspect`, and `check` panic; a larger `matrix` report would overrun the buffer and
+> panic the same way. Nothing is written or corrupted either way; `-o FILE` is unaffected.
 
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled
