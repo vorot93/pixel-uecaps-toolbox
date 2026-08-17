@@ -2,7 +2,7 @@ use kdl::{KdlDocument, KdlNode};
 use pixel_uecaps_toolbox::{
     NR_BAND_OFFSET,
     compiler::{decompose, load_sources, provision_from_sources},
-    model::PHONE_MODELS,
+    model::{CapabilityLayout, PHONE_MODELS, PhoneModel},
     proto::{LteCaps, LteCombo, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
 };
 use prost::Message;
@@ -10,13 +10,36 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIter
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Write},
     path::Path,
 };
-use zip::ZipArchive;
+use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
+
+fn is_profiled_lte_basename(name: &str) -> bool {
+    let Some(decimal) = name
+        .strip_prefix("lte_")
+        .and_then(|name| name.strip_suffix(".binarypb"))
+    else {
+        return false;
+    };
+    !decimal.is_empty()
+        && decimal.bytes().all(|byte| byte.is_ascii_digit())
+        && decimal
+            .parse::<u64>()
+            .is_ok_and(|id| id.to_string() == decimal)
+}
+
+fn is_uecaps_basename(layout: CapabilityLayout, name: &str) -> bool {
+    name.ends_with(".binarypb")
+        && name != "ap_plmn_mapping.binarypb"
+        && match layout {
+            CapabilityLayout::Bitmask => true,
+            CapabilityLayout::Profiled { .. } => !is_profiled_lte_basename(name),
+        }
+}
 
 #[derive(Default)]
 struct ExpectedDlDomains {
@@ -47,17 +70,23 @@ fn expected_raw_feature_palettes(
     let mut dl = ExpectedDlDomains::default();
     let mut ul = ExpectedUlDomains::default();
     let mut decoded_files = 0_usize;
-    for directory in [bitmask, profiled] {
+    for (directory, layout) in [
+        (bitmask, CapabilityLayout::Bitmask),
+        (
+            profiled,
+            CapabilityLayout::Profiled {
+                nr_anchor: 0,
+                lte_id: 0,
+            },
+        ),
+    ] {
         for entry in fs::read_dir(directory).expect("reading an optional NR corpus directory") {
             let entry = entry.expect("reading an optional NR corpus entry");
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if !name.ends_with(".binarypb")
-                || name == "ap_plmn_mapping.binarypb"
-                || name.starts_with("lte_")
-            {
+            if !is_uecaps_basename(layout, name) {
                 continue;
             }
             let bytes = fs::read(entry.path()).expect("reading an optional NR corpus file");
@@ -435,7 +464,8 @@ fn assert_compact_nr_features(caps: &UeCaps, model_code: &str, basename: &str) {
     );
 }
 
-fn assert_module_nr_features(path: &Path, model_code: &str) {
+fn assert_module_nr_features(path: &Path, model: PhoneModel) {
+    let model_code = model.code;
     let bytes = fs::read(path).unwrap_or_else(|error| {
         panic!("reading generated corpus module for model {model_code}: {error}")
     });
@@ -453,7 +483,7 @@ fn assert_module_nr_features(path: &Path, model_code: &str) {
         else {
             continue;
         };
-        if basename == "ap_plmn_mapping.binarypb" || basename.starts_with("lte_") {
+        if !is_uecaps_basename(model.layout, basename) {
             continue;
         }
         let mut payload = Vec::new();
@@ -465,6 +495,102 @@ fn assert_module_nr_features(path: &Path, model_code: &str) {
         });
         assert_compact_nr_features(&caps, model_code, basename);
     }
+}
+
+fn write_test_module_entry(path: &Path, basename: &str, caps: &UeCaps) {
+    let file = fs::File::create(path).expect("creating test module");
+    let mut zip = ZipWriter::new(file);
+    zip.start_file(
+        format!("system/vendor/firmware/uecapconfig/{basename}"),
+        SimpleFileOptions::default(),
+    )
+    .expect("starting test module entry");
+    zip.write_all(&caps.encode_to_vec())
+        .expect("writing test module entry");
+    zip.finish().expect("finishing test module");
+}
+
+#[test]
+fn layout_aware_oracle_observes_bitmask_lte_carrier_but_skips_profiled_lte_id() {
+    let temp = tempfile::tempdir().expect("creating layout-aware oracle workspace");
+    let bitmask = temp.path().join("bitmask");
+    let profiled = temp.path().join("profiled");
+    fs::create_dir(&bitmask).expect("creating bitmask corpus directory");
+    fs::create_dir(&profiled).expect("creating profiled corpus directory");
+
+    let caps_with_scs = |max_scs| UeCaps {
+        dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(max_scs),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    fs::write(
+        bitmask.join("BASE.binarypb"),
+        caps_with_scs(1).encode_to_vec(),
+    )
+    .expect("writing baseline bitmask UeCaps");
+    fs::write(
+        bitmask.join("lte_FOO.binarypb"),
+        caps_with_scs(17).encode_to_vec(),
+    )
+    .expect("writing lte_FOO bitmask UeCaps");
+    fs::write(
+        profiled.join("BASE_1.binarypb"),
+        caps_with_scs(2).encode_to_vec(),
+    )
+    .expect("writing baseline profiled UeCaps");
+    fs::write(
+        profiled.join("lte_7.binarypb"),
+        caps_with_scs(99).encode_to_vec(),
+    )
+    .expect("writing profiled LTE-role fixture");
+
+    let (dl, _) = expected_raw_feature_palettes(&bitmask, &profiled);
+    assert!(
+        dl.iter().any(|row| row.max_scs == Some(17)),
+        "bitmask lte_FOO.binarypb must contribute raw UeCaps feature axes"
+    );
+    assert!(
+        dl.iter().all(|row| row.max_scs != Some(99)),
+        "profiled lte_<id>.binarypb must remain excluded as an LTE-role file"
+    );
+}
+
+#[test]
+fn layout_aware_oracle_inspects_generated_bitmask_lte_carrier_but_skips_profiled_lte_id() {
+    let temp = tempfile::tempdir().expect("creating generated-module oracle workspace");
+    let noncompact = UeCaps {
+        dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(17),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let bitmask_module = temp.path().join("bitmask.zip");
+    write_test_module_entry(&bitmask_module, "lte_FOO.binarypb", &noncompact);
+    let bitmask_model = PHONE_MODELS
+        .iter()
+        .copied()
+        .find(|model| model.is_bitmask())
+        .expect("registered models must include a bitmask layout");
+    let inspected = std::panic::catch_unwind(|| {
+        assert_module_nr_features(&bitmask_module, bitmask_model);
+    });
+    assert!(
+        inspected.is_err(),
+        "generated bitmask lte_FOO.binarypb must be decoded and checked for compact catalogs"
+    );
+
+    let profiled_module = temp.path().join("profiled.zip");
+    write_test_module_entry(&profiled_module, "lte_7.binarypb", &noncompact);
+    let profiled_model = PHONE_MODELS
+        .iter()
+        .copied()
+        .find(|model| matches!(model.layout, CapabilityLayout::Profiled { .. }))
+        .expect("registered models must include a profiled layout");
+    assert_module_nr_features(&profiled_module, profiled_model);
 }
 
 #[test]
@@ -544,7 +670,7 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
                 "registered model {} generated an empty corpus module",
                 model.code
             );
-            assert_module_nr_features(&out, model.code);
+            assert_module_nr_features(&out, *model);
         });
 }
 

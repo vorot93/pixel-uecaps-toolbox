@@ -410,7 +410,7 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
 ///
 /// Takes the halves by reference rather than a `&SourceDocument`: `ValidatedSources` stores them
 /// separately, and `decompose` calls this twice, so a wrapper parameter would mean cloning the
-/// whole ~19 MB model each time.
+/// whole multi-megabyte model each time.
 pub(crate) fn source_to_kdl(nr: &NrDocument, lte: &LteDocument) -> Result<String> {
     let mut document = KdlDocument::new();
 

@@ -274,7 +274,7 @@ pub(crate) struct ValidatedLteCombo {
 /// A fully parsed, cross-referenced, canonicalized source set. Produced once by
 /// [`load_sources`](crate::compiler::load_sources) and consumed by
 /// [`provision_from_sources`](crate::compiler::provision_from_sources) for every model, so a
-/// batch `provision` run parses the ~19 MB source a single time. Fields are crate-internal; externally it
+/// batch `provision` run parses the multi-megabyte source a single time. Fields are crate-internal; externally it
 /// is an opaque handle.
 #[derive(Clone, Debug)]
 pub struct ValidatedSources {
@@ -1081,6 +1081,39 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         assert!(!canonical.contains("df s=1 b=100"), "{canonical}");
         assert!(!canonical.contains("df s=2 b=40"), "{canonical}");
         assert!(!canonical.contains("s=4"), "{canonical}");
+    }
+
+    #[test]
+    fn repointing_to_a_prelisted_row_changes_only_the_intended_reference() {
+        let nr = format!(
+            "{MINIMAL_NR}\n\
+             df s=1\n\
+             df s=2\n\
+             df s=3\n\
+             n {{\n    n77 A1\n}}\n\
+             n {{\n    n78 A3\n}}\n"
+        );
+        let baseline = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
+        let baseline_palette = baseline.nr.palette.dl.clone();
+        let baseline = baseline.to_kdl().unwrap();
+        let edited = baseline.replacen("n77 A1", "n77 A2", 1);
+        assert_ne!(
+            edited, baseline,
+            "baseline must contain the intended reference"
+        );
+
+        let repointed = parse_sources(&edited).unwrap();
+        assert_eq!(repointed.nr.palette.dl, baseline_palette);
+        assert_eq!(repointed.nr.palette.dl.len(), 3);
+        let repointed = repointed.to_kdl().unwrap();
+        assert!(repointed.contains("n77 A2"), "{repointed}");
+        assert!(repointed.contains("n78 A3"), "{repointed}");
+        assert_eq!(repointed, edited);
+        assert_eq!(
+            repointed,
+            baseline.replacen("n77 A1", "n77 A2", 1),
+            "canonical bytes must differ only at the repointed combo reference"
+        );
     }
 
     #[test]

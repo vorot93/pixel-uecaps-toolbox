@@ -458,11 +458,11 @@ fn verify_legacy_nr_target(
 /// rather than assumed: regenerating a real profiled file does not reproduce its input bytes.
 /// `1_1_DE_3379443364558429875.binarypb` comes back 390 bytes shorter, and at the first
 /// difference the regenerated combo begins with E-UTRA band 1 where the original begins with
-/// NR band 10001 — because ingest sorts each combo's sub-blocks by `RawSubBlockKey`,
-/// deduplicates combos, and prunes/renumbers the feature catalogs. Real input is simply not in
-/// that canonical form. NR is a *normalizing* pipeline, not a round-tripping one; byte-identity
-/// holds only for LTE (`verify_lte_targets`) and the PLMN mapping, both of which are checked
-/// that way here.
+/// NR band 10001 — because ingest sorts each combo's sub-blocks by `RawSubBlockKey` and
+/// deduplicates combos, while local generation filters and renumbers the feature catalogs. Real
+/// input is simply not in that canonical form. NR is a *normalizing* pipeline, not a
+/// round-tripping one; byte-identity holds only for LTE (`verify_lte_targets`) and the PLMN
+/// mapping, both of which are checked that way here.
 fn verify_profiled_nr_targets(
     sources: &ValidatedNr,
     original_nr: &OriginalNrBytes,
@@ -535,10 +535,11 @@ fn verify_lte_targets(
 /// input folders actually contained.
 ///
 /// The two NR targets compare *file sets*; LTE and the mapping compare *bytes*. That split is
-/// not laziness: NR is a normalizing pipeline (combos sorted and deduplicated, feature catalogs
-/// pruned and renumbered, legacy masks replaced by the all-ones sentinel), so a real input file
-/// does not regenerate to its own bytes and byte-identity is not an available invariant there.
-/// See [`verify_legacy_nr_target`] and [`verify_profiled_nr_targets`] for the measurements.
+/// not laziness: NR is a normalizing pipeline (combos sorted and deduplicated at ingest, feature
+/// catalogs filtered and renumbered during local generation, legacy masks replaced by the
+/// all-ones sentinel), so a real input file does not regenerate to its own bytes and byte-identity
+/// is not an available invariant there. See [`verify_legacy_nr_target`] and
+/// [`verify_profiled_nr_targets`] for the measurements.
 ///
 /// What changed is that the NR checks now touch the input at all. Both previously compared
 /// generated basenames against a list re-derived from the very source field the generator

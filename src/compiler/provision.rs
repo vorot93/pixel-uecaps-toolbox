@@ -34,7 +34,7 @@ pub fn provision(
 
 /// Provision one registered model's replacement module from **already-parsed** sources. A caller
 /// that provisions many models from the same source document — release tooling, or the corpus
-/// test — parses the ~19 MB source once with [`load_sources`] and calls this per model, rather than
+/// test — parses the multi-megabyte source once with [`load_sources`] and calls this per model, rather than
 /// re-parsing and re-validating for every target. `provision` is the single-model convenience
 /// wrapper over `load_sources` + this.
 pub fn provision_from_sources(
