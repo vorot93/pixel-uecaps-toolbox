@@ -2,7 +2,7 @@ use crate::proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCap
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FeaturePalette {
     pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,

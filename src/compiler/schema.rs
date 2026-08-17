@@ -4,7 +4,8 @@ use anyhow::{Context, bail, ensure};
 use compact_str::CompactString;
 
 use super::{
-    features::{FeatureCatalogs, NrSourceSubBlock},
+    feature_palette::FeaturePalette,
+    features::NrSourceSubBlock,
     selection::{
         CarrierId, LteDomain, LteRelation, NrDomain, NrRelation, SelectionRect, Sku, SkuId,
     },
@@ -148,7 +149,7 @@ pub(crate) struct ValidatedNr {
     pub(crate) bitmask_fingerprints: BTreeMap<String, u64>,
     pub(crate) carriers: BTreeMap<String, ValidatedCarrier>,
     pub(crate) domain: NrDomain,
-    pub(crate) features: FeatureCatalogs,
+    pub(crate) palette: FeaturePalette,
     pub(crate) combo: Vec<ValidatedNrCombo>,
     pub(crate) selection_index: NrSelectionIndex,
 }
@@ -190,25 +191,29 @@ impl NrSelectionIndex {
 
 #[cfg(test)]
 impl ValidatedNr {
-    /// Test-only combo surgery: replace `combo` and rebuild every field derived from it, so
-    /// they stay consistent. Production sets them once in [`validate_documents`]; because
-    /// `selection_index` points at `combo` positions, any post-construction combo replacement
-    /// must go through here or those indices dangle.
-    ///
-    /// "Every field derived from it" is five, not two. Besides `features` and
-    /// `selection_index`, `canonicalize_sources` also derives `source.combo`,
-    /// `source.dl_features` and `source.ul_features` — and `to_kdl` serializes `source`, while
-    /// generation reads `features`. Rebuilding only the first two left a test that performed
-    /// combo surgery and then serialized emitting the *pre-surgery* document, with the emitted
-    /// catalog disagreeing with the catalog generation actually used, on the byte-identity
-    /// critical path.
+    /// Test-only combo surgery: replace `combo`, union every newly referenced value into the
+    /// existing complete palette, canonicalize that union, and rebuild the selection/source
+    /// projections. The union is load-bearing: tests may start with manual unreferenced rows,
+    /// and changing their combos must not silently discard those rows. Production sets these
+    /// fields once in [`validate_documents`]; because `selection_index` points at `combo`
+    /// positions, any post-construction combo replacement must go through here or those indices
+    /// dangle.
     pub(crate) fn set_combos(&mut self, combo: Vec<ValidatedNrCombo>) {
-        self.features = FeatureCatalogs::from_payloads(combo.iter().map(|combo| &combo.payload));
+        let mut dl = self.palette.dl.clone();
+        let mut ul = self.palette.ul.clone();
+        for component in combo
+            .iter()
+            .flat_map(|combo| combo.payload.sub_blocks.iter())
+        {
+            dl.extend_from_slice(component.dl_features());
+            ul.extend_from_slice(component.ul_features());
+        }
+        self.palette = FeaturePalette::from_rows(dl, ul).canonicalized();
         self.selection_index = NrSelectionIndex::build(&combo);
         self.combo = combo;
-        self.source.dl_features = self.features.dl.clone();
-        self.source.ul_features = self.features.ul.clone();
-        self.source.combo = nr_source_combos(&self.combo, &self.domain, &self.features)
+        self.source.dl_features = self.palette.dl.clone();
+        self.source.ul_features = self.palette.ul.clone();
+        self.source.combo = nr_source_combos(&self.combo, &self.domain, &self.palette)
             .expect("c surgery must produce serializable source combos");
     }
 }
@@ -304,10 +309,10 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
     let carriers = validate_carriers(&nr)?;
     validate_mapping_projection(&carriers)?;
     let nr_domain = build_nr_domain(&nr, &carriers);
-    let input_features = FeatureCatalogs::new(nr.dl_features.clone(), nr.ul_features.clone());
-    let nr_combo = validate_nr_combos(&nr.combo, &nr_domain, &input_features)?;
+    let input_palette = FeaturePalette::from_rows(nr.dl_features.clone(), nr.ul_features.clone());
+    let nr_combo = validate_nr_combos(&nr.combo, &nr_domain, &input_palette)?;
     let selection_index = NrSelectionIndex::build(&nr_combo);
-    let features = FeatureCatalogs::from_payloads(nr_combo.iter().map(|combo| &combo.payload));
+    let palette = input_palette.canonicalized();
     let (lte_files, lte_domain) = validate_lte_files(&lte)?;
     let lte_combo = validate_lte_combos(&lte.combo, &lte_domain)?;
     let mut validated = ValidatedSources {
@@ -316,7 +321,7 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
             bitmask_fingerprints,
             carriers,
             domain: nr_domain,
-            features,
+            palette,
             combo: nr_combo,
             selection_index,
         },
@@ -357,7 +362,7 @@ pub(crate) fn nr_source_combo(
     payload: &RawNrPayload,
     relation: &NrRelation,
     domain: &NrDomain,
-    features: &FeatureCatalogs,
+    palette: &FeaturePalette,
 ) -> anyhow::Result<NrSourceCombo> {
     Ok(NrSourceCombo {
         selection: relation.canonical_selection(domain)?,
@@ -369,19 +374,19 @@ pub(crate) fn nr_source_combo(
         sub_blocks: payload
             .sub_blocks
             .iter()
-            .map(|component| features.source_sub_block(component))
-            .collect(),
+            .map(|component| palette.source_sub_block(component))
+            .collect::<anyhow::Result<Vec<_>>>()?,
     })
 }
 
 fn nr_source_combos(
     combo: &[ValidatedNrCombo],
     domain: &NrDomain,
-    features: &FeatureCatalogs,
+    palette: &FeaturePalette,
 ) -> anyhow::Result<Vec<NrSourceCombo>> {
     combo
         .iter()
-        .map(|combo| nr_source_combo(&combo.payload, &combo.relation, domain, features))
+        .map(|combo| nr_source_combo(&combo.payload, &combo.relation, domain, palette))
         .collect()
 }
 
@@ -422,12 +427,12 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
         }
     }
 
-    validated.nr.source.dl_features = validated.nr.features.dl.clone();
-    validated.nr.source.ul_features = validated.nr.features.ul.clone();
+    validated.nr.source.dl_features = validated.nr.palette.dl.clone();
+    validated.nr.source.ul_features = validated.nr.palette.ul.clone();
     validated.nr.source.combo = nr_source_combos(
         &validated.nr.combo,
         &validated.nr.domain,
-        &validated.nr.features,
+        &validated.nr.palette,
     )?;
 
     validated.lte.source.combo = lte_source_combos(&validated.lte.combo, &validated.lte.domain)?;
@@ -464,7 +469,7 @@ fn build_nr_domain(nr: &NrDocument, carriers: &BTreeMap<String, ValidatedCarrier
 fn validate_nr_combos(
     sources: &[NrSourceCombo],
     domain: &NrDomain,
-    features: &FeatureCatalogs,
+    palette: &FeaturePalette,
 ) -> anyhow::Result<Vec<ValidatedNrCombo>> {
     let mut seen = BTreeSet::new();
     let mut validated = Vec::with_capacity(sources.len());
@@ -479,7 +484,7 @@ fn validate_nr_combos(
             .iter()
             .enumerate()
             .map(|(component_index, component)| {
-                component.resolve(features).map_err(|error| {
+                component.resolve(palette).map_err(|error| {
                     let context = format!(
                         "validating NR combo {} component {}: {error}",
                         index + 1,
@@ -1037,7 +1042,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     }
 
     #[test]
-    fn canonical_feature_catalogs_prune_deduplicate_sort_and_renumber() {
+    fn canonical_feature_palette_preserves_deduplicates_sorts_and_renumbers() {
         let nr = format!(
             "{MINIMAL_NR}\n\
              df s=3\n\
@@ -1049,17 +1054,54 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         );
         let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         let canonical = parsed.to_kdl().unwrap();
-        assert_eq!(parsed.nr.features.dl.len(), 1);
-        assert!(parsed.nr.features.ul.is_empty());
-        assert_eq!(parsed.nr.features.dl[0].max_scs, Some(3));
+        assert_eq!(parsed.nr.palette.dl.len(), 2);
+        assert_eq!(parsed.nr.palette.ul.len(), 1);
+        assert!(canonical.contains("df s=1"), "{canonical}");
         assert!(canonical.contains("df s=3"), "{canonical}");
-        assert!(!canonical.contains("s=1"), "{canonical}");
-        assert!(!canonical.contains("ul-feature"), "{canonical}");
-        assert!(canonical.contains("n77 A1"), "{canonical}");
+        assert!(canonical.contains("uf s=9"), "{canonical}");
+        assert_eq!(canonical.matches("n77 A2").count(), 1);
+        assert_eq!(canonical.matches("n78 A2").count(), 1);
     }
 
     #[test]
-    fn feature_catalog_preserves_referenced_absent_and_explicit_zero_records() {
+    fn existing_kdl_preserves_manual_palette_without_expanding_or_injecting() {
+        let nr = format!(
+            "{MINIMAL_NR}\n\
+             df s=1 b=40\n\
+             df s=2 b=100\n\
+             n {{\n    n77 A1\n}}\n"
+        );
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
+        let canonical = parsed.to_kdl().unwrap();
+
+        assert_eq!(parsed.nr.palette.dl.len(), 2);
+        assert!(parsed.nr.palette.ul.is_empty());
+        assert!(canonical.contains("df s=1 b=40"), "{canonical}");
+        assert!(canonical.contains("df s=2 b=100"), "{canonical}");
+        assert!(!canonical.contains("df s=1 b=100"), "{canonical}");
+        assert!(!canonical.contains("df s=2 b=40"), "{canonical}");
+        assert!(!canonical.contains("s=4"), "{canonical}");
+    }
+
+    #[test]
+    fn canonical_feature_palette_equal_input_positions_share_one_index() {
+        let nr = format!(
+            "{MINIMAL_NR}\n\
+             df s=7\n\
+             df s=7\n\
+             n {{\n    n77 A1\n}}\n\
+             n {{\n    n78 A2\n}}\n"
+        );
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
+        let canonical = parsed.to_kdl().unwrap();
+
+        assert_eq!(parsed.nr.palette.dl.len(), 1);
+        assert_eq!(canonical.matches("df s=7").count(), 1);
+        assert_eq!(canonical.matches("A1").count(), 2);
+    }
+
+    #[test]
+    fn feature_palette_preserves_referenced_absent_and_explicit_zero_records() {
         let nr = format!(
             "{MINIMAL_NR}\n\
              df\n\
@@ -1068,12 +1110,12 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
              n {{\n    n78 A1\n}}\n"
         );
         let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
-        assert_eq!(parsed.nr.features.dl.len(), 2);
+        assert_eq!(parsed.nr.palette.dl.len(), 2);
         assert_eq!(
-            parsed.nr.features.dl[0],
+            parsed.nr.palette.dl[0],
             ShannonFeatureSetDlPerCcNr::default()
         );
-        assert_eq!(parsed.nr.features.dl[1].max_scs, Some(0));
+        assert_eq!(parsed.nr.palette.dl[1].max_scs, Some(0));
     }
 
     #[test]
@@ -1102,14 +1144,14 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     }
 
     #[test]
-    fn global_source_catalog_can_exceed_one_byte() {
+    fn global_source_palette_can_exceed_one_byte() {
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
             nr.push_str(&format!("\ndf b={value}\n"));
             nr.push_str(&format!("\nn {{\n    n{value} A{value}\n}}\n"));
         }
         let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
-        assert_eq!(parsed.nr.features.dl.len(), 300);
+        assert_eq!(parsed.nr.palette.dl.len(), 300);
     }
 
     #[test]

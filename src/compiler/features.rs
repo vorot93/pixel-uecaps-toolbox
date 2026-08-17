@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use anyhow::{Context, ensure};
 
 use crate::{
+    compiler::feature_palette::FeaturePalette,
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock},
     raw_nr::{
         Direction, LteDirection, NrDirection, PerCc, RawLteSubBlock, RawNrPayload, RawNrSubBlock,
@@ -96,12 +97,6 @@ impl NrSourceSubBlock {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FeatureCatalogs {
-    pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
-}
-
 #[derive(Debug)]
 pub(crate) struct LocalFeaturePlan {
     dl_source: Vec<ShannonFeatureSetDlPerCcNr>,
@@ -142,20 +137,20 @@ impl UsedFeatures {
 
 /// The 1-based index of each resolved feature record in `catalog`, one per CC.
 ///
-/// The `expect` is sound by construction at every call site: a catalog is only ever built by
-/// [`UsedFeatures::scan`] over the very payloads whose records are looked up here, and the
-/// local plan is that scan filtered down. `which` names the catalog in the panic message.
-fn catalog_indices<'a, T: Ord>(
-    features: &'a [T],
-    catalog: &'a [T],
+fn catalog_indices<T: Ord>(
+    features: &[T],
+    catalog: &[T],
     which: &'static str,
-) -> impl Iterator<Item = usize> + 'a {
-    features.iter().map(move |feature| {
-        catalog
-            .binary_search(feature)
-            .unwrap_or_else(|_| panic!("{which} contains every resolved component"))
-            + 1
-    })
+) -> anyhow::Result<Vec<usize>> {
+    features
+        .iter()
+        .map(|feature| {
+            catalog
+                .binary_search(feature)
+                .map(|index| index + 1)
+                .map_err(|_| anyhow::anyhow!("{which} is missing a resolved feature record"))
+        })
+        .collect()
 }
 
 /// The global catalog's records that are `used`, in the catalog's own canonical order (not
@@ -174,14 +169,14 @@ fn local_catalog<T: Ord + Clone>(catalog: &[T], used: &BTreeSet<T>) -> Vec<T> {
 
 impl LocalFeaturePlan {
     pub(crate) fn new(
-        catalogs: &FeatureCatalogs,
+        palette: &FeaturePalette,
         payloads: &[&RawNrPayload],
         basename: &str,
         sku: &str,
     ) -> anyhow::Result<Self> {
         let used = UsedFeatures::scan(payloads.iter().copied());
-        let dl_source = local_catalog(&catalogs.dl, &used.dl);
-        let ul_source = local_catalog(&catalogs.ul, &used.ul);
+        let dl_source = local_catalog(&palette.dl, &used.dl);
+        let ul_source = local_catalog(&palette.ul, &used.ul);
 
         // Check order is DL-absent, UL-absent, DL-limit, UL-limit. Both directions' filtered
         // vectors resolve above before any check runs, so a DL-only over-limit input can no
@@ -229,16 +224,17 @@ impl LocalFeaturePlan {
         // above: every per-CC record referenced here was inserted there, so `binary_search`
         // finds it directly. Falls back to the raw selector bytes when the sub-block
         // carries no resolved feature sets at all.
-        // `LocalFeaturePlan::new` already capped each plan at 255 records, so the narrowing
-        // cannot fail.
-        let selector_byte = |index: usize| u8::try_from(index).expect("local plan is at most 255");
         let dl_feature_per_cc_ids = if component.dl_features().is_empty() {
             component.dl_selector().map(<[u8]>::to_vec)
         } else {
             Some(
                 catalog_indices(component.dl_features(), &self.dl_source, "local DL plan")
-                    .map(selector_byte)
-                    .collect(),
+                    .context("reconstructing local DL feature selectors")?
+                    .into_iter()
+                    .map(|index| {
+                        u8::try_from(index).context("local DL feature selector exceeds u8")
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
             )
         };
         let ul_feature_per_cc_ids = if component.ul_features().is_empty() {
@@ -246,8 +242,12 @@ impl LocalFeaturePlan {
         } else {
             Some(
                 catalog_indices(component.ul_features(), &self.ul_source, "local UL plan")
-                    .map(selector_byte)
-                    .collect(),
+                    .context("reconstructing local UL feature selectors")?
+                    .into_iter()
+                    .map(|index| {
+                        u8::try_from(index).context("local UL feature selector exceeds u8")
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
             )
         };
         Ok(ProtoSubBlock {
@@ -263,32 +263,17 @@ impl LocalFeaturePlan {
     }
 }
 
-impl FeatureCatalogs {
-    pub(crate) fn new(
-        dl: Vec<ShannonFeatureSetDlPerCcNr>,
-        ul: Vec<ShannonFeatureSetUlPerCcNr>,
-    ) -> Self {
-        Self { dl, ul }
-    }
-
-    /// The global catalog: every per-CC feature (not just CC0) any payload references, in
-    /// sorted order. Shares [`UsedFeatures::scan`] with the per-carrier local plan, so the
-    /// two cannot disagree about what "referenced" means.
-    pub(crate) fn from_payloads<'a>(payloads: impl IntoIterator<Item = &'a RawNrPayload>) -> Self {
-        let used = UsedFeatures::scan(payloads);
-        Self {
-            dl: used.dl.into_iter().collect(),
-            ul: used.ul.into_iter().collect(),
-        }
-    }
-
+impl FeaturePalette {
     /// Per-CC global-catalog references: each entry in `dl_features`/`ul_features` maps to
     /// its own 1-based index into the canonical (global) catalog — one `usize` per CC.
-    pub(crate) fn source_sub_block(&self, component: &RawSubBlock) -> NrSourceSubBlock {
+    pub(crate) fn source_sub_block(
+        &self,
+        component: &RawSubBlock,
+    ) -> anyhow::Result<NrSourceSubBlock> {
         // The raw selectors are intentionally dropped: an unresolved direction only ever
         // carries the all-zero placeholder, which the source omits and `resolve` re-derives
         // from `bw_class`.
-        match component {
+        Ok(match component {
             RawSubBlock::Lte(cc) => SourceLteSubBlock {
                 band: cc.band,
                 dl_bw_class: cc.dl.bw_class,
@@ -304,19 +289,17 @@ impl FeatureCatalogs {
                 dl_feature: catalog_indices(
                     component.dl_features(),
                     &self.dl,
-                    "canonical DL catalog",
-                )
-                .collect(),
+                    "source DL palette",
+                )?,
                 ul_feature: catalog_indices(
                     component.ul_features(),
                     &self.ul,
-                    "canonical UL catalog",
-                )
-                .collect(),
+                    "source UL palette",
+                )?,
                 srs_tx_switch: cc.srs_tx_switch,
             }
             .into(),
-        }
+        })
     }
 }
 
@@ -396,7 +379,7 @@ fn resolve_nr(
 }
 
 impl NrSourceSubBlock {
-    pub(crate) fn resolve(&self, catalogs: &FeatureCatalogs) -> anyhow::Result<RawSubBlock> {
+    pub(crate) fn resolve(&self, palette: &FeaturePalette) -> anyhow::Result<RawSubBlock> {
         // `ul_bw_class == 0` means UL disabled: no per-CC data at all, hence no placeholder
         // (DL has no such "disabled" class).
         let ul_bw_class = self.ul_bw_class().filter(|&bw| bw >= 1);
@@ -406,12 +389,12 @@ impl NrSourceSubBlock {
                 let dl = cc
                     .dl_feature
                     .iter()
-                    .map(|&index| resolve_index(index, &catalogs.dl, Direction::Dl))
+                    .map(|&index| resolve_index(index, &palette.dl, Direction::Dl))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let ul = cc
                     .ul_feature
                     .iter()
-                    .map(|&index| resolve_index(index, &catalogs.ul, Direction::Ul))
+                    .map(|&index| resolve_index(index, &palette.ul, Direction::Ul))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 resolve_nr(cc, dl, ul, ul_bw_class)?
             }
@@ -438,6 +421,20 @@ mod tests {
         proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
         raw_nr::{RawNrPayload, RawSubBlock, RawSubBlockKey},
     };
+
+    fn referenced_palette<'a>(
+        payloads: impl IntoIterator<Item = &'a RawNrPayload>,
+    ) -> FeaturePalette {
+        let mut dl = BTreeSet::new();
+        let mut ul = BTreeSet::new();
+        for payload in payloads {
+            for component in &payload.sub_blocks {
+                dl.extend(component.dl_features().iter().copied());
+                ul.extend(component.ul_features().iter().copied());
+            }
+        }
+        FeaturePalette::from_rows(dl.into_iter().collect(), ul.into_iter().collect())
+    }
 
     #[test]
     fn local_plan_reconstruct_sub_block_emits_one_selector_per_cc() {
@@ -468,8 +465,8 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![sb.clone()],
         };
-        let catalogs = FeatureCatalogs::from_payloads([&payload]);
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let palette = referenced_palette([&payload]);
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         let out = plan.reconstruct_sub_block(&sb).unwrap();
         assert_eq!(
             out.dl_feature_per_cc_ids.as_ref().map(Vec::len),
@@ -493,7 +490,7 @@ mod tests {
             max_scs: Some(3),
             ..Default::default()
         };
-        let catalogs = FeatureCatalogs::new(vec![low, high], vec![]);
+        let palette = FeaturePalette::from_rows(vec![low, high], vec![]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             dl: NrDirection::with_features(1, vec![high]),
@@ -508,7 +505,7 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![component.clone()],
         };
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.dl_source, vec![high]);
         assert_eq!(plan.dl.len(), 1);
         assert_eq!(
@@ -517,6 +514,37 @@ mod tests {
                 .dl_feature_per_cc_ids,
             Some(vec![1])
         );
+    }
+
+    #[test]
+    fn unused_palette_row_does_not_enter_the_local_plan() {
+        let unused = ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(1),
+            ..Default::default()
+        };
+        let referenced = ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(3),
+            ..Default::default()
+        };
+        let palette = FeaturePalette::from_rows(vec![unused, referenced], vec![]);
+        let component: RawSubBlock = RawNrSubBlock {
+            band: 78,
+            dl: NrDirection::with_features(1, vec![referenced]),
+            ..Default::default()
+        }
+        .into();
+        let payload = RawNrPayload {
+            power_class: None,
+            bcs_nr: None,
+            bcs_intra_endc: None,
+            bcs_eutra: None,
+            intra_band_en_dc_support: None,
+            sub_blocks: vec![component],
+        };
+
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
+
+        assert_eq!(plan.dl, vec![referenced]);
     }
 
     #[test]
@@ -529,7 +557,7 @@ mod tests {
             max_scs: Some(3),
             ..Default::default()
         };
-        let catalogs = FeatureCatalogs::new(vec![], vec![low, high]);
+        let palette = FeaturePalette::from_rows(vec![], vec![low, high]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             ul: NrDirection::with_features(1, vec![high]),
@@ -544,7 +572,7 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![component.clone()],
         };
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.ul_source, vec![high]);
         assert_eq!(plan.ul, vec![high]);
         assert!(plan.dl_source.is_empty());
@@ -556,7 +584,8 @@ mod tests {
 
     #[test]
     fn local_plan_emits_a_referenced_all_absent_dl_record() {
-        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
+        let palette =
+            FeaturePalette::from_rows(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             dl: NrDirection::with_features(1, vec![ShannonFeatureSetDlPerCcNr::default()]),
@@ -571,7 +600,7 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![component.clone()],
         };
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.dl, vec![ShannonFeatureSetDlPerCcNr::default()]);
         assert_eq!(
             plan.reconstruct_sub_block(&component)
@@ -583,7 +612,8 @@ mod tests {
 
     #[test]
     fn local_plan_emits_a_referenced_all_absent_ul_record() {
-        let catalogs = FeatureCatalogs::new(vec![], vec![ShannonFeatureSetUlPerCcNr::default()]);
+        let palette =
+            FeaturePalette::from_rows(vec![], vec![ShannonFeatureSetUlPerCcNr::default()]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             ul: NrDirection::with_features(1, vec![ShannonFeatureSetUlPerCcNr::default()]),
@@ -598,7 +628,7 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![component.clone()],
         };
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.ul, vec![ShannonFeatureSetUlPerCcNr::default()]);
         assert_eq!(
             plan.reconstruct_sub_block(&component)
@@ -632,7 +662,7 @@ mod tests {
         // The global catalog carries every DL record referenced below (so DL's absent-check
         // passes) but no UL records at all (so the one UL record referenced below fails UL's
         // absent-check).
-        let catalogs = FeatureCatalogs::new(dl_sources, vec![]);
+        let palette = FeaturePalette::from_rows(dl_sources, vec![]);
         let component: RawSubBlock = RawNrSubBlock {
             band: 78,
             dl: NrDirection::with_features(1, dl_features),
@@ -649,7 +679,7 @@ mod tests {
             sub_blocks: vec![component],
         };
 
-        let error = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy")
+        let error = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy")
             .unwrap_err()
             .to_string();
         assert!(
@@ -693,8 +723,8 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![sb.clone()],
         };
-        let catalogs = FeatureCatalogs::from_payloads([&payload]);
-        let plan = LocalFeaturePlan::new(&catalogs, &[&payload], "A.binarypb", "legacy").unwrap();
+        let palette = referenced_palette([&payload]);
+        let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
 
         let out = plan.reconstruct_sub_block(&sb).unwrap();
 
@@ -730,9 +760,9 @@ mod tests {
             intra_band_en_dc_support: None,
             sub_blocks: vec![nr_sb.clone()],
         };
-        let nr_catalogs = FeatureCatalogs::from_payloads([&nr_payload]);
+        let nr_palette = referenced_palette([&nr_payload]);
         let nr_plan =
-            LocalFeaturePlan::new(&nr_catalogs, &[&nr_payload], "A.binarypb", "legacy").unwrap();
+            LocalFeaturePlan::new(&nr_palette, &[&nr_payload], "A.binarypb", "legacy").unwrap();
 
         let nr_out = nr_plan.reconstruct_sub_block(&nr_sb).unwrap();
 
@@ -752,14 +782,15 @@ mod tests {
         // An all-absent referenced catalog record is genuinely resolved/present: a non-empty
         // `dl_features` vec IS presence, full stop, with no "does the entry have any field
         // set" gate on top. So it must key differently from a component with no DL data.
-        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
+        let palette =
+            FeaturePalette::from_rows(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
         let source = NrSourceSubBlock::from(SourceNrSubBlock {
             band: 78,
             dl_bw_class: Some(1),
             dl_feature: vec![1],
             ..Default::default()
         });
-        let resolved = source.resolve(&catalogs).unwrap();
+        let resolved = source.resolve(&palette).unwrap();
         assert_eq!(
             resolved.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
@@ -779,11 +810,36 @@ mod tests {
     }
 
     #[test]
+    fn source_projection_reports_a_missing_resolved_dl_feature() {
+        let missing = ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(3),
+            ..Default::default()
+        };
+        let component: RawSubBlock = RawNrSubBlock {
+            band: 78,
+            dl: NrDirection::with_features(1, vec![missing]),
+            ..Default::default()
+        }
+        .into();
+        let error = FeaturePalette::from_rows(vec![], vec![])
+            .source_sub_block(&component)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("source DL palette"), "{error}");
+        assert!(
+            error.contains("missing a resolved feature record"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn resolve_derives_the_omitted_placeholder() {
         // The source format spells no raw selector bytes at all, so `resolve` is the single
         // place that puts proto field 6/7 back for a direction referencing no catalog
         // record: the all-zero placeholder, `cc_count(kind, bw_class)` bytes wide.
-        let catalogs = FeatureCatalogs::new(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
+        let palette =
+            FeaturePalette::from_rows(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
 
         // LTE never carries per-CC references; `cc_count(Lte, 1) == 1`.
         let lte = NrSourceSubBlock::from(SourceLteSubBlock {
@@ -792,7 +848,7 @@ mod tests {
             dl_feature: Some(3),
             ..Default::default()
         })
-        .resolve(&catalogs)
+        .resolve(&palette)
         .unwrap();
         assert_eq!(lte.dl_selector(), Some([0].as_slice()));
         assert_eq!(
@@ -809,7 +865,7 @@ mod tests {
             ul_bw_class: Some(0),
             ..Default::default()
         })
-        .resolve(&catalogs)
+        .resolve(&palette)
         .unwrap();
         assert_eq!(nr.dl_selector(), Some([0, 0].as_slice()));
         assert_eq!(nr.ul_selector(), None, "ul_bw_class 0 means UL disabled");
@@ -821,7 +877,7 @@ mod tests {
             dl_feature: vec![1],
             ..Default::default()
         })
-        .resolve(&catalogs)
+        .resolve(&palette)
         .unwrap();
         assert_eq!(resolved.dl_selector(), None);
         assert_eq!(resolved.dl_features().len(), 1);
@@ -836,7 +892,7 @@ mod tests {
             dl_bw_class: Some(99),
             ..Default::default()
         })
-        .resolve(&FeatureCatalogs::default())
+        .resolve(&FeaturePalette::from_rows(vec![], vec![]))
         .unwrap_err()
         .to_string();
         assert!(error.contains("unknown Nr bw_class 99"), "{error}");

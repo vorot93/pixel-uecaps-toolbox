@@ -7,7 +7,8 @@ use prost::Message;
 use crate::{
     compiler::{
         GeneratedFile,
-        features::{FeatureCatalogs, LocalFeaturePlan},
+        feature_palette::FeaturePalette,
+        features::LocalFeaturePlan,
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, NrDocument, ProfileSource,
             ValidatedNr, modern_fingerprint, nr_source_combo, validate_carrier_name,
@@ -68,7 +69,7 @@ fn generate_legacy_files(nr: &ValidatedNr) -> anyhow::Result<Vec<GeneratedFile>>
             .and_then(|source| source.bitmask_id);
         let payloads = selected_payloads(nr, carrier, &Sku::Legacy);
         files.push(build_generated_file(
-            &nr.features,
+            &nr.palette,
             &Sku::Legacy,
             format!("{carrier}.binarypb"),
             fingerprint,
@@ -120,7 +121,7 @@ fn generate_profiled_files(
         let id = source.profiled_id;
         let payloads = selected_payloads(nr, carrier, sku);
         files.push(build_generated_file(
-            &nr.features,
+            &nr.palette,
             sku,
             format!("{carrier}_{number}.binarypb"),
             fingerprint,
@@ -170,7 +171,7 @@ fn validate_profile_target(anchor: u64, sku: &Sku) -> anyhow::Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 fn build_generated_file(
-    features: &FeatureCatalogs,
+    palette: &FeaturePalette,
     sku: &Sku,
     basename: String,
     version: u64,
@@ -180,7 +181,7 @@ fn build_generated_file(
     layout: InputLayout,
 ) -> anyhow::Result<GeneratedFile> {
     let bitmask = layout.bitmask();
-    let plan = LocalFeaturePlan::new(features, &payloads, &basename, &sku.to_string())?;
+    let plan = LocalFeaturePlan::new(palette, &payloads, &basename, &sku.to_string())?;
     let mut combo_groups = Vec::with_capacity(payloads.len());
     for (payload_index, payload) in payloads.iter().enumerate() {
         // `payload.sub_blocks` is already sorted by `RawSubBlockKey` when the combo is
@@ -664,8 +665,22 @@ fn ingest_profiled_carrier(
     Ok(())
 }
 
+fn ingested_feature_palette<'a>(
+    payloads: impl IntoIterator<Item = &'a RawNrPayload>,
+) -> FeaturePalette {
+    let mut dl = BTreeSet::new();
+    let mut ul = BTreeSet::new();
+    for payload in payloads {
+        for component in &payload.sub_blocks {
+            dl.extend(component.dl_features().iter().copied());
+            ul.extend(component.ul_features().iter().copied());
+        }
+    }
+    FeaturePalette::from_rows(dl.into_iter().collect(), ul.into_iter().collect())
+}
+
 /// Turn the accumulated ingest into the finished document: sort the bitmask lists, build the
-/// domain and feature catalogs, and resolve each payload's relation into a canonical selection.
+/// domain and feature palette, and resolve each payload's relation into a canonical selection.
 fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<NrDocument> {
     let NrIngest {
         mut bitmask_carriers,
@@ -693,12 +708,12 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         })
         .collect();
     let domain = NrDomain::new(domain_members);
-    let features = FeatureCatalogs::from_payloads(payloads.values().map(|(payload, _)| payload));
+    let palette = ingested_feature_palette(payloads.values().map(|(payload, _)| payload));
     let combo = payloads
         .into_values()
         .map(|(payload, relation)| {
             let relation = domain.relation(relation);
-            nr_source_combo(&payload, &relation, &domain, &features)
+            nr_source_combo(&payload, &relation, &domain, &palette)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -706,8 +721,8 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         bitmask_carriers,
         bitmask_fingerprints,
         carriers,
-        dl_features: features.dl,
-        ul_features: features.ul,
+        dl_features: palette.dl,
+        ul_features: palette.ul,
         combo,
     })
 }
@@ -1742,12 +1757,78 @@ mod tests {
         }]);
     }
 
+    fn generated_profile_a_bytes(nr: &ValidatedNr) -> Vec<u8> {
+        generate_nr_files(
+            nr,
+            NrTarget::Profile {
+                anchor: 66_813_533,
+                sku: Sku::Model("G2YBB".into()),
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|file| file.basename.starts_with("A_"))
+        .unwrap()
+        .bytes
+    }
+
     #[test]
-    fn generation_accepts_255_and_rejects_256_local_records_per_direction() {
+    fn unused_palette_row_survives_combo_surgery_without_changing_generated_bytes() {
+        let payload = feature_payload(1..=1, "DL");
+        let mut baseline = generation_source();
+        install_profile_payload(&mut baseline, payload.clone());
+        let baseline_bytes = generated_profile_a_bytes(&baseline);
+
+        let unused = ShannonFeatureSetDlPerCcNr {
+            max_bw: Some(999),
+            ..Default::default()
+        };
+        let mut with_unused = generation_source();
+        with_unused.palette.dl.push(unused);
+        with_unused.palette.dl.sort_unstable();
+        with_unused.palette.dl.dedup();
+        install_profile_payload(&mut with_unused, payload);
+
+        assert!(with_unused.palette.dl.contains(&unused));
+        assert!(with_unused.source.dl_features.contains(&unused));
+        let bytes = generated_profile_a_bytes(&with_unused);
+        assert_eq!(bytes, baseline_bytes);
+        let caps = UeCaps::decode(bytes.as_slice()).unwrap();
+        assert_eq!(caps.dl_feature_per_cc_list.len(), 1);
+        assert!(!caps.dl_feature_per_cc_list.contains(&unused));
+    }
+
+    #[test]
+    fn generation_keeps_255_and_256_local_limits_with_a_larger_global_palette() {
         const ANCHOR: u64 = 66_813_533;
         for direction in ["DL", "UL"] {
             let mut nr = generation_source();
+            if direction == "DL" {
+                nr.palette
+                    .dl
+                    .extend((1_001..=1_300).map(|max_bw| ShannonFeatureSetDlPerCcNr {
+                        max_bw: Some(max_bw),
+                        ..Default::default()
+                    }));
+                nr.palette.dl.sort_unstable();
+                nr.palette.dl.dedup();
+            } else {
+                nr.palette
+                    .ul
+                    .extend((1_001..=1_300).map(|max_bw| ShannonFeatureSetUlPerCcNr {
+                        max_bw: Some(max_bw),
+                        ..Default::default()
+                    }));
+                nr.palette.ul.sort_unstable();
+                nr.palette.ul.dedup();
+            }
             install_profile_payload(&mut nr, feature_payload(1..=255, direction));
+            let global_len = if direction == "DL" {
+                nr.palette.dl.len()
+            } else {
+                nr.palette.ul.len()
+            };
+            assert!(global_len > 255);
             let generated = generate_nr_files(
                 &nr,
                 NrTarget::Profile {
@@ -1802,7 +1883,11 @@ mod tests {
                     .relation(BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
             },
         ]);
-        assert_eq!(nr.features.dl.len(), 300);
+        assert_eq!(
+            nr.palette.dl.len(),
+            301,
+            "combo surgery keeps the source's pre-existing unreferenced row"
+        );
 
         let legacy = generate_nr_files(&nr, NrTarget::Legacy).unwrap();
         let legacy_a = legacy
