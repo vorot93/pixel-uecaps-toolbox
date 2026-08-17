@@ -39,6 +39,30 @@ discretion. Don't pin a baseline SHA in the docs; it self-stales on the next com
 - **Direct deps:** `thiserror`, `prost`, `num-prime`, `num-integer`, `clap` (derive), `csv`, `anyhow`, `zip` (`default-features=false`, `deflate`), `pixel-bands`, `tempfile`, `compact_str`, `kdl` (`default-features=false`, `span` feature only — the crate's `serde` feature is deliberately unused; see [Source format: KDL, hand-mapped](DESIGN.md#source-format-kdl-hand-mapped-not-serde)). There are no `[build-dependencies]`, and no `[lib]`/`[[bin]]`/`[features]` sections — targets are auto-detected. **`serde`/`serde_derive` and `toml` are deliberately absent**: every persisted/emitted format is hand-mapped KDL, so there is no serde consumer left. Don't reintroduce them.
 - **Pure-Rust build is a stated value.** Do not add a C-toolchain dependency (a C-compiled allocator like mimalloc/jemalloc, a native protobuf compiler, etc.) without surfacing the tradeoff first — a measured allocator win was deliberately reverted to keep the no-C-compiler build (see [Performance](#performance-readability-first-then-re-optimize)).
 
+### Feature-palette review invariants
+
+`src/compiler/additional_features.rs` contains only the exact reviewed DL and UL rows that a
+fresh `decompose` adds after raw-domain expansion. Review those constants as complete records:
+they must remain strictly sorted and duplicate-free, and every change needs an exact-row test.
+Never feed their scalar values back into an observed axis; doing so creates combinations that
+were neither observed nor explicitly added.
+
+`src/compiler/feature_palette.rs` owns the decompose-only `ObservedFeatureDomains` and the
+canonical source `FeaturePalette`. Observation must visit every raw top-level feature row from
+both layouts before combo/reference normalization, including unreferenced rows and reference
+stubs. Each `Option` value is the domain value, so absent and explicit zero/false cannot be
+collapsed. Product cardinality and the post-product addition count must use checked arithmetic,
+and allocation must use fallible reservation before enumeration. Complete-record sort/dedup must
+use the feature structs' derived `Ord`; their declaration order in `src/proto.rs` and the fixed
+loop/axis order are therefore review-sensitive.
+
+Keep that source-palette path separate from `features.rs`'s `LocalFeaturePlan`, which scans the
+resolved payloads selected for one output and creates compact referenced-only protobuf catalogs
+with checked 1-based `u8` selectors. Source KDL references are checked positive `usize` values;
+do not reintroduce a source-wide one-byte limit. Parsing existing KDL preserves, sorts, and
+deduplicates its own rows and remaps references, but does not run raw-domain expansion or add the
+compiled rows.
+
 ## Tests & CI gates
 
 CI (`.github/workflows/main.yml`, on PR and push to `master`) runs, in order:
@@ -82,14 +106,23 @@ directories; with either unset, that one test (`tests/compiler_corpus.rs`) print
 skip note and returns. With both set, it compares two independently decomposed canonical
 sources, checks the observed LTE invariants, provisions every registered `PHONE_MODELS` target,
 and inspects every generated NR file for fully referenced, strictly canonical compact
-feature catalogs and one-byte resolved selectors. A skipped pass validates only the guard:
+feature catalogs and one-byte resolved selectors. Its feature-palette expectation is an
+independent oracle: the integration test prost-decodes raw rows, accumulates its own per-field
+domains, enumerates the products without production palette helpers/constants, unions literal
+additions, and compares the exact sorted KDL rows. A skipped pass validates only the guard:
 claim real-corpus coverage only from a run in which those assertions actually execute.
 
 ```sh
 env UECAPS_BITMASK_CORPUS=/path/to/uecapconfig-bitmask \
     UECAPS_PROFILED_CORPUS=/path/to/uecapconfig-profiled \
-    cargo test --release --test compiler_corpus
+    CARGO_TARGET_DIR=/tmp/pixel-uecaps-toolbox-exhaustive-target \
+    cargo test --release --test compiler_corpus -- --nocapture
 ```
+
+Configured-corpus observation on 2026-08-17, not an accepted constant: the resulting source
+palette contained 265 DL and 529 UL rows. Both exceed or approach the selector-byte scale while
+every registered model still provisioned successfully, which is the practical reason tests must
+keep source `usize` references separate from compact per-file `u8` catalogs.
 
 ## Performance: readability first, then re-optimize
 
@@ -301,7 +334,7 @@ the drift that consolidation removed.
   originals against them, and `validate_mapping_projection` proves they re-encode. Building the
   projection separately in each of the three is how they could silently disagree.
 - **Payload → NR source combo.** `compiler::schema::nr_source_combo(payload, relation, domain,
-  features)`, called by both the ingest side (`compiler::nr::finish_nr_document`) and the
+  palette)`, called by both the ingest side (`compiler::nr::finish_nr_document`) and the
   canonicalize side (`nr_source_combos`), so a sixth combo-header field can't be added to one
   and forgotten in the other.
 - **1-based catalog references.** `compiler::features::catalog_indices` — the four DL/UL ×
@@ -359,7 +392,8 @@ Two consequences worth keeping:
 set. That asymmetry is deliberate and matches DESIGN.md's "NR carrier files: value-level
 fidelity, *not* byte-identity". NR ingest **normalizes**: it discards each legacy combo's input
 bitmask and merges the resulting duplicates, sorts every combo's sub-blocks by `RawSubBlockKey`,
-deduplicates combos, and prunes/renumbers the feature catalogs.
+deduplicates combos, and rebuilds each generated file with a compact referenced-only local
+feature catalog and renumbered selectors.
 
 Measured, so nobody re-attempts it: regenerating the real
 `1_1_DE_3379443364558429875.binarypb` yields a file **390 bytes shorter**, and at the first

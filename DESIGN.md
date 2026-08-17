@@ -76,7 +76,9 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/wire.rs` | Recursive modeled-field/wire-type validation and strict decoders for `UeCaps`, `LteCaps`, and `PlmnMap`. |
 | `src/compiler/mod.rs` | Public folder-compiler `decompose`/`provision` entry points, generated-file type, and module boundary. |
 | `src/compiler/selection.rs` | Finite NR/LTE eligibility domains, SKU tokens, expanded applicability relations, validation, and canonical rectangle serialization. |
-| `src/compiler/features.rs` | Compiler-only global DL/UL feature DTOs, canonical source references, and compact per-file projection. |
+| `src/compiler/additional_features.rs` | The two exact reviewed DL/UL rows unioned into fresh decompose palettes after Cartesian closure. |
+| `src/compiler/feature_palette.rs` | Raw feature-field domain observation, checked Cartesian closure, and complete canonical source `FeaturePalette`. |
+| `src/compiler/features.rs` | Fallible source-palette references and compact referenced-only per-file `LocalFeaturePlan` projection. |
 | `src/compiler/schema.rs` | Strict version-1 source-document DTOs (`SourceDocument`, wrapping the `NrDocument`/`LteDocument` halves), shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
 | `src/compiler/kdl_source.rs` | Hand-written source-document (de)serialization (`source_to_kdl`/`source_from_kdl`) over the shared `kdl_support` toolkit. |
 | `src/compiler/nr.rs` | Bitmask/profiled NR ingestion, carrier metadata derivation, raw payload normalization, model-targeted generation, and canonical self-verification. |
@@ -130,7 +132,25 @@ instead uses the `load_mapping_report` companion (same lenient decode, but it al
 `duplicate_names` / `empty_named`) and surfaces those as anomalies (exit 1). Keep that split:
 the reader stays lenient; the report carries the anomaly.
 
-**NR feature-set reconstruction (compiler generation).** `FeatureCatalogs::from_payloads` builds one **global** DL/UL catalog up front by deduplicating every resolved per-CC feature across every ingested payload; per-file generation then projects a compact **local** view via `LocalFeaturePlan::new` — containing only the records that file's own payloads reference — and reassigns each component's selector bytes to a **1-based selector byte per CC** (`LocalFeaturePlan::reconstruct_sub_block`). Each local direction's projection may hold at most 255 entries (single selector byte); a file whose own DL or UL usage exceeds that fails generation outright (`compiler::nr::generation_accepts_255_and_rejects_256_local_records_per_direction`) — the limit binds the per-file view, not the global catalog, which may be arbitrarily large.
+**NR feature palettes and generated local catalogs are distinct flows.** Fresh decomposition is:
+
+```text
+raw input rows -> ObservedFeatureDomains -> Cartesian closure + exact additions -> source FeaturePalette
+```
+
+Generation is:
+
+```text
+selected resolved payload values -> LocalFeaturePlan filter -> compact generated protobuf catalog
+```
+
+The first flow observes every raw top-level row before selector resolution or payload pruning,
+across both input layouts. The second scans only the payloads selected for one generated file,
+retains their referenced values in source-palette order, and reassigns each component to a
+1-based `u8` selector byte per CC (`LocalFeaturePlan::reconstruct_sub_block`). Each generated
+direction may therefore hold at most 255 entries; a file whose own DL or UL usage exceeds that
+fails generation outright (`compiler::nr::generation_accepts_255_and_rejects_256_local_records_per_direction`).
+The source `FeaturePalette` is indexed by checked positive `usize` references and may be larger.
 
 **Registry consistency (asserted by tests).** `PROFILES` has 16 unique anchors;
 `LTE_CONFIGS` has 9 unique IDs; `PHONE_MODELS` has 52 unique codes (34 bitmask + 18
@@ -188,6 +208,10 @@ rest".
    in steps 8–9.
 3. **Extract canonical NR payloads per carrier file** (`canonical_payloads` in
    `src/compiler/nr.rs`; one routine for both layouts):
+   - Before either layout is consumed or any payload is normalized, observe every field of
+     every raw top-level DL/UL feature row from both layouts in `ObservedFeatureDomains`.
+     This includes unreferenced rows and files whose `combo_groups` are empty reference
+     stubs. `None`, `Some(0)`, `Some(false)`, and `Some(true)` are different axis values.
    - Gates first: every raw band must lie in `1..NR_BAND_OFFSET` (E-UTRA) or
      `NR_BAND_OFFSET+1..2·NR_BAND_OFFSET` (NR); an empty combo group must not carry a
      value-bearing header (an empty group itself just vanishes); every combo needs at
@@ -238,11 +262,11 @@ rest".
    [LTE order and stored metadata](#lte-order-and-stored-metadata).
 7. **Emit the document**, in the canonical top-level order of
    [The short vocabulary](#the-short-vocabulary). NR: sorted `bitmask-carriers`; the
-   fingerprint partition groups; the global DL/UL catalogs built from the feature sets
-   actually embedded in
-   payloads during step 3, deduplicated and sorted by complete raw value (an unreferenced
-   input record was never resolved into any payload, so pruning is not a separate pass —
-   such records simply never reach this stage); the combos in canonical payload-key order,
+   fingerprint partition groups; the canonical source `FeaturePalette` built from the raw
+   domains observed before step 3 normalization. Each direction is the presence-sensitive
+   Cartesian product of its field domains, followed by the exact reviewed Rust addition for
+   that direction, then complete-record sort/dedup. Addition values do not seed the axes.
+   The combos follow in canonical payload-key order,
    each with its relation serialized to canonical rectangles (omitted entirely when it
    equals the universe; see
    [Applicability relation and canonical rectangles](#applicability-relation-and-canonical-rectangles))
@@ -278,6 +302,12 @@ rest".
 parse-and-validate over the source document, and generation is step 9's generator
 pointed at one registered model, packaged per
 [Complete replacement and determinism](#complete-replacement-and-determinism).
+
+KDL parsing deliberately does not perform the raw-input derivation above. It first resolves
+positional references against the document's original row order, then preserves every distinct
+row while canonicalizing the complete palette and remapping references by value. It never forms
+Cartesian products or injects the compiled additions, so a hand-edited or older KDL document does
+not silently acquire rows it did not contain.
 
 ### Source format: KDL, hand-mapped (not serde)
 
@@ -772,8 +802,9 @@ are evidence, not generic format limits:
 - Feature-list residue was common. In the legacy folder, 70 of 89 files had
   value-bearing unreferenced records in each direction. Of 1,389 profiled files, 1,157
   had DL residue and 1,165 had UL residue. In `1_1_DE`, record 1 was unused while record
-  2 was used by 110 of 2,703 components. Unreferenced records therefore are not source
-  payload, regardless of whether their fields carry values.
+  2 was used by 110 of 2,703 components. An unreferenced record is not a combo payload,
+  but each of its presence-sensitive field values still contributes to the raw domain from
+  which a fresh source palette is derived.
 - Legacy `DISH` combos with masks `12` and `6144` can collapse to one payload when the
   deliberately discarded mask is removed from identity. Only these legacy post-mask
   duplicates merge; a duplicate canonical payload within one profiled file remains an
@@ -789,7 +820,8 @@ are evidence, not generic format limits:
   bitmasks.
 
 These observations drove exact carrier names, independent profiled/mapping IDs,
-referenced-only feature catalogs, legacy-only duplicate collapse, stored
+raw-before-pruning feature-domain observation, compact referenced-only generated catalogs,
+legacy-only duplicate collapse, stored
 tier/field-9/multiplier metadata, mapping-only schema support, and the LTE ordering DAG.
 Do not turn the snapshot counts into new validation rules. When real folders are
 supplied, the opt-in corpus test pins the eight-file and 3,878-payload counts, absence of
@@ -924,19 +956,27 @@ be stored:
   fingerprints, derived band labels/keys, or masks. Profiled input accepts absent or
   explicit-zero combo masks and always regenerates explicit `0`; a nonzero profiled
   mask is unsupported.
-- Top-level `df` and `uf` nodes are shared compiler-only source
-  catalogs. Decompose resolves a component's whole per-CC selector-byte array
+- Top-level `df` and `uf` nodes are the shared compiler-only source `FeaturePalette`.
+  Fresh decompose constructs it by observing every raw top-level feature row across both
+  layouts before normalized payload pruning, taking a Cartesian product over the five DL
+  axes (`max_scs`, `max_mimo`, `max_bw`, `max_mod_order`, `bw_90mhz_supported`) and six UL
+  axes (`max_scs`, `max_mimo_cb`, `max_bw`, `max_mod_order`,
+  `bw_90mhz_supported`, `max_mimo_non_cb`), then unioning the exact compiled rows. Optional
+  presence is part of every axis, and the additions do not seed any axis. The feature structs'
+  derived `Ord` is the sole complete-record canonical order; because derived ordering follows
+  declaration order, both the `src/proto.rs` field order and the axis order above are
+  load-bearing. Do not introduce a parallel tuple key or handwritten comparator.
+
+  Separately, decompose resolves a component's whole per-CC selector-byte array
   **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
   fails, the entire raw array stays unresolved (`[0, 2]` and `[2, 99]` both fail to
   resolve). `resolve_all` itself only reports that; the decompose boundary that consumes it
   (`resolve_or_placeholder`) then **rejects** any unresolved array that is not the
   all-zero placeholder, so neither `[0, 2]` nor `[2, 99]` can survive decompose as raw
-  bytes. Decompose then deduplicates and sorts each catalog by complete raw field
-  identity. A referenced all-absent record remains a real identity; every unreferenced
-  input record is ignored, whether default, explicit-zero/false, or value-bearing. A
-  sub-block node's direction argument carries a comma-separated list, one canonical 1-based
-  global position per CC, in CC order (a single-CC sub-block carries exactly one, e.g.
+  bytes. A referenced all-absent record remains a real identity. A sub-block node's
+  direction argument carries a comma-separated list, one checked positive `usize` global
+  position per CC, in CC order (a single-CC sub-block carries exactly one, e.g.
   `n78 A3`). The raw selector fallback for unresolved
   components was removed (proto field 6/7 is still carried in the model): a component with
   no resolved feature set surfaces nothing for that direction.
@@ -959,7 +999,7 @@ be stored:
   `ensure!`; it is now unrepresentable, and the guard is gone.
 - Generation filters the global catalogs, in canonical order, into compact per-file DL
   and UL lists containing only records used by that carrier/SKU. Resolved components get
-  one 1-based local selector byte per CC (a CC-count-long array, not a single byte). The
+  one checked 1-based local `u8` selector per CC (a CC-count-long array, not a single byte). The
   global catalogs may exceed 255 records, but one generated file may use at most 255
   records independently in each direction.
 - Selector-only bytes remain exact, and the only one that can reach generation is the
@@ -979,11 +1019,12 @@ NR compiler fidelity is canonical modeled-value equality, not protobuf byte iden
 Feature-list layout, selectors, group packing, component order, and canonical proto3
 encoding may change; all modeled raw identity values must survive except the explicit
 legacy/modern mask normalizations above. Decompose rejects a value-bearing header on an
-otherwise empty group, but unreferenced feature records carry no modeled payload and
-normalize away regardless of their values. A referenced all-absent feature record does
-carry modeled identity and survives. Canonically equal payloads merge only within a
-legacy file after mask discard; duplicates within a profiled file remain errors because
-the normalized relation cannot represent multiplicity.
+otherwise empty group. An unreferenced feature row carries no combo identity, but its
+presence-sensitive fields still seed the fresh source palette's raw axes; the original row
+itself is not preserved as a privileged record beyond the Cartesian closure. A referenced
+all-absent feature record does carry combo identity and survives. Canonically equal payloads
+merge only within a legacy file after mask discard; duplicates within a profiled file remain
+errors because the normalized relation cannot represent multiplicity.
 
 ### LTE order and stored metadata
 
@@ -1330,7 +1371,9 @@ served over the UecapFile RPC at `0x42E07046`.
 - **CC / component carrier** — one physical carrier inside a sub-block; a sub-block's
   `dl_features`/`ul_features` hold one feature-set entry per CC.
 - **Feature set / per-CC caps** — a DL or UL capability record (SCS, MIMO, max BW, mod
-  order, 90 MHz), stored once globally and referenced per CC by selector bytes.
+  order, 90 MHz). Fresh source stores the canonical Cartesian closure in a global
+  `FeaturePalette`; each generated protobuf stores only its referenced local records and
+  points to them with one-byte per-CC selectors.
 - **BCS / bandwidth combination set** — a 3GPP set index, carried per combo as an ASN.1
   `BIT STRING` left-aligned in a 32-bit word; index *i* is bit `1 << (31 - i)`. Four fields carry
   one (`bcs_nr`, `bcs_intra_endc`, `bcs_eutra`, `LteCombo.bcs`), and source spells each as a

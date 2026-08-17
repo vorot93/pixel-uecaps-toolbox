@@ -178,12 +178,26 @@ compiler source. A band+CA-bandwidth-class entry (an `nr`/`lte` node) can carry 
 one component carrier (CC) — the count is fixed by its bandwidth class, e.g. `n78` class C
 = 2 CCs — and each CC has its own feature reference, so a sub-block's direction argument carries a
 comma-separated list, one 1-based catalog position per CC in CC order (a single-CC sub-block
-carries exactly one, e.g. `n78 A3`). Decompose
-prunes unreferenced wire records, then sorts and deduplicates the retained records by their
-complete raw values. Provision filters those catalogs into a compact, independently numbered
-subset for each generated carrier/SKU file, so a file never contains a record used only by
-another target. A source catalog may exceed 255 records; each generated file may use at
-most 255 DL records and, independently, at most 255 UL records.
+carries exactly one, e.g. `n78 A3`). On a fresh `decompose`, every raw top-level DL and UL
+row in both the legacy and profiled layouts contributes each field's complete optional value
+to a presence-sensitive domain — absent, explicit `0`, and explicit `false` remain distinct.
+The compiler forms the Cartesian product of the five DL fields and, separately, the six UL
+fields, then unions two reviewed Rust additions:
+`df s=4 m=1 b=200 o=2 w=#false` and
+`uf s=4 m=2 b=200 o=1 w=#false nc=2`. Those additions are appended after the products and
+do not introduce new values into an axis. The resulting complete records are sorted and
+deduplicated into the canonical source palette. Observation happens before combo/reference
+normalization, so unreferenced rows and reference stubs contribute too.
+
+Prelisting that anticipated canonical closure matters because these references are positional:
+hand-inserting a missing row later could shift every subsequent global position and inflate
+otherwise unrelated combo diffs. This derivation is a `decompose` operation only. Loading an
+existing KDL document preserves every distinct `df`/`uf` row it already contains, then sorts,
+deduplicates, and remaps references by complete value; it neither expands that document's axes
+nor injects the Rust additions. `provision` then filters the source palette into a compact,
+independently numbered referenced-only subset for each generated carrier/SKU file, so a file
+never contains a record used only by another target. A source palette may exceed 255 records;
+each generated file may use at most 255 DL records and, independently, at most 255 UL records.
 
 The raw `dl-cc-id`/`ul-cc-id` selector fallback for unresolved bytes was removed: a component
 with no resolved feature set surfaces no per-CC property at all (the all-zero placeholder is
