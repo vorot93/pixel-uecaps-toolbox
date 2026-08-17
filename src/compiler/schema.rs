@@ -1155,6 +1155,20 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     }
 
     #[test]
+    fn global_nr_feature_references_can_exceed_u16() {
+        let index = usize::from(u16::MAX) + 1;
+        let mut nr = MINIMAL_NR.to_string();
+        for value in 1..=index {
+            nr.push_str(&format!("\ndf b={value}\n"));
+        }
+        nr.push_str(&format!("\nn {{\n    n78 A{index}\n}}\n"));
+
+        let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
+        assert_eq!(parsed.nr.palette.dl.len(), index);
+        assert!(parsed.to_kdl().unwrap().contains("n78 A65536"));
+    }
+
+    #[test]
     fn the_version_is_required_and_only_the_current_one_is_supported() {
         let document = source(MINIMAL_NR, MINIMAL_LTE);
 

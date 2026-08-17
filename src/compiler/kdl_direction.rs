@@ -34,14 +34,14 @@ pub(crate) struct Direction {
     pub(crate) bw_class: u8,
     /// One 1-based reference per CC. Empty means the all-zero placeholder, which the source
     /// omits and `resolve` re-materialises.
-    pub(crate) indices: Vec<u16>,
+    pub(crate) indices: Vec<usize>,
 }
 
 /// Render a class plus its per-CC list.
 ///
 /// Fails closed on a class with no letter rather than emitting a value that cannot be read
 /// back — the same stance `cc_count` takes on an unobserved bandwidth class.
-pub(crate) fn format_direction(bw_class: u8, indices: &[u16]) -> Result<String> {
+pub(crate) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String> {
     ensure!(
         (1..=26).contains(&bw_class),
         "bandwidth class {bw_class} has no 3GPP letter (expected 1..=26)"
@@ -97,7 +97,7 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
             "{label} positional argument index `{part}` has a leading zero; each index has \
              exactly one spelling, so write it without padding"
         );
-        let index: u16 = part.parse().with_context(|| {
+        let index = part.parse::<usize>().with_context(|| {
             format!("{label} positional argument index `{part}` is out of range")
         })?;
         // NOT rejected here: index 0. On an NR sub-block a catalog reference is 1-based and 0
@@ -182,7 +182,7 @@ mod tests {
     fn round_trips_every_shape() {
         for (class, indices, text) in [
             (1u8, vec![], "A"),
-            (1, vec![3u16], "A3"),
+            (1, vec![3usize], "A3"),
             (8, vec![30, 30, 30], "H30,30,30"),
             (7, vec![22, 23], "G22,23"),
             (13, vec![1, 2, 3, 4, 5, 6, 7, 8], "M1,2,3,4,5,6,7,8"),
@@ -192,6 +192,21 @@ mod tests {
             assert_eq!(parsed.bw_class, class);
             assert_eq!(parsed.indices, indices);
         }
+    }
+
+    #[test]
+    fn nr_sized_indices_round_trip_above_u16() {
+        let index = usize::from(u16::MAX) + 1;
+        let text = format_direction(1, &[index]).unwrap();
+        assert_eq!(text, "A65536");
+        assert_eq!(parse_direction(&text, "DL").unwrap().indices, vec![index]);
+    }
+
+    #[test]
+    fn rejects_usize_overflow_without_accepting_an_alias() {
+        let too_large = format!("A{}0", usize::MAX);
+        let error = parse_direction(&too_large, "DL").unwrap_err().to_string();
+        assert!(error.contains("out of range"), "{error}");
     }
 
     /// A two-digit index must not read as two one-digit indices — the comma is the separator,
@@ -220,7 +235,6 @@ mod tests {
             ("A3,", "empty index"),
             ("A,3", "empty index"),
             ("A3,x", "decimal"),
-            ("A99999999", "out of range"),
         ] {
             let error = parse_direction(bad, "DL").unwrap_err().to_string();
             assert!(

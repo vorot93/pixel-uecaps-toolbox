@@ -105,15 +105,20 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
     // The band is the node NAME's suffix, not a positional argument.
     let mut node = KdlNode::new(sub_block_node_name(prefix, cc.band()));
 
-    let (dl_features, ul_features, srs_tx_switch): (Vec<u16>, Vec<u16>, Option<i32>) = match cc {
+    let (dl_features, ul_features, srs_tx_switch): (Vec<usize>, Vec<usize>, Option<i32>) = match cc
+    {
         NrSourceSubBlock::Lte(cc) => (
-            cc.dl_feature.into_iter().collect(),
-            cc.ul_feature.filter(|&v| v != 0).into_iter().collect(),
+            cc.dl_feature.map(usize::from).into_iter().collect(),
+            cc.ul_feature
+                .filter(|&v| v != 0)
+                .map(usize::from)
+                .into_iter()
+                .collect(),
             None,
         ),
         NrSourceSubBlock::Nr(cc) => (
-            cc.dl_feature.iter().map(|&v| v as u16).collect(),
-            cc.ul_feature.iter().map(|&v| v as u16).collect(),
+            cc.dl_feature.clone(),
+            cc.ul_feature.clone(),
             cc.srs_tx_switch,
         ),
     };
@@ -644,11 +649,25 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
             band,
             dl_bw_class,
             ul_bw_class,
-            dl_feature: dl.as_ref().and_then(|d| d.indices.first().copied()),
+            dl_feature: dl
+                .as_ref()
+                .and_then(|d| d.indices.first().copied())
+                .map(|index| {
+                    u16::try_from(index).with_context(|| {
+                        format!("`{name}` LTE DL feature index {index} does not fit u16")
+                    })
+                })
+                .transpose()?,
             // An absent E-UTRA index re-defaults to `Some(0)` (omit-when-0, LTE-only).
             ul_feature: Some(
                 ul.as_ref()
                     .and_then(|d| d.indices.first().copied())
+                    .map(|index| {
+                        u16::try_from(index).with_context(|| {
+                            format!("`{name}` LTE UL feature index {index} does not fit u16")
+                        })
+                    })
+                    .transpose()?
                     .unwrap_or(0),
             ),
         }
@@ -657,14 +676,8 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
             band,
             dl_bw_class,
             ul_bw_class,
-            dl_feature: dl
-                .as_ref()
-                .map(|d| d.indices.iter().map(|&i| i as usize).collect())
-                .unwrap_or_default(),
-            ul_feature: ul
-                .as_ref()
-                .map(|d| d.indices.iter().map(|&i| i as usize).collect())
-                .unwrap_or_default(),
+            dl_feature: dl.as_ref().map(|d| d.indices.clone()).unwrap_or_default(),
+            ul_feature: ul.as_ref().map(|d| d.indices.clone()).unwrap_or_default(),
             srs_tx_switch: r.opt_int(sub_block::SRS_TX_SWITCH)?,
         }
         .into(),
@@ -1218,6 +1231,30 @@ mod nr_tests {
             text,
             "re-emitting must not resurrect the omitted LTE placeholder (fixed point)"
         );
+    }
+
+    #[test]
+    fn nr_sized_indices_preserve_values_above_u16_and_lte_rejects_them() {
+        let nr_text = "version 1\nbc ATT\nn {\n    n78 A65536\n}\n";
+        let nr = nr_from(nr_text).expect("NR index above u16 parses");
+        let [NrSourceSubBlock::Nr(component)] = &nr.combo[0].sub_blocks[..] else {
+            panic!(
+                "expected one NR sub-block, got {:?}",
+                nr.combo[0].sub_blocks
+            )
+        };
+        assert_eq!(component.dl_feature, vec![usize::from(u16::MAX) + 1]);
+        assert_eq!(
+            nr_only(&nr).unwrap(),
+            nr_text,
+            "NR value remains byte-stable"
+        );
+
+        let lte_error = nr_from("version 1\nbc ATT\nn {\n    B66 A65536\n}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(lte_error.contains("LTE DL feature index"), "{lte_error}");
+        assert!(lte_error.contains("u16"), "{lte_error}");
     }
 
     #[test]
