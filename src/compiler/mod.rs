@@ -1,4 +1,6 @@
+pub(crate) mod additional_features;
 mod decompose;
+pub(crate) mod feature_palette;
 pub(crate) mod features;
 pub(crate) mod kdl_bcs;
 pub(crate) mod kdl_direction;
