@@ -148,7 +148,8 @@ l b="" u1=0 u2=0 {
 Node order is canonical: `version`, `bc`, the `bf` fingerprint groups, the carriers,
 the LTE file whitelist, the two feature catalogs, then every NR combo (`n`) and every
 LTE combo (`l`). Everything a human can read sits in the first screenful; the combos
-below it are the bulk of the ~19 MB.
+below it are the bulk of the document. The configured corpus produced a 7,099,014-byte
+(about 7.1 MB) source on 2026-08-17; that is an observation, not a format invariant.
 
 Keys are abbreviated — they are walked through under
 [Reading the source format](#reading-the-source-format). `bc` (bitmask-carriers) is
@@ -472,8 +473,9 @@ as `check`; non-carrier files (the legend, `lte_*`) are ignored.
 ## Reading the source format
 
 `decompose` writes a compact vocabulary. Keys are abbreviated because the per-combo lines repeat
-tens of thousands of times — the real corpus is 7.0 MB of KDL, down from 12.7 MB with the long
-names. Per-carrier keys that appear a handful of times (`mcc`, `mnc`) are left spelled out.
+tens of thousands of times — the configured corpus was observed at 7.1 MB of KDL on 2026-08-17;
+the earlier long-name experiment measured 12.7 MB. These are corpus observations, not format
+limits. Per-carrier keys that appear a handful of times (`mcc`, `mnc`) are left spelled out.
 
 ```kdl
 n bn=b0,1 ie=1 {

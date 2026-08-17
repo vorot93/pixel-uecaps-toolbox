@@ -382,9 +382,11 @@ LTE file whitelist, `df`, `uf`, then every `n` combo and every `l` combo. Order 
 group is the pre-merge one (`BTreeMap` iteration for carriers and files, `Vec` order for
 fingerprints, catalogs and both combo lists), so canonicality is preserved by construction and
 `decompose`'s byte-idempotence assertion still means what it meant. The metadata is small — 89
-carriers, two catalogs, 8 `f` nodes — and the combos are the ~19 MB, so this puts everything a
-human can read in the first screenful. Literal concatenation (each half keeping its old order,
-LTE after NR) was rejected for burying the `f` nodes behind ~19 MB of combos.
+carriers, two catalogs, 8 `f` nodes — and the combos are the bulk, so this puts everything a
+human can read in the first screenful. The configured corpus produced a 7,099,014-byte
+(about 7.1 MB) document on 2026-08-17; that is an observation, not a format invariant. Literal
+concatenation (each half keeping its old order, LTE after NR) was rejected when it would have
+buried the `f` nodes behind the then-current ~19 MB of combos.
 
 `c` means carrier at every level it appears — the document, a `bf` group, and an `s` selection.
 That was not true before the two documents merged: `c` was the combo node at document level, and
