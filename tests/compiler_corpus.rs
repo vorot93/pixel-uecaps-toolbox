@@ -1,22 +1,201 @@
+use kdl::{KdlDocument, KdlNode};
+use pixel_uecaps_toolbox::{
+    NR_BAND_OFFSET,
+    compiler::{decompose, load_sources, provision_from_sources},
+    model::PHONE_MODELS,
+    proto::{LteCaps, LteCombo, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+};
+use prost::Message;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{Cursor, Read},
     path::Path,
 };
-
-use pixel_uecaps_toolbox::{
-    NR_BAND_OFFSET,
-    compiler::{decompose, load_sources, provision_from_sources},
-    model::PHONE_MODELS,
-    proto::{LteCaps, LteCombo, UeCaps},
-};
-use prost::Message;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use zip::ZipArchive;
 
 const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
 const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
+
+#[derive(Default)]
+struct ExpectedDlDomains {
+    max_scs: BTreeSet<Option<i32>>,
+    max_mimo: BTreeSet<Option<i32>>,
+    max_bw: BTreeSet<Option<i32>>,
+    max_mod_order: BTreeSet<Option<i32>>,
+    bw_90mhz_supported: BTreeSet<Option<bool>>,
+}
+
+#[derive(Default)]
+struct ExpectedUlDomains {
+    max_scs: BTreeSet<Option<i32>>,
+    max_mimo_cb: BTreeSet<Option<i32>>,
+    max_bw: BTreeSet<Option<i32>>,
+    max_mod_order: BTreeSet<Option<i32>>,
+    bw_90mhz_supported: BTreeSet<Option<bool>>,
+    max_mimo_non_cb: BTreeSet<Option<i32>>,
+}
+
+fn expected_raw_feature_palettes(
+    bitmask: &Path,
+    profiled: &Path,
+) -> (
+    Vec<ShannonFeatureSetDlPerCcNr>,
+    Vec<ShannonFeatureSetUlPerCcNr>,
+) {
+    let mut dl = ExpectedDlDomains::default();
+    let mut ul = ExpectedUlDomains::default();
+    let mut decoded_files = 0_usize;
+    for directory in [bitmask, profiled] {
+        for entry in fs::read_dir(directory).expect("reading an optional NR corpus directory") {
+            let entry = entry.expect("reading an optional NR corpus entry");
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.ends_with(".binarypb")
+                || name == "ap_plmn_mapping.binarypb"
+                || name.starts_with("lte_")
+            {
+                continue;
+            }
+            let bytes = fs::read(entry.path()).expect("reading an optional NR corpus file");
+            let caps = UeCaps::decode(bytes.as_slice()).unwrap_or_else(|error| {
+                panic!("prost-decoding raw NR corpus file {name}: {error}")
+            });
+            decoded_files += 1;
+            for row in caps.dl_feature_per_cc_list {
+                dl.max_scs.insert(row.max_scs);
+                dl.max_mimo.insert(row.max_mimo);
+                dl.max_bw.insert(row.max_bw);
+                dl.max_mod_order.insert(row.max_mod_order);
+                dl.bw_90mhz_supported.insert(row.bw_90mhz_supported);
+            }
+            for row in caps.ul_feature_per_cc_list {
+                ul.max_scs.insert(row.max_scs);
+                ul.max_mimo_cb.insert(row.max_mimo_cb);
+                ul.max_bw.insert(row.max_bw);
+                ul.max_mod_order.insert(row.max_mod_order);
+                ul.bw_90mhz_supported.insert(row.bw_90mhz_supported);
+                ul.max_mimo_non_cb.insert(row.max_mimo_non_cb);
+            }
+        }
+    }
+    assert!(decoded_files > 0, "no raw NR corpus files were decoded");
+
+    let mut expected_dl = Vec::new();
+    for &max_scs in &dl.max_scs {
+        for &max_mimo in &dl.max_mimo {
+            for &max_bw in &dl.max_bw {
+                for &max_mod_order in &dl.max_mod_order {
+                    for &bw_90mhz_supported in &dl.bw_90mhz_supported {
+                        expected_dl.push(ShannonFeatureSetDlPerCcNr {
+                            max_scs,
+                            max_mimo,
+                            max_bw,
+                            max_mod_order,
+                            bw_90mhz_supported,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    expected_dl.push(ShannonFeatureSetDlPerCcNr {
+        max_scs: Some(4),
+        max_mimo: Some(1),
+        max_bw: Some(200),
+        max_mod_order: Some(2),
+        bw_90mhz_supported: Some(false),
+    });
+    expected_dl.sort_unstable();
+    expected_dl.dedup();
+
+    let mut expected_ul = Vec::new();
+    for &max_scs in &ul.max_scs {
+        for &max_mimo_cb in &ul.max_mimo_cb {
+            for &max_bw in &ul.max_bw {
+                for &max_mod_order in &ul.max_mod_order {
+                    for &bw_90mhz_supported in &ul.bw_90mhz_supported {
+                        for &max_mimo_non_cb in &ul.max_mimo_non_cb {
+                            expected_ul.push(ShannonFeatureSetUlPerCcNr {
+                                max_scs,
+                                max_mimo_cb,
+                                max_bw,
+                                max_mod_order,
+                                bw_90mhz_supported,
+                                max_mimo_non_cb,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    expected_ul.push(ShannonFeatureSetUlPerCcNr {
+        max_scs: Some(4),
+        max_mimo_cb: Some(2),
+        max_bw: Some(200),
+        max_mod_order: Some(1),
+        bw_90mhz_supported: Some(false),
+        max_mimo_non_cb: Some(2),
+    });
+    expected_ul.sort_unstable();
+    expected_ul.dedup();
+    (expected_dl, expected_ul)
+}
+
+fn optional_i32(node: &KdlNode, key: &str) -> Option<i32> {
+    node.get(key).map(|value| {
+        value
+            .as_integer()
+            .unwrap_or_else(|| panic!("feature property `{key}` must be an integer"))
+            .try_into()
+            .unwrap_or_else(|_| panic!("feature property `{key}` must fit i32"))
+    })
+}
+
+fn optional_bool(node: &KdlNode, key: &str) -> Option<bool> {
+    node.get(key).map(|value| {
+        value
+            .as_bool()
+            .unwrap_or_else(|| panic!("feature property `{key}` must be a boolean"))
+    })
+}
+
+fn emitted_feature_palettes(
+    source: &[u8],
+) -> (
+    Vec<ShannonFeatureSetDlPerCcNr>,
+    Vec<ShannonFeatureSetUlPerCcNr>,
+) {
+    let text = std::str::from_utf8(source).expect("canonical source must be UTF-8");
+    let document: KdlDocument = text.parse().expect("canonical source must parse as KDL");
+    let mut dl = Vec::new();
+    let mut ul = Vec::new();
+    for node in document.nodes() {
+        match node.name().value() {
+            "df" => dl.push(ShannonFeatureSetDlPerCcNr {
+                max_scs: optional_i32(node, "s"),
+                max_mimo: optional_i32(node, "m"),
+                max_bw: optional_i32(node, "b"),
+                max_mod_order: optional_i32(node, "o"),
+                bw_90mhz_supported: optional_bool(node, "w"),
+            }),
+            "uf" => ul.push(ShannonFeatureSetUlPerCcNr {
+                max_scs: optional_i32(node, "s"),
+                max_mimo_cb: optional_i32(node, "m"),
+                max_bw: optional_i32(node, "b"),
+                max_mod_order: optional_i32(node, "o"),
+                bw_90mhz_supported: optional_bool(node, "w"),
+                max_mimo_non_cb: optional_i32(node, "nc"),
+            }),
+            _ => {}
+        }
+    }
+    (dl, ul)
+}
 
 fn read_lte_sequences(dir: &Path) -> BTreeMap<u64, Vec<Vec<u8>>> {
     let mut sequences = BTreeMap::new();
@@ -323,6 +502,17 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
         fs::read(first_source.path()).expect("reading first canonical source"),
         fs::read(second_source.path()).expect("reading second canonical source"),
         "canonical source must be byte-idempotent"
+    );
+    let source = fs::read(first_source.path()).expect("reading canonical source for palette");
+    let expected = expected_raw_feature_palettes(bitmask, profiled);
+    let actual = emitted_feature_palettes(&source);
+    assert_eq!(actual.0, expected.0, "emitted DL feature palette differs");
+    assert_eq!(actual.1, expected.1, "emitted UL feature palette differs");
+    eprintln!(
+        "exhaustive source palette: DL={}, UL={}, KDL={} bytes",
+        actual.0.len(),
+        actual.1.len(),
+        source.len()
     );
 
     let sequences = read_lte_sequences(profiled);

@@ -1,15 +1,14 @@
+use pixel_uecaps_toolbox::proto::{
+    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
+    ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock, UeCaps,
+};
+use prost::Message;
 use std::{
     fs,
     io::{Cursor, Read},
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-
-use pixel_uecaps_toolbox::proto::{
-    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
-    ShannonFeatureSetDlPerCcNr, SubBlock, UeCaps,
-};
-use prost::Message;
 use tempfile::{NamedTempFile, TempDir};
 use zip::ZipArchive;
 
@@ -35,14 +34,20 @@ impl Fixture {
         fs::create_dir(&bitmask).unwrap();
         fs::create_dir(&profiled).unwrap();
 
-        write_message(
-            &bitmask.join("ALPHA.binarypb"),
-            &nr_caps(715_188_856, Some(7), 0, 10_041, Some(29)),
-        );
+        let mut legacy_caps = nr_caps(715_188_856, Some(7), 0, 10_041, Some(29));
+        legacy_caps.dl_feature_per_cc_list = vec![ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(2),
+            ..Default::default()
+        }];
+        legacy_caps.ul_feature_per_cc_list = vec![ShannonFeatureSetUlPerCcNr {
+            max_scs: Some(2),
+            ..Default::default()
+        }];
+        write_message(&bitmask.join("ALPHA.binarypb"), &legacy_caps);
         let mut profiled_caps = nr_caps(862_505_271, None, 11, 10_078, Some(0));
-        // Two catalog entries, only the second referenced, so the pipeline's prune-and-renumber
-        // is exercised end to end: the assertions below require the provisioned module to carry
-        // a one-entry catalog with the selector renumbered to 1.
+        // Two catalog entries, only the second referenced. Together with the raw legacy row,
+        // their presence-sensitive axes require a six-row source product, while the provisioned
+        // module must still carry only the referenced row with its selector renumbered to 1.
         profiled_caps.dl_feature_per_cc_list = vec![
             ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(1),
@@ -204,13 +209,18 @@ fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     let source = fs::read_to_string(fixture.source.path()).unwrap();
     assert!(source.contains("mi=7"), "{source}");
     assert!(!source.contains("pi="), "{source}");
-    // The catalog NODE keeps its name; only the sub-block's DL reference became the
-    // node's first positional argument.
-    assert!(source.contains("df s=3"), "{source}");
-    assert!(!source.contains("s=1"), "{source}");
-    // Anchored to the full sub-block line, not a bare `" A1"`: that fragment matches almost
-    // any output, while `n78 A1` pins down which band's DL reference was renumbered.
-    assert!(source.contains("n78 A1"), "{source}");
+    assert_eq!(
+        source.lines().filter(|line| line.starts_with("df")).count(),
+        7
+    );
+    assert!(source.contains("df s=4 m=1 b=200 o=2 w=#false"), "{source}");
+    assert!(
+        source.contains("uf s=4 m=2 b=200 o=1 w=#false nc=2"),
+        "{source}"
+    );
+    // Anchored to the full sub-block line, not a bare `" A6"`: that fragment matches almost
+    // any output, while `n78 A6` pins down the referenced row's exhaustive-palette position.
+    assert!(source.contains("n78 A6"), "{source}");
 
     let provisioned = fixture.provision(MODEL);
     assert!(provisioned.status.success(), "{}", stderr(&provisioned));

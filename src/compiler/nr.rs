@@ -1,13 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use anyhow::{Context, ensure};
-use compact_str::CompactString;
-use prost::Message;
-
 use crate::{
     compiler::{
         GeneratedFile,
-        feature_palette::FeaturePalette,
+        additional_features::{ADDITIONAL_DL_FEATURES, ADDITIONAL_UL_FEATURES},
+        feature_palette::{FeaturePalette, ObservedFeatureDomains},
         features::LocalFeaturePlan,
         schema::{
             BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, NrDocument, ProfileSource,
@@ -22,6 +17,10 @@ use crate::{
     raw_nr::{Direction, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
     report::combos::{NR_BAND_OFFSET, feature_index},
 };
+use anyhow::{Context, ensure};
+use compact_str::CompactString;
+use prost::Message;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// An unnumbered `<CARRIER>.binarypb` from the bitmask folder. Legacy files have no filename
 /// number *by construction*, so there is nothing to validate downstream.
@@ -665,23 +664,13 @@ fn ingest_profiled_carrier(
     Ok(())
 }
 
-fn ingested_feature_palette<'a>(
-    payloads: impl IntoIterator<Item = &'a RawNrPayload>,
-) -> FeaturePalette {
-    let mut dl = BTreeSet::new();
-    let mut ul = BTreeSet::new();
-    for payload in payloads {
-        for component in &payload.sub_blocks {
-            dl.extend(component.dl_features().iter().copied());
-            ul.extend(component.ul_features().iter().copied());
-        }
-    }
-    FeaturePalette::from_rows(dl.into_iter().collect(), ul.into_iter().collect())
-}
-
-/// Turn the accumulated ingest into the finished document: sort the bitmask lists, build the
-/// domain and feature palette, and resolve each payload's relation into a canonical selection.
-fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<NrDocument> {
+/// Turn the accumulated ingest and raw-input palette into the finished document: sort the bitmask
+/// lists, build the domain, and resolve each payload's relation into a canonical selection.
+fn finish_nr_document(
+    ingest: NrIngest,
+    mapping: MappingRoot,
+    palette: FeaturePalette,
+) -> anyhow::Result<NrDocument> {
     let NrIngest {
         mut bitmask_carriers,
         fingerprints,
@@ -708,12 +697,22 @@ fn finish_nr_document(ingest: NrIngest, mapping: MappingRoot) -> anyhow::Result<
         })
         .collect();
     let domain = NrDomain::new(domain_members);
-    let palette = ingested_feature_palette(payloads.values().map(|(payload, _)| payload));
     let combo = payloads
         .into_values()
-        .map(|(payload, relation)| {
+        .enumerate()
+        .map(|(combo_index, (payload, relation))| {
+            let first_carrier = relation
+                .first()
+                .map(|(carrier, _)| carrier.clone())
+                .unwrap_or_else(|| CompactString::new("<none>"));
+            let owner_count = relation.len();
             let relation = domain.relation(relation);
-            nr_source_combo(&payload, &relation, &domain, &palette)
+            nr_source_combo(&payload, &relation, &domain, &palette).with_context(|| {
+                format!(
+                    "building source NR combo {} selected by carrier `{first_carrier}` ({owner_count} owner pairs)",
+                    combo_index + 1,
+                )
+            })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -739,6 +738,15 @@ pub(crate) fn ingest_nr(
     profiled: Vec<ProfiledNrFile>,
     mapping: &MappingRoot,
 ) -> anyhow::Result<NrDocument> {
+    let mut domains = ObservedFeatureDomains::default();
+    for caps in legacy
+        .iter()
+        .map(|file| &file.caps)
+        .chain(profiled.iter().map(|file| &file.caps))
+    {
+        domains.observe(caps);
+    }
+    let palette = domains.into_palette(ADDITIONAL_DL_FEATURES, ADDITIONAL_UL_FEATURES)?;
     let mapping = canonical_mapping(mapping)?;
     let mut ingest = NrIngest {
         bitmask_carriers: Vec::with_capacity(legacy.len()),
@@ -750,7 +758,7 @@ pub(crate) fn ingest_nr(
     for (carrier, files) in group_profiled_by_carrier(profiled)? {
         ingest_profiled_carrier(&mut ingest, &carrier, files)?;
     }
-    finish_nr_document(ingest, mapping)
+    finish_nr_document(ingest, mapping, palette)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
