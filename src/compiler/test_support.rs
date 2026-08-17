@@ -37,6 +37,8 @@ c BETA bi=2 pi=8 mi=8 sg=13 t=main {
 }
 f "400907661" fp=101 bm=201
 f "92" fp=102 bm=202
+df s=4 m=1 b=200 o=2 w=#false
+uf s=4 m=2 b=200 o=1 w=#false nc=2
 n {
     s {
         m prime:8969

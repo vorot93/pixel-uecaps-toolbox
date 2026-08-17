@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_prunes_unreferenced_records_and_canonicalizes_referenced_dl_and_ul() {
+    fn ingest_builds_exhaustive_raw_feature_palettes_and_remaps_references() {
         let mut caps = one_combo_caps(715_188_856, Some(1), 0, 10_078, Some(9));
         let component = &mut caps.combo_groups[0].combo[0].sub_blocks[0];
         // A single in-range byte: all-or-nothing resolution needs every byte in range
@@ -1264,8 +1264,8 @@ mod tests {
         // `cc()` seeds `dl_feature_index = Some(0)`, but selector `[2]` resolves to the
         // max_scs=3 (FR1) record whose derived index is 1. NR no longer carries a source
         // index override, so the strict decode boundary rejects a stored≠derived index —
-        // clear it (the derived 1 is materialized on provision) so decompose is about pruning, not
-        // the dropped override.
+        // clear it (the derived 1 is materialized on provision) so this test isolates raw palette
+        // construction from the dropped override.
         component.dl_feature_index = None;
         caps.dl_feature_per_cc_list = vec![
             ShannonFeatureSetDlPerCcNr {
@@ -1299,15 +1299,47 @@ mod tests {
         ];
 
         let nr = ingest_nr(vec![legacy_file("LEGACY", caps)], vec![], &empty_mapping()).unwrap();
-        assert_eq!(nr.dl_features.len(), 1);
-        assert_eq!(nr.ul_features.len(), 1);
-        assert_eq!(nr.dl_features[0].max_scs, Some(3));
-        assert_eq!(nr.ul_features[0].max_scs, Some(4));
+        assert_eq!(nr.dl_features.len(), 10);
+        assert_eq!(nr.ul_features.len(), 13);
+        assert!(nr.dl_features.contains(&ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(4),
+            max_mimo: Some(1),
+            max_bw: Some(200),
+            max_mod_order: Some(2),
+            bw_90mhz_supported: Some(false),
+        }));
+        assert!(nr.ul_features.contains(&ShannonFeatureSetUlPerCcNr {
+            max_scs: Some(4),
+            max_mimo_cb: Some(2),
+            max_bw: Some(200),
+            max_mod_order: Some(1),
+            bw_90mhz_supported: Some(false),
+            max_mimo_non_cb: Some(2),
+        }));
+        assert!(nr.dl_features.contains(&ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(1),
+            ..Default::default()
+        }));
+        assert!(nr.ul_features.contains(&ShannonFeatureSetUlPerCcNr {
+            bw_90mhz_supported: Some(false),
+            ..Default::default()
+        }));
+        assert!(nr.dl_features.contains(&ShannonFeatureSetDlPerCcNr {
+            max_scs: Some(1),
+            max_bw: Some(100),
+            ..Default::default()
+        }));
+        assert!(nr.ul_features.contains(&ShannonFeatureSetUlPerCcNr {
+            max_scs: Some(1),
+            max_bw: Some(50),
+            bw_90mhz_supported: Some(false),
+            ..Default::default()
+        }));
         let NrSourceSubBlock::Nr(cc) = &nr.combo[0].sub_blocks[0] else {
             panic!("expected an `nr` sub-block")
         };
-        assert_eq!(cc.dl_feature, vec![1]);
-        assert_eq!(cc.ul_feature, vec![1]);
+        assert_eq!(cc.dl_feature, vec![9]);
+        assert_eq!(cc.ul_feature, vec![11]);
     }
 
     #[test]
@@ -1893,8 +1925,8 @@ mod tests {
         ]);
         assert_eq!(
             nr.palette.dl.len(),
-            301,
-            "combo surgery keeps the source's pre-existing unreferenced row"
+            302,
+            "combo surgery keeps the source's pre-existing row and exact addition"
         );
 
         let legacy = generate_nr_files(&nr, NrTarget::Legacy).unwrap();

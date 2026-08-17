@@ -517,8 +517,8 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
 
     let sequences = read_lte_sequences(profiled);
     assert_lte_invariants(&sequences);
-    // Parse and validate the ~19 MB canonical source ONCE, then generate every registered model
-    // from the shared validated set instead of re-reading and re-parsing it per model (was 52×,
+    // Parse and validate the multi-megabyte canonical source ONCE, then generate every registered
+    // model from the shared validated set instead of re-reading and re-parsing it per model (was 52×,
     // which dominated this test's wall-clock). The models are independent — each reads the shared
     // immutable `sources` and writes its own `model-{index}.zip` — so fan them across rayon's pool.
     let sources =
