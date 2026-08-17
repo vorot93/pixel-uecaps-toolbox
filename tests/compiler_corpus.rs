@@ -464,7 +464,7 @@ fn assert_compact_nr_features(caps: &UeCaps, model_code: &str, basename: &str) {
     );
 }
 
-fn assert_module_nr_features(path: &Path, model: PhoneModel) {
+fn assert_module_nr_features(path: &Path, model: PhoneModel) -> BTreeSet<String> {
     let model_code = model.code;
     let bytes = fs::read(path).unwrap_or_else(|error| {
         panic!("reading generated corpus module for model {model_code}: {error}")
@@ -472,6 +472,7 @@ fn assert_module_nr_features(path: &Path, model: PhoneModel) {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap_or_else(|error| {
         panic!("opening generated corpus module for model {model_code}: {error}")
     });
+    let mut inspected = BTreeSet::new();
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).unwrap_or_else(|error| {
             panic!("reading generated module entry {index} for model {model_code}: {error}")
@@ -494,7 +495,9 @@ fn assert_module_nr_features(path: &Path, model: PhoneModel) {
             panic!("decoding generated NR entry {basename} for model {model_code}: {error}")
         });
         assert_compact_nr_features(&caps, model_code, basename);
+        inspected.insert(basename.to_owned());
     }
+    inspected
 }
 
 fn write_test_module_entry(path: &Path, basename: &str, caps: &UeCaps) {
@@ -560,37 +563,31 @@ fn layout_aware_oracle_observes_bitmask_lte_carrier_but_skips_profiled_lte_id() 
 #[test]
 fn layout_aware_oracle_inspects_generated_bitmask_lte_carrier_but_skips_profiled_lte_id() {
     let temp = tempfile::tempdir().expect("creating generated-module oracle workspace");
-    let noncompact = UeCaps {
-        dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr {
-            max_scs: Some(17),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
+    let compact = UeCaps::default();
 
     let bitmask_module = temp.path().join("bitmask.zip");
-    write_test_module_entry(&bitmask_module, "lte_FOO.binarypb", &noncompact);
+    write_test_module_entry(&bitmask_module, "lte_FOO.binarypb", &compact);
     let bitmask_model = PHONE_MODELS
         .iter()
         .copied()
         .find(|model| model.is_bitmask())
         .expect("registered models must include a bitmask layout");
-    let inspected = std::panic::catch_unwind(|| {
-        assert_module_nr_features(&bitmask_module, bitmask_model);
-    });
-    assert!(
-        inspected.is_err(),
-        "generated bitmask lte_FOO.binarypb must be decoded and checked for compact catalogs"
+    assert_eq!(
+        assert_module_nr_features(&bitmask_module, bitmask_model),
+        BTreeSet::from(["lte_FOO.binarypb".to_owned()])
     );
 
     let profiled_module = temp.path().join("profiled.zip");
-    write_test_module_entry(&profiled_module, "lte_7.binarypb", &noncompact);
+    write_test_module_entry(&profiled_module, "lte_7.binarypb", &compact);
     let profiled_model = PHONE_MODELS
         .iter()
         .copied()
         .find(|model| matches!(model.layout, CapabilityLayout::Profiled { .. }))
         .expect("registered models must include a profiled layout");
-    assert_module_nr_features(&profiled_module, profiled_model);
+    assert_eq!(
+        assert_module_nr_features(&profiled_module, profiled_model),
+        BTreeSet::new()
+    );
 }
 
 #[test]
@@ -670,7 +667,7 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
                 "registered model {} generated an empty corpus module",
                 model.code
             );
-            assert_module_nr_features(&out, *model);
+            let _validated_basenames = assert_module_nr_features(&out, *model);
         });
 }
 
