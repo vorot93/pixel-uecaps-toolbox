@@ -192,8 +192,9 @@ pub(crate) fn ambiguous_anchors(anchors: &[&'static Profile]) -> String {
 }
 
 /// A modem LTE-config selection-table entry: the `lte_<id>` filename number, the Shannon
-/// firmware family name, the hardware/SKU category codes that select it, and the confirmed
-/// Pixel model (`None` when only the raw family is known).
+/// firmware family name, the hardware/SKU category codes that select it, and the identified
+/// Pixel model label (`None` when only the raw family is known; inferred identities
+/// are marked in the label).
 pub(crate) struct LteConfig {
     pub id: u64,
     pub family: &'static str,
@@ -250,13 +251,15 @@ pub(crate) static LTE_CONFIGS: &[LteConfig] = &[
         id: 844_857_560,
         family: "sta5_na",
         category_codes: &[0x812],
-        model: None,
+        // User-reported identification; evidence is recorded in DESIGN.md.
+        model: Some("Pixel 10a (US)"),
     },
     LteConfig {
         id: 1_534_561_764,
         family: "sta5_jp",
         category_codes: &[0x814],
-        model: None,
+        // Inferred regional counterpart, not independently observed device selection.
+        model: Some("Pixel 10a (Japan, inferred)"),
     },
 ];
 
@@ -1105,7 +1108,7 @@ mod tests {
         assert_eq!(sub6.model, Some("Pixel 9 / 9 Pro / 9 Pro XL, sub-6 (RoW)"));
         let sta5jp = lte_config(1_534_561_764).unwrap();
         assert_eq!(sta5jp.family, "sta5_jp");
-        assert_eq!(sta5jp.model, None);
+        assert_eq!(sta5jp.model, Some("Pixel 10a (Japan, inferred)"));
         assert!(lte_config(123).is_none());
         assert_eq!(LTE_CONFIGS.len(), 9);
         let ids: std::collections::BTreeSet<u64> = LTE_CONFIGS.iter().map(|c| c.id).collect();

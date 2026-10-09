@@ -362,7 +362,7 @@ $ pixel-uecaps-toolbox inspect lte_844857560.binarypb
 LTE-only fallback config
 
 in-file fp : 874888686  [family A, main tier]
-LTE config : sta5_na
+LTE config : sta5_na — Pixel 10a (US)
              modem-selected by hardware category 0x812 (Shannon g5400), not SIM/MCC
 
 LTE band combinations (1053)
@@ -380,8 +380,11 @@ document uses for the same value — deliberately, since this report is a decode
 the protobuf; see
 DESIGN.md's [BCS: a 3GPP bit string, not an opaque number](DESIGN.md#bcs-a-3gpp-bit-string-not-an-opaque-number)
 for why. These files sit outside the 16/14 SKU-profile scheme (no anchor prime divides their
-number). The `LTE config` line names the modem's selection-table family (and the Pixel model where
-confirmed); the modem picks the file by hardware/SKU category — burned into the Shannon firmware —
+number). The `LTE config` line names the modem's selection-table family and the Pixel model
+where identified; inferred model labels explicitly say `inferred`. The Pixel 10a US label
+is user-reported, and its Japan counterpart is inferred; see the
+[identification evidence](DESIGN.md#pixel-10a-lte-identification-amendment).
+The modem picks the file by hardware/SKU category — burned into the Shannon firmware —
 not by SIM or MCC.
 
 ### Compare two carriers or profiles

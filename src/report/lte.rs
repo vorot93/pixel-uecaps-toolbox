@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn config_block_three_cases() {
+    fn config_block_identified_unidentified_and_unknown() {
         assert_eq!(
             config_block(2_160_127_815),
             vec![
@@ -163,10 +163,24 @@ mod tests {
             ]
         );
         assert_eq!(
+            config_block(844_857_560),
+            vec![
+                "LTE config : sta5_na — Pixel 10a (US)".to_string(),
+                "             modem-selected by hardware category 0x812 (Shannon g5400), not SIM/MCC".to_string(),
+            ]
+        );
+        assert_eq!(
             config_block(1_534_561_764),
             vec![
-                "LTE config : sta5_jp".to_string(),
+                "LTE config : sta5_jp — Pixel 10a (Japan, inferred)".to_string(),
                 "             modem-selected by hardware category 0x814 (Shannon g5400), not SIM/MCC".to_string(),
+            ]
+        );
+        assert_eq!(
+            config_block(564_260_317),
+            vec![
+                "LTE config : tki3".to_string(),
+                "             modem-selected by hardware category 0x211 (Shannon g5400), not SIM/MCC".to_string(),
             ]
         );
         assert_eq!(

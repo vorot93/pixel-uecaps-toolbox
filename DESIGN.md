@@ -6,9 +6,10 @@ compiler pipeline, and the invariants that keep edits faithful. For how to *use*
 see the [README](README.md); for how to build, test, and work on it see
 [CONTRIBUTING](CONTRIBUTING.md).
 
-> The `.binarypb` format is **observed, not documented** by Google. Everything below is
-> reverse-engineered and verified against real Pixel dumps. When code and this doc
-> disagree, the code wins — fix the doc.
+> The `.binarypb` format is **observed, not documented** by Google. Format evidence is
+> based on reverse engineering and real Pixel dumps, except for explicitly labeled
+> reports and inferences. For implemented behavior, code is authoritative;
+> model-identification evidence and remaining selection gaps are noted explicitly.
 
 ## Contents
 
@@ -581,8 +582,8 @@ for noise:
 - It is a function of the component list, and the list determines the **exact value**, not just
   zero-vs-nonzero: across 3,371 distinct lists, **zero** carry both `b=""` and a nonzero BCS,
   and zero carry two different nonzero values.
-- It is not per-carrier: all 8 LTE files carry some of the 39 — every one of the 18 SKUs plus
-  both files no SKU selects (`lte:844857560`, `lte:1534561764`).
+- It is not per-carrier: all 8 LTE files carry some of the 39 — every one of the 18 registered
+  profiled SKUs plus both files no registered target selects (`lte:844857560`, `lte:1534561764`).
 - It is not `u1`/`u2`: `(u1=1, u2=768)` occurs 22 times with `b=""` and 22 times with `b=b0`.
 - The 39 partition exactly: **22 repeat B41**, **17 include B32**.
 - One exact rule holds: a repeated B41 with at least 3 entries is always `b=""` (22 of 22, no
@@ -1310,8 +1311,9 @@ reference stubs. `lte_*` files sit **outside** this scheme (no anchor divides th
 ## LTE-fallback firmware selection
 
 Which `lte_<id>.binarypb` a device loads is decided by its **hardware/SKU category
-code**, **not** by SIM or MCC. The mapping is burned into the Samsung **Shannon** modem
-firmware (`g5400c-main.bin`), mirrored here as `LTE_CONFIGS`:
+code**, **not** by SIM or MCC. The IDs, families, and category codes come from the Samsung
+**Shannon** modem firmware (`g5400c-main.bin`) and are mirrored in `LTE_CONFIGS`.
+The model column includes the evidence amendment described below:
 
 | `lte_<id>` | family | category codes | model |
 | --- | --- | --- | --- |
@@ -1322,20 +1324,60 @@ firmware (`g5400c-main.bin`), mirrored here as `LTE_CONFIGS`:
 | `1254026417` | `mmw_p25` | `0x411 0x421 0x441` | Pixel 10 / 10 Pro / 10 Pro XL, mmWave (US) |
 | `4017061044` | `sub6_p25` | `0x412 0x422 0x442` | Pixel 10 / 10 Pro / 10 Pro XL, sub-6 (RoW) |
 | `2306930561` | `rg5` | `0x481` | Pixel 10 Pro Fold |
-| `844857560` | `sta5_na` | `0x812` | — (unconfirmed) |
-| `1534561764` | `sta5_jp` | `0x814` | — (unconfirmed) |
+| `844857560` | `sta5_na` | `0x812` | Pixel 10a (US), user-reported identification |
+| `1534561764` | `sta5_jp` | `0x814` | Pixel 10a (Japan), inferred regional counterpart |
 
-**Category code** is a `platform | sku | variant` nibble bitfield. The middle (SKU)
+**Category code** is interpreted as a `platform | sku | variant` nibble bitfield.
+Within the observed Pixel 9 (`0x1xx`) and Pixel 10 (`0x4xx`) groups, the middle (SKU)
 nibble `1/2/4` = base/Pro/Pro XL all route to the **same** file (so mmWave-US Pixel 9,
-9 Pro, and 9 Pro XL share `mmw`), and `8` = Fold. Corroborating evidence: **B32 presence
-marks sub-6/RoW** (US files lack B32), and each Fold's combos are **byte-identical** to
-its same-generation RoW phone (`ct3` ≡ `sub6`, `rg5` ≡ `sub6_p25`).
+9 Pro, and 9 Pro XL share `mmw`), and `8` = Fold. These SKU meanings and the observed
+variant/region patterns are scoped to those groups, not a universal decoder for
+`sta5` or other families. In those compared
+phone/Fold families, **B32 presence marks sub-6/RoW** (the US files lack B32), and
+each Fold's combos are **byte-identical** to its same-generation RoW phone
+(`ct3` ≡ `sub6`, `rg5` ≡ `sub6_p25`).
 
 The trailing `<id>` is **not** computed from the file (every CRC/FNV/hash over names and
 content was ruled out) — it is a hardcoded `lte_file_id` from a selection table in the
 firmware. Observed disassembly anchors in that build: the selector at `0x424EEDD4` writes
 `lte_file_id = *(this + 0x7A13C)`; the filename builder is at `0x424EEA68`; the file is
 served over the UecapFile RPC at `0x42E07046`.
+
+### Pixel 10a LTE identification amendment
+
+The user identified `lte_844857560.binarypb` as **Pixel 10a US**. This supplies the
+device identity for the existing firmware entry `sta5_na` / `0x812`; no supporting
+device trace or firmware-to-model proof was supplied with that identification.
+The US identification comes from that report, not from treating `na` as synonymous
+with US or interpreting the low category nibble as a universal region code.
+The **Pixel 10a Japan** identification for `lte_1534561764.binarypb` is an inference
+from the shared `sta5` family, the `jp` suffix, and the paired `0x814` category versus
+`0x812`. It is not an independently observed device selection. Neither identification
+establishes exclusivity or coverage of other regions.
+
+**Implementation status:** `LTE_CONFIGS` exposes the labels `Pixel 10a (US)` and
+`Pixel 10a (Japan, inferred)` through `inspect`. The inference qualifier remains
+visible in the Japan label. These display identifications do not register provisioning
+targets; Pixel 10a NR anchors remain unverified.
+
+**NR evidence boundary:** the LTE ID is a hardcoded selector, not an NR anchor or a
+value from which an anchor can be calculated. The shared Pixel 9 sub-6 LTE file, for
+example, serves base, Pro, and Pro XL devices with different NR anchors. No `sta5`
+to NR-anchor link is recorded in the current registry or the project research searched
+for this amendment. This is a gap in the available evidence, not proof that the
+firmware has no such link.
+
+`sta5_na`, `sta5_jp`, and hardware categories `0x812` / `0x814` are leads for tracing
+the firmware's SKU identity into its NR selection path. A hardware/SKU identity can
+carry distinctions lost when multiple devices share one LTE ID, so it may connect
+the two selection paths. That connection must be traced; neither a category code
+nor the `sta5` string alone guarantees a unique NR anchor. A trace connecting that SKU
+to an NR selector, or a device capture showing the numbered carrier file actually
+selected on an identified Pixel 10a SKU, could establish the missing anchor. Merely
+finding a string, possessing a complete capability-folder dump, or matching payloads
+does not establish selection. Provisioning still requires the evidence-backed
+model-code, NR-anchor, and LTE-ID association described in the
+[registry evidence rule](#registry-evidence-rule).
 
 ## Design conventions & rationale
 
