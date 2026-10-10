@@ -6,15 +6,14 @@ use std::process::ExitCode;
 /// `ExitCode` is total and obvious — but call sites read the *name*, not the number.
 ///
 /// `Rejected` is distinct from an `Err`: the command already printed its own diagnostic and
-/// wants exit code 2 without `main`'s `error: {e:#}` envelope (`inspect` on an unrecognised
-/// filename is the only such case).
+/// wants exit code 2 without duplicating `main`'s `error: {e:#}` envelope, including reports
+/// that emit useful partial output after collecting validation errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Outcome {
-    /// The command did its job and found nothing to report.
+    /// The command completed without errors (a comparison may still report differences).
     Clean = 0,
-    /// The command succeeded and reported findings — differing combos, folder anomalies, an
-    /// unrecognised SKU profile, a self-test failure, a matrix collision.
+    /// A failed runtime self-test. Report validation failures use `Rejected` instead.
     Findings = 1,
     /// The command rejected its input and has already said why on stderr.
     Rejected = 2,

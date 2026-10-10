@@ -6,10 +6,12 @@ pub(crate) mod combos;
 mod compare;
 mod detail;
 mod identity;
+mod input;
 mod inspect;
 mod lte;
 mod matrix;
 mod selftest;
+mod validation;
 
 pub use check::check_folder;
 pub use compare::compare;

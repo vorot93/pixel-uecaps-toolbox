@@ -9,6 +9,7 @@ use crate::{
     raw_nr::SubBlockKind,
 };
 use compact_str::CompactString;
+use std::fmt::Write;
 
 /// A Shannon class/MIMO value -> (carrier class index `A=1..F=6`, MIMO branches 2/4).
 /// `value == 0` -> `(None, 0)` (that direction disabled). An out-of-table nonzero base
@@ -127,17 +128,18 @@ pub(crate) fn config_block(id: u64) -> Vec<String> {
 }
 
 /// Print every LTE combo in the carrier house style (no trimming).
-pub(crate) fn print_lte_combos(caps: &LteCaps, detail: Detail) {
-    println!("LTE band combinations ({})", caps.combos.len());
+pub(crate) fn render_lte_combos(caps: &LteCaps, detail: Detail) -> String {
+    let mut out = format!("LTE band combinations ({})\n", caps.combos.len());
     for (i, combo) in caps.combos.iter().enumerate() {
-        println!("  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
+        let _ = writeln!(out, "  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
         if detail.is_full() {
             for c in &combo.components {
-                println!("       {:<5} {}", eutra(c.band), cc_detail(c));
+                let _ = writeln!(out, "       {:<5} {}", eutra(c.band), cc_detail(c));
             }
-            println!("       bcs {}", combo.bcs.unwrap_or(0));
+            let _ = writeln!(out, "       bcs {}", combo.bcs.unwrap_or(0));
         }
     }
+    out
 }
 
 #[cfg(test)]

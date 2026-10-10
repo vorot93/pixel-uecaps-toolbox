@@ -1,384 +1,234 @@
-//! Single-file analysis (`inspect`): text report for carrier / LTE / mapping files.
-
-use super::read_ue_caps;
+//! Single-file observation with contextual validation and useful partial output.
+use super::{
+    combos::render_combos,
+    detail::Detail,
+    identity::project_combinations,
+    input::{DecodeKind, Payload, read_input, read_optional_legend},
+    validation::{
+        Issue, IssueKind, carrier_context_issues, completion, diagnostics, payload_issues,
+    },
+};
 use crate::{
     factor::{factor_display, gcd},
-    mapping::load_mapping,
     model::{
-        Parsed, Profile, decode_plmn, family_desc, family_short, fp_info, matching_anchors,
-        mcc_country, parse_name, tier_short,
+        Parsed, decode_plmn, family_short, fp_info, matching_anchors, mcc_country, parse_name,
+        tier_short,
     },
     outcome::Outcome,
-    proto::UeCaps,
-    report::{combos::render_combos, detail::Detail, identity::project_combinations},
+    proto::{Carrier, PlmnMap},
 };
-use anyhow::Context;
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, fmt::Write, path::Path};
 
-/// A PLMN integer as its `"<mcc>-<mnc>"` label. `decode_plmn` renders any masked/wildcard
-/// nibble as `*`, which reads well as plain text but is not `mapping::Plmn`'s canonical
-/// hex form (e.g. the ANY-MNC wildcard is `"**"` here, `"ff"` in `Plmn::Display`).
-fn plmn_label(v: u64) -> String {
-    // An out-of-range value is named as corrupt rather than silently truncated into a
-    // different-but-plausible carrier — see `model::decode_plmn`.
-    decode_plmn(v).map_or_else(
-        || format!("<invalid PLMN {v}>"),
+fn plmn_label(value: u64) -> String {
+    decode_plmn(value).map_or_else(
+        || format!("<invalid PLMN {value}>"),
         |(mcc, mnc)| format!("{mcc}-{mnc}"),
     )
 }
-
-/// Distinct countries covered by a PLMN list, in first-seen order.
-fn country_summary(plmns: &[u64]) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut ordered = Vec::new();
-    for &v in plmns {
-        let name = match decode_plmn(v) {
-            Some((mcc, _)) => mcc_country(&mcc).map_or_else(|| format!("MCC{mcc}"), str::to_string),
-            None => "(invalid PLMN)".to_string(),
-        };
-        if seen.insert(name.clone()) {
-            ordered.push(name);
-        }
-    }
-    ordered
+fn render_entry(out: &mut String, index: usize, c: &Carrier) {
+    let plmns = c
+        .plmns
+        .iter()
+        .map(|&v| plmn_label(v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let countries: BTreeSet<_> = c
+        .plmns
+        .iter()
+        .filter_map(|&v| decode_plmn(v))
+        .map(|(mcc, _)| {
+            mcc_country(&mcc)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("MCC{mcc}"))
+        })
+        .collect();
+    let _ = writeln!(
+        out,
+        "  entry {}: {:?} index={} PLMNs ({}) [{plmns}] countries: {}",
+        index + 1,
+        c.name,
+        c.index,
+        c.plmns.len(),
+        countries.into_iter().collect::<Vec<_>>().join(", ")
+    );
 }
-
-/// GCD of all sibling files' numbers = the carrier identity embedded in them.
-fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> (u64, usize) {
+fn render_legend(map: &PlmnMap) -> String {
+    let mut out = format!(
+        "PLMN -> carrier legend\nCarriers : {} (original entries)\n",
+        map.carriers.len()
+    );
+    for (i, c) in map.carriers.iter().enumerate() {
+        render_entry(&mut out, i, c);
+    }
+    out
+}
+fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> anyhow::Result<(u64, usize)> {
     let mut nums = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && let Parsed::Carrier { carrier: c, number } = parse_name(name)
-                && c == carrier
-            {
-                nums.push(number);
-            }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str()
+            && let Parsed::Carrier { carrier: c, number } = parse_name(name)
+            && c == carrier
+        {
+            nums.push(number);
         }
     }
     if nums.is_empty() {
         nums.push(fallback);
     }
-    let g = nums.iter().fold(0u64, |g, &x| gcd(g, x));
-    (g, nums.len())
+    Ok((nums.iter().fold(0, |a, &n| gcd(a, n)), nums.len()))
 }
-
-// --------------------------------------------------------------------------- //
-//  Single-file analysis                                                        //
-// --------------------------------------------------------------------------- //
+fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carrier: &str) {
+    match read_optional_legend(dir) {
+        Err(error) => {
+            issues.push(Issue::input(&dir.join("ap_plmn_mapping.binarypb"), error));
+            out.push_str("Legend identity: unavailable\n");
+        }
+        Ok(None) => out.push_str("Legend: absent (optional)\n"),
+        Ok(Some(input)) => {
+            let errors = payload_issues(&input);
+            let invalid = !errors.is_empty();
+            issues.extend(errors);
+            if let Payload::Legend(map) = input.payload {
+                let matches: Vec<_> = map
+                    .carriers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.name == carrier)
+                    .collect();
+                if invalid {
+                    out.push_str(
+                        "Legend identity: invalid; observed entries below are not authoritative\n",
+                    );
+                }
+                if matches.len() > 1 {
+                    out.push_str("Conflicting legend entries:\n");
+                }
+                if matches.is_empty() && !invalid {
+                    if carrier == "EU_COMMON1" {
+                        out.push_str("Regional default / fallback config\n");
+                    } else {
+                        out.push_str("Carrier not present in legend\n");
+                    }
+                }
+                for (i, c) in matches {
+                    render_entry(out, i, c);
+                }
+            }
+        }
+    }
+}
 pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Outcome> {
-    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-    let dir: PathBuf = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
+    let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+    let parsed = parse_name(base);
+    let kind = match parsed {
+        Parsed::Mapping => DecodeKind::Legend,
+        Parsed::Lte(_) => DecodeKind::Lte,
+        Parsed::Carrier { .. } => DecodeKind::Carrier,
+        Parsed::Other => anyhow::bail!("Not a recognised uecaps filename: {base}"),
     };
-
-    Ok(match parse_name(base) {
-        Parsed::Mapping => {
-            inspect_mapping(&dir);
-            Outcome::Clean
-        }
-        Parsed::Lte(number) => {
-            inspect_lte(path, number, detail);
-            Outcome::Clean
-        }
-        Parsed::Carrier { carrier, number } => {
-            inspect_carrier(path, &dir, &carrier, number, detail)
-        }
-        Parsed::Other => {
-            eprintln!("Not a recognised uecaps filename: {base}");
-            Outcome::Rejected
-        }
-    })
-}
-
-fn inspect_lte(path: &Path, number: u64, detail: Detail) {
-    println!("LTE-only fallback config\n");
-
-    let caps = std::fs::read(path)
-        .with_context(|| format!("cannot read {}", path.display()))
-        .and_then(|d| crate::wire::decode_lte_caps(&d, "LTE fallback config"));
-
-    let fp_line = match &caps {
-        Ok(c) => {
-            let fp_suffix = match fp_info(c.fingerprint) {
-                Some((fam, tier)) => format!(
-                    "  [family {}, {} tier]",
-                    family_short(fam),
-                    tier_short(tier)
-                ),
-                None => "  [UNKNOWN fingerprint]".to_string(),
-            };
-            format!("in-file fp : {}{fp_suffix}", c.fingerprint)
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut issues = Vec::new();
+    let input = match read_input(path, kind) {
+        Ok(input) => {
+            issues.extend(payload_issues(&input));
+            Some(input)
         }
         Err(error) => {
-            format!("in-file fp : (unavailable — {error:#}; filename-only analysis)")
+            issues.push(Issue::input(path, error));
+            None
         }
     };
-    println!("{fp_line}");
-    for line in super::lte::config_block(number) {
-        println!("{line}");
+    let mut out = format!("File: {}\n", path.display());
+    if input.is_none() {
+        out.push_str("Content unavailable; filename-only analysis\n");
     }
-
-    if detail.is_full() {
-        println!();
-        println!("Number       : {number}");
-        println!("  factored   : {}", factor_display(number));
-        if let Ok(c) = &caps {
-            println!("bitmask      : {}", c.bitmask);
-        }
-    }
-    println!();
-
-    match &caps {
-        Ok(c) => super::lte::print_lte_combos(c, detail),
-        Err(error) => println!("LTE band combinations: (unavailable — {error:#})"),
-    }
-}
-
-/// Carrier-config names that are regional-default / fallback configs (legend-absent by
-/// design) rather than operator-specific ones — the alt-tier reference data other operators'
-/// stubs delegate to. These are **exact** documented identifiers (README: "the real alt-tier
-/// data lives in `EU_COMMON1`"; DESIGN.md reference-stub note), not a `ends_with("COMMON")`
-/// guess: that substring both over-matches (a crafted `FOO_COMMON` is not a default) and
-/// misses the real default `EU_COMMON1`, which ends in "1".
-const REGIONAL_DEFAULT_CARRIERS: &[&str] = &["EU_COMMON1"];
-
-/// Whether `carrier` is a documented regional-default / fallback config.
-fn is_regional_default(carrier: &str) -> bool {
-    REGIONAL_DEFAULT_CARRIERS.contains(&carrier)
-}
-
-/// The carrier line plus its legend entry (PLMNs, countries) or the reason it has none.
-fn print_carrier_identity(dir: &Path, carrier: &str, detail: Detail) {
-    let mapping = load_mapping(dir);
-    println!("Carrier      : {carrier}");
-    if let Some(entry) = mapping.get(carrier) {
-        if detail.is_full() {
-            println!("  mapping idx: {}", entry.index);
-        }
-        let mut sample: Vec<String> = entry
-            .plmns
-            .iter()
-            .take(10)
-            .map(|&v| plmn_label(v))
-            .collect();
-        if entry.plmns.len() > 10 {
-            sample.push("...".into());
-        }
-        println!("  PLMNs ({}) : {}", entry.plmns.len(), sample.join(", "));
-        println!(
-            "  countries  : {}",
-            country_summary(&entry.plmns).join(", ")
-        );
-    } else if is_regional_default(carrier) {
-        println!("  (regional default / fallback config -- used when no operator-");
-        println!("   specific config matches the serving network)");
-    } else {
-        println!("  (not present in ap_plmn_mapping.binarypb)");
-    }
-    println!();
-}
-
-/// `--full` only: the trailing number, its factorization, and the carrier signature derived
-/// from sibling files.
-fn print_number_analysis(dir: &Path, carrier: &str, number: u64) {
-    println!("Trailing number");
-    println!("  value      : {number}");
-    println!("  factored   : {}", factor_display(number));
-    println!("  meaning    : carrier-identity  x  SKU-profile tag");
-    println!();
-    let (sig, nsib) = carrier_signature(dir, carrier, number);
-    println!("Carrier signature (common factor of all of this carrier's files)");
-    println!("  value      : {sig}   = {}", factor_display(sig));
-    println!("  derived from: {nsib} sibling file(s) in this directory");
-    if sig != 0 && number.is_multiple_of(sig) {
-        println!("  SKU portion : {number} / {sig} = {}", number / sig);
-    }
-    println!();
-}
-
-/// The in-file-fingerprint status line for the SKU-profile block, plus its short tier when the
-/// fingerprint is recognised: `(tier, "  in-file fp : …  […]")`.
-fn fingerprint_status(caps: Option<&UeCaps>, profile: &Profile) -> (Option<&'static str>, String) {
-    let Some(v) = caps.map(|c| c.version) else {
-        return (
-            None,
-            "  in-file fp : (file not present; filename-only analysis)".to_string(),
-        );
-    };
-    let Some((ffam, t)) = fp_info(v) else {
-        return (None, format!("  in-file fp : {v}  [UNKNOWN fingerprint]"));
-    };
-    let status = if ffam == profile.family {
-        "OK".to_string()
-    } else {
-        format!("MISMATCH: content is {}", family_desc(ffam))
-    };
-    (
-        Some(tier_short(t)),
-        format!("  in-file fp : {v}  [{status}]"),
-    )
-}
-
-/// The SKU-profile block: which profile the number selects, whether the in-file fingerprint
-/// agrees, and (`--full`) the selection rule. Returns `Outcome::Findings` for an unrecognised
-/// profile.
-fn print_sku_profile(caps: Option<&UeCaps>, carrier: &str, number: u64, detail: Detail) -> Outcome {
-    let anchors = matching_anchors(number);
-    let mut outcome = Outcome::Clean;
-    if anchors.len() != 1 {
-        let why = if anchors.is_empty() {
-            "no anchor prime divides the number".to_string()
-        } else {
-            crate::model::ambiguous_anchors(&anchors)
-        };
-        println!("SKU profile  : UNRECOGNISED ({why})");
-        outcome = Outcome::Findings;
-    } else {
-        let profile = anchors[0];
-        let (tier_opt, fp_line) = fingerprint_status(caps, profile);
-        println!("SKU profile  : {}", sku_profile_summary(profile, tier_opt));
-        if detail.is_full() {
-            println!(
-                "  anchor prime: {}  ({number} mod {} == 0  OK)",
-                profile.anchor, profile.anchor
-            );
-            let core: Vec<String> = profile.core.iter().map(u64::to_string).collect();
-            println!("  full tag   : {}", core.join(" · "));
-        }
-        println!("{fp_line}");
-        if detail.is_full() {
-            println!();
-            println!("Selection rule");
-            println!(
-                "  A Pixel whose SKU maps to profile {} loads THIS file, because it is",
-                profile.anchor
-            );
-            println!(
-                "  the unique {carrier} file whose number is divisible by {}.",
-                profile.anchor
-            );
-        }
-    }
-    outcome
-}
-
-fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: Detail) -> Outcome {
-    println!("Carrier UE-capability profile\n");
-    print_carrier_identity(dir, carrier, detail);
-    if detail.is_full() {
-        print_number_analysis(dir, carrier, number);
-    }
-    let caps = read_ue_caps(path);
-    let outcome = print_sku_profile(caps.as_ref().ok(), carrier, number, detail);
-    println!();
-    match &caps {
-        Ok(c) => match project_combinations(c) {
-            Ok(combos) => print!("{}", render_combos(&combos, detail)),
-            Err(errors) => {
-                eprintln!("{}: {}", path.display(), errors.join("; "));
-                return Outcome::Rejected;
+    match parsed {
+        Parsed::Carrier { carrier, number } => {
+            writeln!(
+                out,
+                "Carrier UE-capability profile\nCarrier: {carrier}\nNumber: {number}"
+            )?;
+            carrier_identity(&mut out, &mut issues, dir, &carrier);
+            let caps = input.as_ref().and_then(|i| match &i.payload {
+                Payload::Carrier(c) => Some(c),
+                _ => None,
+            });
+            issues.extend(carrier_context_issues(path, number, caps));
+            for profile in matching_anchors(number) {
+                writeln!(
+                    out,
+                    "SKU profile anchor: {} ({})",
+                    profile.anchor,
+                    profile.model.unwrap_or("unregistered model")
+                )?;
+                if detail.is_full() {
+                    writeln!(
+                        out,
+                        "Selection rule: {number} mod {} = 0; core {:?}",
+                        profile.anchor, profile.core
+                    )?;
+                }
             }
-        },
-        // Naming the reason matters: strict validation now rejects wire-level corruption that
-        // used to decode, and "not readable" would hide both that and a permissions problem.
-        Err(error) => println!("Band combinations: (unavailable — {error:#})"),
-    }
-    outcome
-}
-
-fn inspect_mapping(dir: &Path) {
-    let mapping = load_mapping(dir);
-    println!("File type     : PLMN -> carrier legend (not a capability file)");
-    println!("Carriers      : {}", mapping.len());
-    println!();
-    println!("Maps each network (PLMN) to a carrier-config name; those names are the");
-    println!("<CARRIER> prefixes on the other .binarypb files.");
-    if !mapping.is_empty() {
-        println!();
-        println!(
-            "  {:<18} {:>4} {:>7}  countries",
-            "carrier", "idx", "#PLMNs"
-        );
-        for (name, entry) in &mapping {
-            let countries = country_summary(&entry.plmns);
-            let head: Vec<&str> = countries.iter().take(6).map(String::as_str).collect();
-            println!(
-                "  {:<18} {:>4} {:>7}  {}",
-                name,
-                entry.index,
-                entry.plmns.len(),
-                head.join(", ")
-            );
+            if detail.is_full() {
+                writeln!(out, "Factored: {}", factor_display(number))?;
+                match carrier_signature(dir, &carrier, number) {
+                    Ok((sig, count)) => writeln!(
+                        out,
+                        "Carrier signature: {sig} = {} ({count} sibling files)",
+                        factor_display(sig)
+                    )?,
+                    Err(error) => issues.push(Issue::new(
+                        IssueKind::Read,
+                        dir,
+                        format!("sibling context unavailable: {error:#}"),
+                    )),
+                }
+            }
+            if let Some(caps) = caps {
+                let fp = fp_info(caps.version)
+                    .map(|(f, t)| format!("{}/{}", family_short(f), tier_short(t)))
+                    .unwrap_or_else(|| "UNKNOWN".into());
+                writeln!(out, "In-file fingerprint: {} ({fp})", caps.version)?;
+                if caps.combo_groups.is_empty() {
+                    out.push_str("Band combinations: none (reference stub)\n");
+                } else if let Ok(combos) = project_combinations(caps) {
+                    out.push_str(&render_combos(&combos, detail));
+                } else {
+                    out.push_str(
+                        "Band combinations unavailable: invalid NR references (see diagnostics)\n",
+                    );
+                }
+            }
         }
+        Parsed::Lte(number) => {
+            out.push_str("LTE-only fallback config\n");
+            for line in super::lte::config_block(number) {
+                writeln!(out, "{line}")?;
+            }
+            if let Some(input) = &input
+                && let Payload::Lte(caps) = &input.payload
+            {
+                writeln!(
+                    out,
+                    "In-file fingerprint: {}\nbitmask: {}",
+                    caps.fingerprint, caps.bitmask
+                )?;
+                out.push_str(&super::lte::render_lte_combos(caps, detail));
+            }
+        }
+        Parsed::Mapping => {
+            if let Some(input) = &input
+                && let Payload::Legend(map) = &input.payload
+            {
+                out.push_str(&render_legend(map));
+            }
+        }
+        Parsed::Other => unreachable!(),
     }
-}
-
-/// The text after "SKU profile  : " — anchor id, [family/tier], and the known model (if any).
-fn sku_profile_summary(profile: &Profile, tier: Option<&str>) -> String {
-    let mut s = match tier {
-        Some(t) => format!(
-            "{}  [family {}, {} tier]",
-            profile.anchor,
-            family_short(profile.family),
-            t
-        ),
-        None => format!(
-            "{}  [family {}]",
-            profile.anchor,
-            family_short(profile.family)
-        ),
-    };
-    if let Some(m) = profile.model {
-        s.push_str(" — ");
-        s.push_str(m);
-    }
-    s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sku_profile_summary;
-    use crate::model::{Family, PROFILES, Tier, family_short, tier_short};
-
-    #[test]
-    fn sku_profile_summary_renders_model_inline() {
-        let with_model = PROFILES.iter().find(|p| p.anchor == 3_616_442_437).unwrap();
-        let no_model = PROFILES.iter().find(|p| p.anchor == 8969).unwrap();
-        assert_eq!(
-            sku_profile_summary(with_model, Some("main")),
-            "3616442437  [family A, main tier] — Pixel 10 Pro XL"
-        );
-        assert_eq!(
-            sku_profile_summary(with_model, None),
-            "3616442437  [family A] — Pixel 10 Pro XL"
-        );
-        assert_eq!(
-            sku_profile_summary(no_model, Some("main")),
-            "8969  [family A, main tier]"
-        );
-        assert_eq!(sku_profile_summary(no_model, None), "8969  [family A]");
-    }
-
-    #[test]
-    fn regional_default_uses_exact_documented_identifier() {
-        // The note keys off the exact documented default, not `ends_with("COMMON")`,
-        // which both missed EU_COMMON1 (ends in "1") and over-matched crafted `*COMMON`.
-        assert!(super::is_regional_default("EU_COMMON1"));
-        assert!(!super::is_regional_default("EU_COMMON"));
-        assert!(!super::is_regional_default("APAC_COMMON"));
-        assert!(!super::is_regional_default("VZW"));
-    }
-
-    #[test]
-    fn short_renderers() {
-        assert_eq!(family_short(Family::A), "A");
-        assert_eq!(family_short(Family::B), "B");
-        assert_eq!(tier_short(Tier::Main), "main");
-        assert_eq!(tier_short(Tier::Alt), "alt");
-    }
+    super::write_report(&out, &diagnostics(&issues))?;
+    Ok(completion(!issues.is_empty()))
 }

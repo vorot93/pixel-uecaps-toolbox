@@ -28,7 +28,10 @@ fn load(path: &Path) -> anyhow::Result<(Index, String)> {
         ),
         _ => (),
     }
-    let caps = super::read_ue_caps(path)?;
+    let input = super::input::read_input(path, super::input::DecodeKind::Carrier)?;
+    let super::input::Payload::Carrier(caps) = input.payload else {
+        unreachable!()
+    };
     anyhow::ensure!(
         !caps.combo_groups.is_empty(),
         "{} is a reference stub",

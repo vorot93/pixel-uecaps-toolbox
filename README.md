@@ -547,6 +547,12 @@ nothing back.
 
 ## Command reference
 
+`inspect` retains decoded evidence and reports read, wire, reference, and applicable filename/
+legend validation errors with exit 2, even if it can display part of the requested file.
+Missing optional neighboring legends are normal; missing explicitly requested files are errors.
+Conflicting legend entries remain visible, and invalid legend data is never presented as a valid
+empty map. `--full` shows every DL/UL component-carrier record and explicit optional values.
+
 | Command | What it does |
 | --- | --- |
 | `decompose --bitmask DIR --profiled DIR [-o FILE]` | Decompose both complete folder layouts into the canonical source document, written to `FILE` or to stdout when `-o` is omitted. Both input directories are required; unsupported `.binarypb` files or any lossy/failed self-check exit `2`. |

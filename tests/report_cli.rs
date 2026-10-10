@@ -1,7 +1,125 @@
 #[path = "support/report.rs"]
 mod support;
 use pixel_uecaps_toolbox::proto::*;
+use std::{ffi::OsStr, fs};
 use support::{carrier, compare_pair, text};
+
+fn inspect(path: &std::path::Path) -> std::process::Output {
+    support::run([
+        OsStr::new("inspect"),
+        path.as_os_str(),
+        OsStr::new("--full"),
+    ])
+}
+
+#[test]
+fn inspect_corruption_and_missing_files_fail() {
+    let dir = support::fixture();
+    for name in [
+        "ALPHA_66813533.binarypb",
+        "lte_400907661.binarypb",
+        "ap_plmn_mapping.binarypb",
+    ] {
+        let path = dir.path().join(name);
+        fs::write(&path, [0x78, 0x01]).unwrap();
+        let out = inspect(&path);
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{body}");
+        assert!(body.contains("15"), "{body}");
+        assert!(!body.contains("file not present"));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(inspect(&path).status.code(), Some(2));
+    }
+}
+
+#[test]
+fn inspect_invalid_anchor_cardinality_returns_two() {
+    let dir = support::fixture();
+    for name in ["ALPHA_1.binarypb", "ALPHA_558949.binarypb"] {
+        let path = dir.path().join(name);
+        support::write_message(&path, &carrier());
+        let out = inspect(&path);
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{body}");
+        assert!(body.contains("anchor"));
+        if name.contains("558949") {
+            assert!(body.contains("167") && body.contains("3347"));
+        }
+    }
+}
+
+#[test]
+fn legend_errors_accumulate_before_lookup() {
+    let dir = support::fixture();
+    let path = dir.path().join("ALPHA_66813533.binarypb");
+    support::write_message(&path, &carrier());
+    let legend = dir.path().join("ap_plmn_mapping.binarypb");
+    let map = PlmnMap {
+        carriers: vec![
+            Carrier {
+                name: String::new(),
+                index: 1,
+                plmns: vec![1 << 24],
+            },
+            Carrier {
+                name: "ALPHA".into(),
+                index: 1,
+                plmns: vec![2_291_967],
+            },
+            Carrier {
+                name: "ALPHA".into(),
+                index: 3,
+                plmns: vec![5_435_408],
+            },
+        ],
+    };
+    support::write_message(&legend, &map);
+    for file in [&path, &legend] {
+        let out = inspect(file);
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{body}");
+        for token in ["empty", "duplicate", "index", "16777216", "ALPHA"] {
+            assert!(body.contains(token), "{token}: {body}");
+        }
+    }
+    let body = text(&inspect(&path));
+    assert!(body.contains("DL[2]"), "{body}");
+}
+
+#[test]
+fn valid_empty_and_optional_legends_are_distinct_from_missing_requested() {
+    let dir = support::fixture();
+    let path = dir.path().join("ALPHA_66813533.binarypb");
+    support::write_message(&path, &carrier());
+    assert_eq!(inspect(&path).status.code(), Some(0));
+    let legend = dir.path().join("ap_plmn_mapping.binarypb");
+    assert_eq!(inspect(&legend).status.code(), Some(2));
+    support::write_message(&legend, &PlmnMap::default());
+    assert_eq!(inspect(&legend).status.code(), Some(0));
+    support::write_message(
+        &legend,
+        &PlmnMap {
+            carriers: vec![Carrier {
+                name: "ALPHA".into(),
+                index: 1,
+                plmns: vec![2_291_967, 2_291_967],
+            }],
+        },
+    );
+    assert_eq!(inspect(&path).status.code(), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_optional_legend_is_an_error() {
+    let dir = support::fixture();
+    let path = dir.path().join("ALPHA_66813533.binarypb");
+    support::write_message(&path, &carrier());
+    std::os::unix::fs::symlink("missing", dir.path().join("ap_plmn_mapping.binarypb")).unwrap();
+    let out = inspect(&path);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(text(&out).contains("cannot read"));
+}
 
 fn changed(a: &UeCaps, b: &UeCaps) -> String {
     let out = compare_pair(a, b, true);
