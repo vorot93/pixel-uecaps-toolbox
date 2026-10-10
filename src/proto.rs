@@ -46,7 +46,7 @@ pub struct ComboGroup {
     pub combo: Vec<Combo>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, ::prost::Message)]
 pub struct ComboHeader {
     #[prost(uint32, optional, tag = "1")]
     pub bcs_nr: Option<u32>,

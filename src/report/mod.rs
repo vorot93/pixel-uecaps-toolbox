@@ -5,6 +5,7 @@ mod check;
 pub(crate) mod combos;
 mod compare;
 mod detail;
+mod identity;
 mod inspect;
 mod lte;
 mod matrix;
@@ -17,13 +18,19 @@ pub use inspect::inspect;
 pub use matrix::matrix;
 pub use selftest::self_test;
 
-use crate::{
-    model::{Parsed, parse_name},
-    proto::UeCaps,
-};
+use crate::proto::UeCaps;
 use anyhow::Context;
-use combos::{Combo, build_combos};
-use std::path::Path;
+use std::{io::Write, path::Path};
+
+fn write_report(body: &str, diagnostics: &str) -> anyhow::Result<()> {
+    let mut stderr = std::io::stderr().lock();
+    stderr.write_all(diagnostics.as_bytes())?;
+    stderr.flush()?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(body.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
 
 /// Read and **strictly** validate one capability file.
 ///
@@ -54,53 +61,6 @@ fn binarypb_names(dir: &Path) -> anyhow::Result<Vec<String>> {
         .collect();
     names.sort_unstable();
     Ok(names)
-}
-
-#[derive(Debug)]
-struct CarrierCombos {
-    combos: Vec<Combo>,
-    number: Option<u64>,
-    version: u64,
-    filename: String,
-}
-
-/// Validate a filename as a `<CARRIER>_<NUMBER>` capability file, decode it, and
-/// build its combos. Errors on the legend / `lte_*` names, undecodable content, and
-/// reference stubs (no band combinations). The name checks run before any file read.
-///
-/// Decoding is fail-closed, via [`read_ue_caps`]. This module was once deliberately lenient
-/// here on the grounds that `compare` is read-only, but that left `check` — whose entire job is
-/// auditing for anomalies — accepting unmodeled fields, wrong wire types and packed PLMN lists
-/// that the compiler hard-errors on. An audit that is more permissive than the writer reports
-/// corrupt input as clean, so the leniency is gone.
-fn load_carrier_combos(path: &Path) -> anyhow::Result<CarrierCombos> {
-    let filename = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("?")
-        .to_string();
-    let number = match parse_name(&filename) {
-        Parsed::Mapping => {
-            anyhow::bail!("{filename} is the PLMN legend, not a <CARRIER>_<NUMBER> capability file")
-        }
-        Parsed::Lte(_) => {
-            anyhow::bail!("{filename} is an LTE fallback, not a <CARRIER>_<NUMBER> capability file")
-        }
-        Parsed::Carrier { number, .. } => Some(number),
-        Parsed::Other => None,
-    };
-    let caps = read_ue_caps(path)
-        .with_context(|| format!("cannot read {filename} as a UE-capability file"))?;
-    let combos = build_combos(&caps);
-    if combos.is_empty() {
-        anyhow::bail!("{filename} has no band combinations (reference stub)");
-    }
-    Ok(CarrierCombos {
-        combos,
-        number,
-        version: caps.version,
-        filename,
-    })
 }
 
 #[cfg(test)]

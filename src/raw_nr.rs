@@ -41,7 +41,7 @@ impl SubBlockKind {
 
     /// The human band label for a plain band number of this kind: `n<band>` (NR) or `B<band>`
     /// (E-UTRA). The single source of the `n`/`B` prefix convention for every caller that
-    /// already knows a component's kind; the free [`report::combos::band_label`](crate::report::combos::band_label)
+    /// already knows a component's kind; [`render_component`](crate::report::combos::render_component)
     /// *infers* the kind from a raw band instead, so it is only for callers that genuinely do
     /// not know the kind. Being statically single-kind is a reason to call *this*, not to skip
     /// it: `report::lte` used to format `B` inline on the grounds that no NR component reaches

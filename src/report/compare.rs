@@ -1,601 +1,121 @@
-//! `compare`: diff the band combinations of two capability files.
-
+//! Typed capability set comparison; rendering and differences never determine success.
 use super::{
-    combos::{Combo, cc_component_label, combo_key, fmt_cc_features},
+    combos::{render_key, render_shape},
     detail::{Common, Detail},
+    identity::{CombinationKey, ShapeKey, project_combinations, shape},
 };
 use crate::{
-    model::{family_short, fp_info, identify_profile, tier_short},
+    model::{Parsed, family_short, fp_info, identify_profile, parse_name, tier_short},
     outcome::Outcome,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fmt::Write as _,
+    fmt::Write,
     path::Path,
 };
 
-/// One combo's capability signature: sorted `(component_label, caps_line)` pairs.
-/// Two combos with the same key have equal caps iff their signatures are equal.
-type Signature = Vec<(String, String)>;
-
-struct ComboDiff {
-    only_in_a: Vec<String>,
-    only_in_b: Vec<String>,
-    changed: Vec<ChangedCombo>,
-    common: Vec<String>,
-}
-
-struct ChangedCombo {
-    key: String,
-    change: CapsChange,
-}
-
-enum CapsChange {
-    /// One signature per side, unique component labels: per differing component,
-    /// `(component_label, a_caps_line, b_caps_line)`.
-    PerComponent(Vec<(String, String, String)>),
-    /// Otherwise: each side's distinct signatures, listed verbatim.
-    Variants {
-        a: Vec<Signature>,
-        b: Vec<Signature>,
-    },
-}
-
-impl ComboDiff {
-    const fn has_differences(&self) -> bool {
-        !self.only_in_a.is_empty() || !self.only_in_b.is_empty() || !self.changed.is_empty()
+type Index = BTreeMap<ShapeKey, BTreeSet<CombinationKey>>;
+fn load(path: &Path) -> anyhow::Result<(Index, String)> {
+    let name = path.file_name().and_then(|p| p.to_str()).unwrap_or("?");
+    match parse_name(name) {
+        Parsed::Mapping => anyhow::bail!(
+            "{} is the PLMN legend, not a carrier capability file",
+            path.display()
+        ),
+        Parsed::Lte(_) => anyhow::bail!(
+            "{} is an LTE fallback, not a carrier capability file",
+            path.display()
+        ),
+        _ => (),
     }
-}
-
-fn combo_signature(combo: &Combo) -> Signature {
-    let mut sig: Signature = combo
-        .sub_blocks
-        .iter()
-        .map(|cc| (cc_component_label(cc), fmt_cc_features(cc)))
-        .collect();
-    sig.sort_unstable();
-    // Prepend the combo-header identity so two combos with identical CC lists but a
-    // different power_class / bcs_* / intra_band / bit_mask are still a change. The `(hdr)`
-    // label cannot collide with a real component label (`n78A` / `B1`) and renders the
-    // header diff as its own line.
-    sig.insert(0, ("(hdr)".to_string(), header_signature(combo)));
-    sig
-}
-
-/// The combo-header identity fields `combo_signature` folds in: `power_class`, the three
-/// `bcs_*`, intra-band EN-DC, and the per-combo `bit_mask`.
-fn header_signature(combo: &Combo) -> String {
-    format!(
-        "pc={:?} bcs_nr={:?} bcs_intra_endc={:?} bcs_eutra={:?} intra_endc={:?} mask={:?}",
-        combo.power_class,
-        combo.bcs_nr,
-        combo.bcs_intra_endc,
-        combo.bcs_eutra,
-        combo.intra_band_en_dc_support,
-        combo.bit_mask,
-    )
-}
-
-/// key -> the set of distinct signatures seen for that key in one file.
-fn index(combos: &[Combo]) -> BTreeMap<String, BTreeSet<Signature>> {
-    let mut m: BTreeMap<String, BTreeSet<Signature>> = BTreeMap::new();
-    for c in combos {
-        m.entry(combo_key(c))
-            .or_default()
-            .insert(combo_signature(c));
-    }
-    m
-}
-
-fn has_unique_labels(sig: &Signature) -> bool {
-    let mut labels: Vec<&str> = sig.iter().map(|(l, _)| l.as_str()).collect();
-    labels.sort_unstable();
-    labels.windows(2).all(|w| w[0] != w[1])
-}
-
-/// Per-component `(label, a_line, b_line)` triples for every component whose caps line
-/// differs between two same-shape signatures. Assumes both sides already have unique
-/// labels (the caller checks via [`has_unique_labels`] before calling this).
-fn per_component_diffs(a: &Signature, b: &Signature) -> Vec<(String, String, String)> {
-    let bmap: BTreeMap<&str, &str> = b.iter().map(|(l, ln)| (l.as_str(), ln.as_str())).collect();
-    let mut diffs = Vec::new();
-    for (label, a_line) in a {
-        if let Some(&b_line) = bmap.get(label.as_str())
-            && a_line != b_line
-        {
-            diffs.push((label.clone(), a_line.clone(), b_line.to_string()));
-        }
-    }
-    diffs
-}
-
-fn classify_change(sa: &BTreeSet<Signature>, sb: &BTreeSet<Signature>) -> CapsChange {
-    if sa.len() == 1 && sb.len() == 1 {
-        let a = sa.iter().next().unwrap();
-        let b = sb.iter().next().unwrap();
-        if has_unique_labels(a) && has_unique_labels(b) {
-            return CapsChange::PerComponent(per_component_diffs(a, b));
-        }
-    }
-    CapsChange::Variants {
-        a: sa.iter().cloned().collect(),
-        b: sb.iter().cloned().collect(),
-    }
-}
-
-/// One key's `ChangedCombo` once `sa`/`sb` (its two files' distinct-signature sets) are
-/// already known to differ.
-fn changed_combo(key: &str, sa: &BTreeSet<Signature>, sb: &BTreeSet<Signature>) -> ChangedCombo {
-    ChangedCombo {
-        key: key.to_string(),
-        change: classify_change(sa, sb),
-    }
-}
-
-/// Diff two files' combos. Keys come out sorted (BTreeMap iteration order).
-fn diff_combos(a: &[Combo], b: &[Combo]) -> ComboDiff {
-    let ia = index(a);
-    let ib = index(b);
-    let only_in_a: Vec<String> = ia
-        .keys()
-        .filter(|k| !ib.contains_key(*k))
-        .cloned()
-        .collect();
-    let only_in_b: Vec<String> = ib
-        .keys()
-        .filter(|k| !ia.contains_key(*k))
-        .cloned()
-        .collect();
-    let mut changed = Vec::new();
-    let mut common = Vec::new();
-    for (k, sa) in &ia {
-        if let Some(sb) = ib.get(k) {
-            common.push(k.clone());
-            if sa != sb {
-                changed.push(changed_combo(k, sa, sb));
-            }
-        }
-    }
-    ComboDiff {
-        only_in_a,
-        only_in_b,
-        changed,
-        common,
-    }
-}
-
-/// `A: <file>   <profile>   fp <version> (<tier>/<family>)`.
-fn render_header_line(label: char, filename: &str, number: Option<u64>, version: u64) -> String {
-    let profile = number
-        .and_then(identify_profile)
-        .map_or_else(|| "?".to_string(), |p| p.anchor.to_string());
-    let fp = match fp_info(version) {
-        Some((fam, tier)) => format!("{}/{}", tier_short(tier), family_short(fam)),
-        None => "unknown".to_string(),
-    };
-    format!("{label}: {filename}   {profile}   fp {version} ({fp})")
-}
-
-/// Render the `common (N):` section: every key present in both files, marked
-/// `=` (identical caps) or `~` (caps differ). Returns "" when there are no
-/// common combos, so callers can invoke it unconditionally.
-fn render_common_section(diff: &ComboDiff) -> String {
-    if diff.common.is_empty() {
-        return String::new();
-    }
-    let changed: BTreeSet<&str> = diff.changed.iter().map(|c| c.key.as_str()).collect();
-    let mut out = format!("\ncommon ({}):\n", diff.common.len());
-    for k in &diff.common {
-        let mark = if changed.contains(k.as_str()) {
-            '~'
-        } else {
-            '='
-        };
-        let _ = writeln!(out, "  {mark} {k}");
-    }
-    out
-}
-
-/// Render one `only in <label> (N):` section (`label` is `'A'`/`'B'`; `marker` is the
-/// leading `-`/`+`, matching the summary line's arithmetic sign): one `  <marker> <key>`
-/// line per key. Returns "" when `keys` is empty, so callers can invoke it unconditionally.
-fn render_only_in_section(label: char, keys: &[String], marker: char) -> String {
-    if keys.is_empty() {
-        return String::new();
-    }
-    let mut out = format!("\nonly in {label} ({}):\n", keys.len());
-    for k in keys {
-        let _ = writeln!(out, "  {marker} {k}");
-    }
-    out
-}
-
-/// Render one `~ <key>` per-component change: each differing component's `A:`/`B:` caps
-/// lines. Only reached when both sides have unique labels, so each label appears once.
-fn render_per_component_diff(key: &str, diffs: &[(String, String, String)]) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "  ~ {key}");
-    for (label, a_line, b_line) in diffs {
-        let _ = writeln!(out, "      {label:<6} A: {a_line}");
-        let _ = writeln!(out, "      {:<6} B: {b_line}", "");
-    }
-    out
-}
-
-/// Render one side's (`label` `'A'`/`'B'`) numbered signature list under a
-/// [`CapsChange::Variants`] entry: `<label>[i]:` followed by each component's caps line.
-fn render_variant_side(label: char, sigs: &[Signature]) -> String {
-    let mut out = String::new();
-    for (i, sig) in sigs.iter().enumerate() {
-        let _ = writeln!(out, "      {label}[{}]:", i + 1);
-        for (comp_label, line) in sig {
-            let _ = writeln!(out, "        {comp_label:<6} {line}");
-        }
-    }
-    out
-}
-
-/// Render one `~ <key>  (multiple variants)` change: both sides' full signature lists,
-/// verbatim — reached when component labels collided, so no per-component pairing was
-/// possible ([`classify_change`] falls back to this whenever [`has_unique_labels`] fails).
-fn render_variant_diff(key: &str, a: &[Signature], b: &[Signature]) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "  ~ {key}  (multiple variants)");
-    out.push_str(&render_variant_side('A', a));
-    out.push_str(&render_variant_side('B', b));
-    out
-}
-
-/// Render the `caps changed (N):` detail block (only under [`Detail::Full`]): per changed
-/// combo, either its [`CapsChange::PerComponent`] before/after lines or its
-/// [`CapsChange::Variants`] full lists. Returns "" when `changed` is empty, so the caller
-/// can invoke it unconditionally once `detail.is_full()`.
-fn render_changed_section(changed: &[ChangedCombo]) -> String {
-    if changed.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    let _ = writeln!(out, "\ncaps changed ({}):", changed.len());
-    for ch in changed {
-        match &ch.change {
-            CapsChange::PerComponent(diffs) => {
-                out.push_str(&render_per_component_diff(&ch.key, diffs))
-            }
-            CapsChange::Variants { a, b } => out.push_str(&render_variant_diff(&ch.key, a, b)),
-        }
-    }
-    out
-}
-
-/// Render the summary + set diff (+ caps detail under [`Detail::Full`]). Header is separate.
-fn render_diff_body(diff: &ComboDiff, detail: Detail, common: Common) -> String {
-    let mut out = String::new();
-    if !diff.has_differences() {
-        let _ = writeln!(out, "  {} common · no differences", diff.common.len());
-        if common.is_shown() {
-            out.push_str(&render_common_section(diff));
-        }
-        return out;
-    }
-    let _ = writeln!(
-        out,
-        "  {} common ({} caps-changed) · {} only in A · {} only in B",
-        diff.common.len(),
-        diff.changed.len(),
-        diff.only_in_a.len(),
-        diff.only_in_b.len(),
+    let caps = super::read_ue_caps(path)?;
+    anyhow::ensure!(
+        !caps.combo_groups.is_empty(),
+        "{} is a reference stub",
+        path.display()
     );
-    out.push_str(&render_only_in_section('A', &diff.only_in_a, '-'));
-    out.push_str(&render_only_in_section('B', &diff.only_in_b, '+'));
-    if common.is_shown() {
-        out.push_str(&render_common_section(diff));
+    let combos = project_combinations(&caps)
+        .map_err(|errors| anyhow::anyhow!("{}: {}", path.display(), errors.join("; ")))?;
+    let mut index = Index::new();
+    for combo in combos {
+        index
+            .entry(shape(&combo.key))
+            .or_default()
+            .insert(combo.key);
     }
-    if detail.is_full() {
-        out.push_str(&render_changed_section(&diff.changed));
+    let profile = match parse_name(name) {
+        Parsed::Carrier { number, .. } => identify_profile(number).map(|p| p.anchor.to_string()),
+        _ => None,
     }
-    out
+    .unwrap_or_else(|| "?".into());
+    let fingerprint = fp_info(caps.version)
+        .map(|(f, t)| format!("{}/{}", tier_short(t), family_short(f)))
+        .unwrap_or_else(|| "unknown".into());
+    Ok((
+        index,
+        format!(
+            "{}   {profile}   fp {} ({fingerprint})",
+            path.display(),
+            caps.version
+        ),
+    ))
 }
 
-/// Load and validate one file; return its combos and its header line.
-/// Errors (exit 2 at the boundary) on non-capability files and reference stubs.
-fn load(path: &Path, label: char) -> anyhow::Result<(Vec<Combo>, String)> {
-    let cc = crate::report::load_carrier_combos(path)?;
-    let header = render_header_line(label, &cc.filename, cc.number, cc.version);
-    Ok((cc.combos, header))
-}
-
-/// `compare`: diff the band combinations of two capability files (stdin not used).
 pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Result<Outcome> {
-    let (combos_a, header_a) = load(a, 'A')?;
-    let (combos_b, header_b) = load(b, 'B')?;
-    let diff = diff_combos(&combos_a, &combos_b);
-    println!("{header_a}");
-    println!("{header_b}");
-    print!("{}", render_diff_body(&diff, detail, common));
-    Ok(diff.has_differences().into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::report::combos::SubBlock;
-
-    /// `mimo` is the raw DL MIMO code: 2 renders as `4x4`, 3 as `8x8`.
-    fn nr_cc(band_n: i32, class: i32, mimo: i32) -> SubBlock {
-        SubBlock {
-            band: format!("n{band_n}").into(),
-            dl_bw_class: Some(class),
-            ul_bw_class: Some(class),
-            dl_features: vec![crate::proto::ShannonFeatureSetDlPerCcNr {
-                max_bw: Some(100),
-                max_mimo: Some(mimo),
-                ..Default::default()
-            }],
-            ..Default::default()
-        }
+    let (left, header_a) = load(a)?;
+    let (right, header_b) = load(b)?;
+    let shared: Vec<_> = left.keys().filter(|k| right.contains_key(*k)).collect();
+    let changed: Vec<_> = shared
+        .iter()
+        .copied()
+        .filter(|k| left[*k] != right[*k])
+        .collect();
+    let only_a: Vec<_> = left.keys().filter(|k| !right.contains_key(*k)).collect();
+    let only_b: Vec<_> = right.keys().filter(|k| !left.contains_key(*k)).collect();
+    let mut out = format!("A: {header_a}\nB: {header_b}\n");
+    if changed.is_empty() && only_a.is_empty() && only_b.is_empty() {
+        writeln!(out, "  {} common · no differences", shared.len())?;
+    } else {
+        writeln!(
+            out,
+            "  {} common ({} caps-changed) · {} only in A · {} only in B",
+            shared.len(),
+            changed.len(),
+            only_a.len(),
+            only_b.len()
+        )?;
     }
-    fn combo(ccs: Vec<SubBlock>) -> Combo {
-        Combo {
-            sub_blocks: ccs,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn key_is_order_independent() {
-        let a = combo(vec![nr_cc(78, 1, 2), nr_cc(3, 1, 2)]);
-        let b = combo(vec![nr_cc(3, 1, 2), nr_cc(78, 1, 2)]);
-        assert_eq!(combo_key(&a), "n3A + n78A");
-        assert_eq!(combo_key(&a), combo_key(&b));
-    }
-
-    #[test]
-    fn set_diff_added_removed_shared() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
-        let d = diff_combos(&a, &b);
-        assert_eq!(d.only_in_a, vec!["n41A"]);
-        assert_eq!(d.only_in_b, vec!["n1A"]);
-        assert_eq!(d.common, vec!["n78A"]);
-        assert!(d.changed.is_empty());
-        assert!(d.has_differences());
-    }
-
-    #[test]
-    fn detects_caps_change_per_component() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
-        let d = diff_combos(&a, &b);
-        assert_eq!(d.only_in_a.len(), 0);
-        assert_eq!(d.only_in_b.len(), 0);
-        assert_eq!(d.changed.len(), 1);
-        assert_eq!(d.changed[0].key, "n78A");
-        match &d.changed[0].change {
-            CapsChange::PerComponent(diffs) => {
-                assert_eq!(diffs.len(), 1);
-                assert_eq!(diffs[0].0, "n78A");
-                assert!(diffs[0].1.contains("4x4"));
-                assert!(diffs[0].2.contains("8x8"));
+    for (label, marker, keys) in [('A', '-', only_a), ('B', '+', only_b)] {
+        if !keys.is_empty() {
+            writeln!(out, "\nonly in {label} ({}):", keys.len())?;
+            for key in keys {
+                writeln!(out, "  {marker} {}", render_shape(key))?;
             }
-            _ => panic!("expected PerComponent"),
         }
     }
-
-    #[test]
-    fn identical_inputs_have_no_differences() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let d = diff_combos(&a, &a);
-        assert!(!d.has_differences());
-        assert_eq!(d.common, vec!["n78A"]);
+    if common.is_shown() && !shared.is_empty() {
+        writeln!(out, "\ncommon ({}):", shared.len())?;
+        for key in shared {
+            writeln!(
+                out,
+                "  {} {}",
+                if left[key] == right[key] { '=' } else { '~' },
+                render_shape(key)
+            )?;
+        }
     }
-
-    #[test]
-    fn multi_variant_takes_block_path() {
-        // same key n78A, two distinct caps variants on side A, one on side B
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(78, 1, 3)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let d = diff_combos(&a, &b);
-        assert_eq!(d.changed.len(), 1);
-        match &d.changed[0].change {
-            CapsChange::Variants { a, b } => {
-                assert_eq!(a.len(), 2);
-                assert_eq!(b.len(), 1);
+    if detail.is_full() && !changed.is_empty() {
+        writeln!(out, "\ncaps changed ({}):", changed.len())?;
+        for key in changed {
+            writeln!(out, "  ~ {}", render_shape(key))?;
+            // Whole typed variants also handle repeated component labels without guessing pairing.
+            for (label, index) in [('A', &left), ('B', &right)] {
+                for (i, variant) in index[key].iter().enumerate() {
+                    writeln!(out, "    {label}[{}]:\n{}", i + 1, render_key(variant))?;
+                }
             }
-            _ => panic!("expected Variants"),
         }
     }
-
-    #[test]
-    fn header_line_format() {
-        // 193698151252893 is a VZW anchor-167 number; 874888686 is a main/A fingerprint.
-        let h = render_header_line(
-            'A',
-            "VZW_193698151252893.binarypb",
-            Some(193_698_151_252_893),
-            874_888_686,
-        );
-        assert_eq!(
-            h,
-            "A: VZW_193698151252893.binarypb   167   fp 874888686 (main/A)"
-        );
-    }
-
-    #[test]
-    fn body_no_differences() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let d = diff_combos(&a, &a);
-        assert_eq!(
-            render_diff_body(&d, Detail::Summary, Common::Hide),
-            "  1 common · no differences\n"
-        );
-    }
-
-    #[test]
-    fn body_set_diff_summary_and_lists() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
-        assert!(
-            out.starts_with("  1 common (0 caps-changed) · 1 only in A · 1 only in B\n"),
-            "{out}"
-        );
-        assert!(out.contains("only in A (1):\n  - n41A\n"), "{out}");
-        assert!(out.contains("only in B (1):\n  + n1A\n"), "{out}");
-    }
-
-    #[test]
-    fn body_full_shows_caps_change() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Full, Common::Hide);
-        assert!(out.contains("caps changed (1):\n"), "{out}");
-        assert!(out.contains("~ n78A\n"), "{out}");
-        assert!(out.contains("A: DL 100MHz 4x4"), "{out}");
-        assert!(out.contains("B: DL 100MHz 8x8"), "{out}");
-    }
-
-    #[test]
-    fn body_omits_caps_detail_without_full() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 3)])];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
-        assert!(out.contains("1 common (1 caps-changed)"), "{out}");
-        assert!(!out.contains("caps changed (1):"), "{out}");
-    }
-
-    #[test]
-    fn common_lists_all_with_markers() {
-        // n41A identical in both (=), n78A caps differ (~), one unique key each side.
-        let a = vec![
-            combo(vec![nr_cc(41, 1, 2)]),
-            combo(vec![nr_cc(78, 1, 2)]),
-            combo(vec![nr_cc(5, 1, 2)]),
-        ];
-        let b = vec![
-            combo(vec![nr_cc(41, 1, 2)]),
-            combo(vec![nr_cc(78, 1, 3)]),
-            combo(vec![nr_cc(1, 1, 2)]),
-        ];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
-        assert!(out.contains("\ncommon (2):\n"), "{out}");
-        assert!(out.contains("  = n41A\n"), "{out}");
-        assert!(out.contains("  ~ n78A\n"), "{out}");
-        // sorted: n41A before n78A
-        assert!(
-            out.find("= n41A").unwrap() < out.find("~ n78A").unwrap(),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn common_off_by_default_has_no_section() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(1, 1, 2)])];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Hide);
-        assert!(!out.contains("\ncommon ("), "{out}");
-        assert!(out.starts_with("  1 common (0 caps-changed)"), "{out}");
-    }
-
-    #[test]
-    fn common_with_no_differences_lists_all() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(41, 1, 2)])];
-        let out = render_diff_body(&diff_combos(&a, &a), Detail::Summary, Common::Show);
-        assert!(out.starts_with("  2 common · no differences\n"), "{out}");
-        assert!(out.contains("\ncommon (2):\n"), "{out}");
-        assert!(out.contains("  = n41A\n"), "{out}");
-        assert!(out.contains("  = n78A\n"), "{out}");
-        assert!(!out.contains('~'), "{out}");
-    }
-
-    #[test]
-    fn common_empty_omits_section() {
-        let a = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let b = vec![combo(vec![nr_cc(1, 1, 2)])];
-        let out = render_diff_body(&diff_combos(&a, &b), Detail::Summary, Common::Show);
-        assert!(!out.contains("\ncommon ("), "{out}");
-        assert!(
-            out.starts_with("  0 common (0 caps-changed) · 1 only in A · 1 only in B\n"),
-            "{out}"
-        );
-    }
-
-    #[test]
-    fn common_marks_multi_variant_with_tilde() {
-        // n78A is present in both, but side A carries two caps variants — this
-        // lands in `changed` via the Variants path (not PerComponent). It must
-        // still be marked `~` in the common section, since the marker keys off
-        // `changed` membership, not the CapsChange variant.
-        let a = vec![combo(vec![nr_cc(78, 1, 2)]), combo(vec![nr_cc(78, 1, 3)])];
-        let b = vec![combo(vec![nr_cc(78, 1, 2)])];
-        let d = diff_combos(&a, &b);
-        assert!(matches!(d.changed[0].change, CapsChange::Variants { .. }));
-        let out = render_diff_body(&d, Detail::Summary, Common::Show);
-        assert!(out.contains("\ncommon (1):\n"), "{out}");
-        assert!(out.contains("  ~ n78A\n"), "{out}");
-        assert!(!out.contains("  = n78A\n"), "{out}");
-    }
-
-    #[test]
-    fn load_rejects_non_capability_files() {
-        use std::path::Path;
-        // These bail at parse_name (filename only) before any filesystem read.
-        let e = load(Path::new("ap_plmn_mapping.binarypb"), 'A').unwrap_err();
-        assert!(e.to_string().contains("PLMN legend"), "{e}");
-        let e = load(Path::new("lte_844857560.binarypb"), 'A').unwrap_err();
-        assert!(e.to_string().contains("LTE fallback"), "{e}");
-    }
-
-    #[test]
-    fn header_field_change_is_detected() {
-        // Identical CC lists but a different combo-header field (power_class) must be
-        // a difference.
-        let mut a = combo(vec![nr_cc(78, 1, 2)]);
-        a.power_class = Some(3);
-        let mut b = combo(vec![nr_cc(78, 1, 2)]);
-        b.power_class = Some(2);
-        let d = diff_combos(&[a], &[b]);
-        assert!(d.has_differences(), "power_class change must be detected");
-        assert_eq!(d.changed.len(), 1);
-        assert_eq!(d.changed[0].key, "n78A");
-    }
-
-    #[test]
-    fn bitmask_change_is_detected() {
-        // Per-combo bit_mask is part of a combo's identity; compare must agree.
-        let mut a = combo(vec![nr_cc(78, 1, 2)]);
-        a.bit_mask = Some(1);
-        let b = combo(vec![nr_cc(78, 1, 2)]); // bit_mask absent
-        let d = diff_combos(&[a], &[b]);
-        assert!(d.has_differences(), "bit_mask change must be detected");
-    }
-
-    /// `proto::Combo::bitmask` is `optional` specifically because real files carry an explicit
-    /// zero that a bare proto3 scalar would drop on re-encode. The report DTO used to flatten
-    /// that with `unwrap_or(0)`, so two files differing only in whether field 2 is present
-    /// compared as identical — `compare`, whose entire job is diffing capability files, was
-    /// blind to a byte-level difference the schema exists to preserve.
-    #[test]
-    fn absent_and_explicit_zero_bitmasks_are_distinguished() {
-        let mut explicit_zero = combo(vec![nr_cc(78, 1, 2)]);
-        explicit_zero.bit_mask = Some(0);
-        let absent = combo(vec![nr_cc(78, 1, 2)]); // bit_mask: None
-
-        let d = diff_combos(&[explicit_zero], &[absent]);
-
-        assert!(
-            d.has_differences(),
-            "an explicit zero bitmask differs from an absent one"
-        );
-    }
-
-    #[test]
-    fn load_carrier_combos_rejects_legend_and_lte() {
-        use std::path::Path;
-        let e =
-            crate::report::load_carrier_combos(Path::new("ap_plmn_mapping.binarypb")).unwrap_err();
-        assert!(e.to_string().contains("PLMN legend"), "{e}");
-        let e =
-            crate::report::load_carrier_combos(Path::new("lte_844857560.binarypb")).unwrap_err();
-        assert!(e.to_string().contains("LTE fallback"), "{e}");
-    }
+    super::write_report(&out, "")?;
+    Ok(Outcome::Clean)
 }

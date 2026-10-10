@@ -10,10 +10,7 @@ use crate::{
     },
     outcome::Outcome,
     proto::UeCaps,
-    report::{
-        combos::{build_combos, print_combos},
-        detail::Detail,
-    },
+    report::{combos::render_combos, detail::Detail, identity::project_combinations},
 };
 use anyhow::Context;
 use std::{
@@ -280,7 +277,13 @@ fn inspect_carrier(path: &Path, dir: &Path, carrier: &str, number: u64, detail: 
     let outcome = print_sku_profile(caps.as_ref().ok(), carrier, number, detail);
     println!();
     match &caps {
-        Ok(c) => print_combos(&build_combos(c), detail),
+        Ok(c) => match project_combinations(c) {
+            Ok(combos) => print!("{}", render_combos(&combos, detail)),
+            Err(errors) => {
+                eprintln!("{}: {}", path.display(), errors.join("; "));
+                return Outcome::Rejected;
+            }
+        },
         // Naming the reason matters: strict validation now rejects wire-level corruption that
         // used to decode, and "not readable" would hide both that and a permissions problem.
         Err(error) => println!("Band combinations: (unavailable — {error:#})"),

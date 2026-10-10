@@ -400,17 +400,19 @@ only in A (956):
   …       (trimmed)
 ```
 
-Identical files report and exit cleanly, so it scripts like `diff`:
+Successful comparisons exit 0, whether the capabilities are equal or different. Read the report
+to determine equality; shell success only means the comparison completed without errors:
 
 ```console
-$ pixel-uecaps-toolbox compare A.binarypb B.binarypb && echo same
+$ pixel-uecaps-toolbox compare A.binarypb B.binarypb
   1235 common · no differences
-same
 ```
 
 **Read:** one header line per file (carrier · profile · fingerprint · tier/family),
 a summary, then the set difference. Add `--full` for per-component diffs of the
-common combos. Exit codes: `0` identical, `1` differ, `2` error.
+common combos. Exit codes: `0` successful comparison, `2` error. Detailed output preserves
+optional presence, observed feature indexes, and every ordered DL/UL CC. Catalog renumbering
+is irrelevant for NR records; E-UTRA selector bytes are compared as raw observations.
 
 Add `--common` to also list the combos both files share (`=` identical caps,
 `~` caps differ) — `compare` stays a one-line summary without it.

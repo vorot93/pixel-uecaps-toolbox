@@ -894,7 +894,6 @@ mod tests {
             SubBlock, UeCaps,
         },
         raw_nr::{NrDirection, RawNrPayload, RawNrSubBlock, RawSubBlock, RawSubBlockKey},
-        report::combos::build_combos,
     };
 
     /// A component that differs from its siblings only in `srs_tx_switch`. (It used to vary
@@ -1091,10 +1090,6 @@ mod tests {
             ],
             ..Default::default()
         };
-
-        let report = build_combos(&caps);
-        assert_eq!((report[0].group, report[0].index), (1, 1));
-        assert_eq!((report[1].group, report[1].index), (2, 1));
 
         let payloads = raw_payloads(&caps);
 
