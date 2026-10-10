@@ -1,12 +1,15 @@
 //! Carrier × profile matrix as CSV (`matrix`).
 
-use super::folder::enumerate_binarypb;
+use super::{
+    folder::{FolderReport, scan_folder},
+    validation::{completion, diagnostics},
+};
 use crate::{
-    model::{PROFILES, Parsed, Profile, matching_anchors, parse_name},
+    model::{PROFILES, Profile},
     outcome::Outcome,
 };
 use anyhow::Context;
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, fmt::Write, path::Path};
 
 /// The column header for a profile: its known Pixel model, else the anchor prime.
 fn header_for(p: &Profile) -> String {
@@ -59,56 +62,41 @@ fn build_csv(
 /// `matrix [DIR] [-o FILE]`: scan `dir` and emit the carrier × profile CSV to
 /// `out` (a file) or stdout.
 pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
-    let paths = enumerate_binarypb(dir)?;
-
+    finish_matrix(scan_folder(dir), out)
+}
+fn finish_matrix(
+    report: anyhow::Result<FolderReport>,
+    out: Option<&Path>,
+) -> anyhow::Result<Outcome> {
+    publish_matrix(&report?, out)
+}
+fn publish_matrix(report: &FolderReport, out: Option<&Path>) -> anyhow::Result<Outcome> {
     let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
-    for path in &paths {
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if let Parsed::Carrier { carrier, number } = parse_name(name) {
-            // Record the file under EVERY anchor it matches, not an arbitrary first one:
-            // a number divisible by more than one anchor is genuinely ambiguous.
-            for profile in matching_anchors(number) {
-                cells
-                    .entry(carrier.clone())
-                    .or_default()
-                    .entry(profile.anchor)
-                    .or_default()
-                    .push(number);
-            }
-        }
+    for c in &report.candidates {
+        cells
+            .entry(c.carrier.clone())
+            .or_default()
+            .entry(c.anchor)
+            .or_default()
+            .push(c.number);
     }
-
-    // A (carrier, anchor) cell with more than one file is a collision — one file would
-    // have silently overwritten the other. Warn and exit non-zero.
-    let mut collisions = 0usize;
-    for (carrier, row) in &cells {
-        for (anchor, nums) in row {
-            if nums.len() > 1 {
-                collisions += 1;
-                eprintln!(
-                    "warning: {carrier} has {} files for anchor {anchor}: {}",
-                    nums.len(),
-                    nums.iter()
-                        .map(u64::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-            }
-        }
+    let mut errors = diagnostics(report.errors());
+    for path in &report.unsupported {
+        writeln!(errors, "info: {path:?}: unsupported/not validated")?;
     }
-
     let csv = build_csv(&sorted_columns(), &cells)?;
     match out {
         // Through the crate's atomic writer like every other file output, so a failure part-way
         // cannot leave a truncated CSV in place of a previously good one, and replacing an
         // existing file keeps its mode.
-        Some(path) => crate::atomic::write_bytes_atomic(path, csv.as_bytes())
-            .with_context(|| format!("cannot write {}", path.display()))?,
-        None => print!("{csv}"),
+        Some(path) => {
+            super::write_report("", &errors)?;
+            crate::atomic::write_bytes_atomic(path, csv.as_bytes())
+                .with_context(|| format!("cannot write {}", path.display()))?;
+        }
+        None => super::write_report(&csv, &errors)?,
     }
-    Ok((collisions > 0).into())
+    Ok(completion(report.has_errors()))
 }
 
 #[cfg(test)]
@@ -172,17 +160,23 @@ mod tests {
     fn matrix_flags_same_anchor_collision() {
         // Two files for the same carrier both divisible by anchor 3347 (3347 and
         // 6694 = 2*3347) must not silently overwrite — both must appear and the run
-        // must exit 1.
+        // must exit 2. Valid reference stubs remain eligible candidates.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("ALPHA_3347.binarypb"), b"x").unwrap();
-        std::fs::write(dir.path().join("ALPHA_6694.binarypb"), b"x").unwrap();
+        use prost::Message;
+        let bytes = crate::proto::UeCaps {
+            version: 874_888_686,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        std::fs::write(dir.path().join("ALPHA_3347.binarypb"), &bytes).unwrap();
+        std::fs::write(dir.path().join("ALPHA_6694.binarypb"), &bytes).unwrap();
         let out = dir.path().join("m.csv");
         let code = matrix(dir.path(), Some(&out)).unwrap();
         let csv = std::fs::read_to_string(&out).unwrap();
         assert_eq!(
             code,
-            Outcome::Findings,
-            "a (carrier, anchor) collision must exit 1:\n{csv}"
+            Outcome::Rejected,
+            "a (carrier, anchor) collision must exit 2:\n{csv}"
         );
         assert!(
             csv.contains("3347 | 6694"),
@@ -198,5 +192,19 @@ mod tests {
 
         let csv = build_csv(&columns, &cells).unwrap();
         assert_eq!(csv, "carrier,\"Pixel, Comma\"\nC,42\n");
+    }
+
+    #[test]
+    fn enumeration_failure_preserves_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        std::fs::write(&path, b"sentinel").unwrap();
+        let error = finish_matrix(
+            Err(anyhow::anyhow!("injected iteration failure")),
+            Some(&path),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("injected iteration failure"));
+        assert_eq!(std::fs::read(path).unwrap(), b"sentinel");
     }
 }

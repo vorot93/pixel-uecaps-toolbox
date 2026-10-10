@@ -4,6 +4,153 @@ use pixel_uecaps_toolbox::proto::*;
 use std::{ffi::OsStr, fs};
 use support::{carrier, compare_pair, text};
 
+fn matrix(dir: &std::path::Path) -> std::process::Output {
+    support::run([OsStr::new("matrix"), dir.as_os_str()])
+}
+fn rows(bytes: &[u8]) -> Vec<csv::StringRecord> {
+    let mut reader = csv::Reader::from_reader(bytes);
+    assert_eq!(reader.headers().unwrap().get(0), Some("carrier"));
+    reader.records().collect::<Result<_, _>>().unwrap()
+}
+#[test]
+fn matrix_retains_valid_collision_partners_in_numeric_order() {
+    let dir = support::fixture();
+    support::write_message(&dir.path().join("ALPHA_66813533.binarypb"), &carrier());
+    let partner = dir.path().join("ALPHA_133627066.binarypb");
+    fs::write(&partner, [0x78, 1]).unwrap();
+    fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 1]).unwrap();
+    for expected in ["66813533", "66813533 | 133627066"] {
+        let out = matrix(dir.path());
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{body}");
+        let records = rows(&out.stdout);
+        assert_eq!(records.len(), 1);
+        assert_eq!(&records[0][0], "ALPHA");
+        assert_eq!(
+            records[0]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>(),
+            ["ALPHA", expected]
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        for token in [
+            "ALPHA_133627066.binarypb",
+            "ALPHA_66813533.binarypb",
+            "lte_400907661.binarypb",
+            "collision",
+        ] {
+            assert!(err.contains(token), "{err}");
+        }
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("error:"));
+        support::write_message(&partner, &carrier());
+    }
+}
+#[test]
+fn matrix_omits_each_invalid_candidate_and_keeps_valid_siblings() {
+    for case in 0..5 {
+        let dir = support::fixture();
+        support::write_message(&dir.path().join("VALID_66813533.binarypb"), &carrier());
+        let mut bad = carrier();
+        let (name, reason) = match case {
+            0 => ("ALPHA_1.binarypb", "anchor"),
+            1 => ("ALPHA_558949.binarypb", "anchor"),
+            2 => {
+                bad.version = 123;
+                ("ALPHA_66813533.binarypb", "unknown fingerprint")
+            }
+            3 => {
+                bad.version = 874_888_686;
+                ("ALPHA_66813533.binarypb", "fingerprint family")
+            }
+            _ => {
+                bad.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids =
+                    Some(vec![1, 255]);
+                ("ALPHA_66813533.binarypb", "DL[2]")
+            }
+        };
+        support::write_message(&dir.path().join(name), &bad);
+        let out = matrix(dir.path());
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        let records = rows(&out.stdout);
+        assert_eq!(records.len(), 1);
+        assert_eq!(&records[0][0], "VALID");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(name) && err.contains(reason), "{err}");
+    }
+}
+#[test]
+fn matrix_raw_eutra_and_distinct_carrier_tiers_are_valid() {
+    let dir = support::fixture();
+    let mut caps = carrier();
+    caps.combo_groups[0].combo[0].sub_blocks[0].band = 66;
+    caps.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids = Some(vec![0, 255]);
+    support::write_message(&dir.path().join("ALPHA_66813533.binarypb"), &caps);
+    caps.version = 627_223_094;
+    support::write_message(&dir.path().join("BETA_66813533.binarypb"), &caps);
+    let out = matrix(dir.path());
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert_eq!(rows(&out.stdout).len(), 2);
+    fs::rename(
+        dir.path().join("BETA_66813533.binarypb"),
+        dir.path().join("ALPHA_133627066.binarypb"),
+    )
+    .unwrap();
+    let out = matrix(dir.path());
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out).contains("mixes tier"));
+    assert!(
+        rows(&out.stdout)[0]
+            .iter()
+            .any(|v| v == "66813533 | 133627066")
+    );
+}
+#[test]
+fn matrix_unsupported_only_is_header_and_information() {
+    let dir = support::fixture();
+    fs::create_dir(dir.path().join("mystery.binarypb")).unwrap();
+    fs::write(dir.path().join(".binarypb"), [255]).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("missing", dir.path().join("unmodeled.binarypb")).unwrap();
+    let out = matrix(dir.path());
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(rows(&out.stdout).is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unsupported/not validated"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("unsupported"));
+}
+#[test]
+fn matrix_publishes_partial_file_but_preserves_destination_on_scan_failure() {
+    let dir = support::fixture();
+    support::write_message(&dir.path().join("VALID_66813533.binarypb"), &carrier());
+    fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 1]).unwrap();
+    let dest = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    fs::write(dest.path(), b"sentinel").unwrap();
+    let publish = |input: &std::path::Path, output: &std::path::Path| {
+        support::run([
+            OsStr::new("matrix"),
+            input.as_os_str(),
+            OsStr::new("-o"),
+            output.as_os_str(),
+        ])
+    };
+    let out = publish(dir.path(), dest.path());
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert!(out.stdout.is_empty());
+    assert_eq!(rows(&fs::read(dest.path()).unwrap()).len(), 1);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("lte_400907661.binarypb"));
+    fs::write(dest.path(), b"sentinel").unwrap();
+    assert_eq!(
+        publish(&dir.path().join("absent"), dest.path())
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(fs::read(dest.path()).unwrap(), b"sentinel");
+    let absent = dir.path().join("absent/out.csv");
+    assert_eq!(publish(dir.path(), &absent).status.code(), Some(2));
+    assert!(!absent.exists());
+}
+
 #[test]
 fn check_decodes_lte_and_reports_selector_collisions() {
     let dir = support::fixture();

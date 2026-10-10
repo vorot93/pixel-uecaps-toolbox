@@ -477,8 +477,12 @@ carrier,1002739,196911437,2912407,3347,3539,688679,8969,Pixel 10 Pro Fold,Pixel 
 ```
 
 **Read:** a spreadsheet-friendly overview of the whole dump — at a glance, which
-profiles each carrier provides and the exact selector numbers. Scans the same files
-as `check`; non-carrier files (the legend, `lte_*`) are ignored.
+profiles each carrier provides and the exact selector numbers. Uses the same validation as
+`check`, including LTE and legend errors. Invalid carrier candidates are omitted; eligible
+collisions remain together in numeric order (`number | number`). Diagnostics and unsupported
+names go to stderr, leaving CSV clean. Exit 0 means no errors; exit 2 may accompany useful partial
+CSV. With `-o`, a completed partial CSV atomically replaces the destination even on exit 2;
+an enumeration failure leaves an existing destination untouched.
 
 ## Reading the source format
 
