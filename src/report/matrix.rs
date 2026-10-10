@@ -1,6 +1,6 @@
 //! Carrier × profile matrix as CSV (`matrix`).
 
-use super::binarypb_names;
+use super::folder::enumerate_binarypb;
 use crate::{
     model::{PROFILES, Parsed, Profile, matching_anchors, parse_name},
     outcome::Outcome,
@@ -59,10 +59,13 @@ fn build_csv(
 /// `matrix [DIR] [-o FILE]`: scan `dir` and emit the carrier × profile CSV to
 /// `out` (a file) or stdout.
 pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
-    let names = binarypb_names(dir)?;
+    let paths = enumerate_binarypb(dir)?;
 
     let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
-    for name in &names {
+    for path in &paths {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         if let Parsed::Carrier { carrier, number } = parse_name(name) {
             // Record the file under EVERY anchor it matches, not an arbitrary first one:
             // a number divisible by more than one anchor is genuinely ambiguous.

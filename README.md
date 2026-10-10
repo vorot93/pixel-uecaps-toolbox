@@ -447,13 +447,18 @@ files: 1398  |  carriers: 89  |  legend entries: 80
    unparseable names        : none
 ```
 
-**Read:** `check` exits non-zero **only** on a genuine anomaly (unknown fingerprint,
+**Read:** `check` exits 2 on a genuine anomaly (unknown fingerprint,
 wrong anchor count, or a family/fingerprint contradiction). Reference stubs,
 alt-tier carriers, legend gaps, and incomplete sets are informational. For
 data-independent sanity checks, `pixel-uecaps-toolbox self-test` runs the built-in
 suite and prints `ALL TESTS PASSED`.
 
 ### Export the carrier × profile matrix as CSV
+
+Folder checks strictly decode carrier, LTE fallback, and legend files, report selector collisions
+and legend semantic errors, and return 0 only without errors. “Validated profile coverage” counts
+unique eligible anchors, so invalid files never inflate coverage. Unsupported `.binarypb` names
+are listed as unsupported/not validated and remain informational.
 
 ```console
 $ pixel-uecaps-toolbox matrix <uecapconfig folder> > matrix.csv

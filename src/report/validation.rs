@@ -23,6 +23,8 @@ pub(super) enum IssueKind {
     Anchor,
     Fingerprint,
     Legend,
+    Collision,
+    MixedTier,
 }
 #[derive(Debug, Clone)]
 pub(super) struct Issue {
@@ -46,7 +48,7 @@ impl Issue {
         Self::new(kind, path, error.to_string())
     }
 }
-pub(super) fn diagnostics(issues: &[Issue]) -> String {
+pub(super) fn diagnostics<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> String {
     let mut out = String::new();
     for issue in issues {
         let paths = issue
@@ -153,4 +155,36 @@ pub(super) fn carrier_context_issues(
         }
     }
     issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::Carrier;
+    #[test]
+    fn duplicate_indices_survive_original_entries() {
+        let mut map = PlmnMap {
+            carriers: vec![
+                Carrier {
+                    name: "VZW".into(),
+                    index: 311_480,
+                    plmns: vec![1_245_572],
+                },
+                Carrier {
+                    name: "OTHER".into(),
+                    index: 311_480,
+                    plmns: vec![197_154],
+                },
+            ],
+        };
+        let issues = legend_issues(Path::new("legend"), &map);
+        assert_eq!(issues.len(), 2);
+        assert!(
+            issues
+                .iter()
+                .all(|e| e.message.contains("duplicate carrier index"))
+        );
+        map.carriers[1].index = 2;
+        assert!(legend_issues(Path::new("legend"), &map).is_empty());
+    }
 }

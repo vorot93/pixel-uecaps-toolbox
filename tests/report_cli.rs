@@ -4,6 +4,92 @@ use pixel_uecaps_toolbox::proto::*;
 use std::{ffi::OsStr, fs};
 use support::{carrier, compare_pair, text};
 
+#[test]
+fn check_decodes_lte_and_reports_selector_collisions() {
+    let dir = support::fixture();
+    for name in ["ALPHA_66813533.binarypb", "ALPHA_133627066.binarypb"] {
+        support::write_message(&dir.path().join(name), &carrier());
+    }
+    fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 0x01]).unwrap();
+    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{body}");
+    for token in [
+        "lte_400907661.binarypb",
+        "15",
+        "collision",
+        "ALPHA_66813533.binarypb",
+        "ALPHA_133627066.binarypb",
+        "validated profile coverage",
+        "1/16",
+    ] {
+        assert!(body.contains(token), "{token}: {body}");
+    }
+}
+
+#[test]
+fn check_accumulates_independent_errors_and_excludes_invalid_coverage() {
+    let dir = support::fixture();
+    fs::write(dir.path().join("ALPHA_558949.binarypb"), [0x78, 0x01]).unwrap();
+    let mut caps = carrier();
+    caps.version = 123;
+    support::write_message(&dir.path().join("BETA_66813533.binarypb"), &caps);
+    caps.version = 874_888_686;
+    support::write_message(&dir.path().join("GAMMA_66813533.binarypb"), &caps);
+    support::write_message(
+        &dir.path().join("ap_plmn_mapping.binarypb"),
+        &PlmnMap {
+            carriers: vec![Carrier {
+                name: "".into(),
+                index: 1,
+                plmns: vec![1 << 24],
+            }],
+        },
+    );
+    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(2), "{body}");
+    for token in [
+        "anchor",
+        "167",
+        "3347",
+        "field #15",
+        "unknown fingerprint 123",
+        "fingerprint family",
+        "16777216",
+        "empty",
+        "unavailable",
+        "0/16",
+    ] {
+        assert!(body.contains(token), "{token}: {body}");
+    }
+}
+
+#[test]
+fn check_unsupported_names_are_informational() {
+    let dir = support::fixture();
+    for name in [".binarypb", "mystery.binarypb"] {
+        fs::write(dir.path().join(name), [0x78, 0x01]).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        fs::write(
+            dir.path()
+                .join(std::ffi::OsString::from_vec(b"bad\xff.binarypb".to_vec())),
+            [0xff],
+        )
+        .unwrap();
+    }
+    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(0), "{body}");
+    assert!(body.contains("unsupported/not validated"), "{body}");
+    assert!(body.contains("mystery.binarypb") && body.contains(".binarypb"));
+    #[cfg(unix)]
+    assert!(body.contains("\\xFF"), "{body}");
+}
+
 fn inspect(path: &std::path::Path) -> std::process::Output {
     support::run([
         OsStr::new("inspect"),
