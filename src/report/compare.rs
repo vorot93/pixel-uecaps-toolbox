@@ -15,6 +15,16 @@ use std::{
 };
 
 type Index = BTreeMap<ShapeKey, BTreeSet<CombinationKey>>;
+fn render_variants(
+    out: &mut String,
+    label: char,
+    variants: &BTreeSet<CombinationKey>,
+) -> std::fmt::Result {
+    for (i, variant) in variants.iter().enumerate() {
+        writeln!(out, "    {label}[{}]:\n{}", i + 1, render_key(variant))?;
+    }
+    Ok(())
+}
 fn load(path: &Path) -> anyhow::Result<(Index, String)> {
     let name = path.file_name().and_then(|p| p.to_str()).unwrap_or("?");
     match parse_name(name) {
@@ -88,11 +98,14 @@ pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Re
             only_b.len()
         )?;
     }
-    for (label, marker, keys) in [('A', '-', only_a), ('B', '+', only_b)] {
+    for (label, marker, keys, index) in [('A', '-', only_a, &left), ('B', '+', only_b, &right)] {
         if !keys.is_empty() {
             writeln!(out, "\nonly in {label} ({}):", keys.len())?;
             for key in keys {
                 writeln!(out, "  {marker} {}", render_shape(key))?;
+                if detail.is_full() {
+                    render_variants(&mut out, label, &index[key])?;
+                }
             }
         }
     }
@@ -113,9 +126,7 @@ pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Re
             writeln!(out, "  ~ {}", render_shape(key))?;
             // Whole typed variants also handle repeated component labels without guessing pairing.
             for (label, index) in [('A', &left), ('B', &right)] {
-                for (i, variant) in index[key].iter().enumerate() {
-                    writeln!(out, "    {label}[{}]:\n{}", i + 1, render_key(variant))?;
-                }
+                render_variants(&mut out, label, &index[key])?;
             }
         }
     }

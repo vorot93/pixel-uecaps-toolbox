@@ -87,13 +87,14 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and the single file-or-stdout source write. |
 | `src/compiler/provision.rs` | Real-model resolution, complete file-set assembly, protobuf self-check, replacement-module construction, and atomic ZIP output. |
 | `src/compiler/test_support.rs` | `#[cfg(test)]` miniature bitmask/profiled folders and exact canonical-source fixtures shared by compiler unit tests. |
-| `src/mapping/mod.rs` | Reader for the `ap_plmn_mapping.binarypb` legend; `load_mapping(dir)` / `load_mapping_report(dir)`. |
+| `src/mapping/mod.rs` | Typed PLMN values and compiler mapping schema exports. |
 | `src/mapping/plmn.rs` | The `Plmn(u32)` newtype: packed-BCD `from_encoded`, `nibbles`, `Display`. |
 | `src/mapping/schema.rs` | The editable mapping schema (`Root`/`MappingEntry`) ↔ proto `PlmnMap` (`map_to_root`/`root_to_map`). |
 | `src/mapping/error.rs` | The mapping `Error` enum (thiserror). |
 | `src/magisk/mod.rs` | Assembles the compiler's generated files into a deterministic `.replace` Magisk `.zip` (overlay tree + `module.prop` + `META-INF/.../update-binary`) at the fixed `/vendor/firmware/uecapconfig` destination. |
-| `src/report/mod.rs` | Reports facade (`inspect`/`compare`/`check`/`matrix`/`self_test`, plus the `Detail`/`Common` presentation types) and shared helpers (`binarypb_names`). |
-| `src/report/combos.rs` | NR band-combination model + rendering (labels, class letters, capability tables). |
+| `src/report/mod.rs` | Reports facade and fallible text output boundary. |
+| `src/report/input.rs`, `validation.rs`, `folder.rs` | Retained strict inputs, applicable payload/context checks, deterministic shared folder evidence. |
+| `src/report/identity.rs`, `combos.rs` | Typed observation-preserving combination keys and rendering; compiler-facing selector helpers retain their separate contract. |
 | `src/report/detail.rs` | The `Detail` (`Summary`/`Full`) and `Common` (`Hide`/`Show`) presentation enums that replaced `full`/`show_common` `bool` parameters; `clap`'s flags stay `bool` and convert to these at the CLI boundary. |
 | `src/report/check.rs` | Folder-wide consistency check (`check_folder`). |
 | `src/report/matrix.rs` | Carrier × profile matrix as CSV. |
@@ -151,16 +152,12 @@ surface that decodes → edits → re-encodes goes through the `wire.rs` strict 
 number or wrong wire type (including packed `plmns`) *before* re-encoding. Every such caller is
 now in the compiler, and there are three: `decompose`'s ingest of both folders, `decompose`'s own
 regeneration self-check (`verify_internal_targets`), and `provision`'s verification of each
-generated file (`verify_generated_files`). The **read-only** reports
-(`inspect`/`compare`/`check`/`matrix`) deliberately stay lenient (`read_ue_caps` /
-`load_carrier_combos` / `load_mapping` swallow decode errors) so a junk file yields a
-best-effort view, not a hard error — do not tighten those shared readers. `load_mapping`
-also **collapses** duplicate carrier names (last entry wins) and **drops** empty-named
-carriers, both of which `root_to_map` hard-errors on. So a report must not read *integrity*
-off `load_mapping`'s deduplicated map or it will audit a corrupted legend as clean; `check`
-instead uses the `load_mapping_report` companion (same lenient decode, but it also returns
-`duplicate_names` / `empty_named`) and surfaces those as anomalies (exit 1). Keep that split:
-the reader stays lenient; the report carries the anomaly.
+generated file (`verify_generated_files`). Reports use the same strict wire decoders, then
+applicable payload/context validation on retained immutable observations. They may render useful
+partial evidence, but failures remain errors (exit 2). This separates strict decoding, semantic
+validation, observed evidence, and best-effort presentation; it never makes a failed read an empty
+successful message. Every original legend entry survives until semantic validation, with no
+last-wins name collapse. Checked report writes and flushes also fail with exit 2.
 
 **NR feature palettes and generated local catalogs are distinct flows.** Fresh decomposition is:
 
@@ -888,8 +885,8 @@ run proves only that its environment-variable guard works.
   renamed into place, so a failure part-way cannot leave a truncated document where a good
   one was, and replacing an existing file keeps its mode. With `-o` omitted the document
   goes to stdout via `print!`, so a reader that closes the pipe early makes that `print!`
-  panic (exit 101) instead of producing this crate's usual `error:`/exit 2 — the same
-  behaviour `report::matrix` has, kept deliberately rather than special-cased.
+  panic (exit 101) instead of producing this crate's usual `error:`/exit 2. The four reporting
+  commands instead use fallible writes and flushes and return 2 on output failure.
 - `provision MODEL SOURCE -o ZIP` reads and validates the source document before model
   resolution. `MODEL` is a real registered Google hardware code, never `legacy`,
   `prime:<anchor>`, or `lte:<id>`. Generation, protobuf re-decoding, complete file-set
@@ -1181,17 +1178,10 @@ features are alternatives, and a flat struct let all three sit side by side:
   because it is an *ordering projection*, not a state model — component order inside a generated
   combo is `sort_by(RawSubBlockKey)`, so regrouping its fields would silently change generated
   bytes. Build it from the enum, never restructure it.
-- **`report::combos::SubBlock` is output-only.** It is a *display* DTO and never an ingest input:
-  `RawNrPayload::from_proto_combo` is the only path from wire to model. So it holds the band
-  label, the two bandwidth classes, the resolved per-CC feature records and `srs_tx_switch` —
-  and nothing derived. The decoded display values (SCS in kHz, the MIMO/modulation labels, max
-  bandwidth, 90 MHz) are pure functions of the feature records, so `fmt_cc_features` projects
-  them at the single point of rendering rather than storing a second copy the type cannot keep
-  in agreement. A lenient DTO→payload conversion used to exist (`From<&Combo> for RawNrPayload`
-  via `RawSubBlock::from_sub_block`): it had no callers, it parsed the band back out of the
-  *rendered* label `"n78"` behind an `.expect`, and it bypassed both the unresolvable-selector
-  and the feature-index-derivation guard. It is gone — don't reintroduce a way to turn a report
-  string back into a model value.
+- **Report keys preserve observations and never feed compiler ingestion.**
+  `RawNrPayload::from_proto_combo` remains the compiler's wire-to-model path. Reports use typed
+  keys with raw bands, optional scalars, observed indexes and every ordered per-CC record; display
+  labels are never parsed back into model values. Compiler normalization is not report equality.
 - **Reading.** Code that treats both kinds alike uses the accessors (`band()`, `dl_bw_class()`,
   `dl_features()`, `dl_selector()`, `dl_feature_index()`). Code that *builds* a component matches
   on the variant, so it can only fill fields that kind actually has.
@@ -1201,10 +1191,8 @@ features are alternatives, and a flat struct let all three sit side by side:
   single decode boundary (`RawSubBlock::from_proto_sub_block`) narrows via `narrow_field`, failing
   closed on an out-of-range value rather than truncating (the same stance as the `ul_bw_class`
   presence check); encode widens back to `i32` for the wire. The narrowing **stops at the model on
-  purpose**: `report::combos::SubBlock` and the shared `band_label`/`cc_class` formatters stay
-  `i32` (they only ever format a value, and the `inspect` render path is not `Result`). Don't
-  narrow the display DTO to `u8`/`u16` — it only adds a second fail-closed-or-truncate boundary in
-  non-`Result` display code, with nothing to gain.
+  purpose**: report keys and formatters retain the wire's `i32` values. Reports expose observations
+  outside the compiler's representable domain rather than truncate or apply compiler constraints.
 - **The source model is a sum too.** `compiler::features::NrSourceSubBlock` — how source spells a
   sub-block — is `enum { Lte(SourceLteSubBlock), Nr(SourceNrSubBlock) }` for the same reason. An
   `lte` node has the scalar proto-4/5 index and no catalog list; an `nr` node has the per-CC list,
@@ -1252,9 +1240,9 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   `raw_nr::RawNrPayload::from_proto_combo` — asserts (`anyhow::ensure!`) that these fields
   are actually `Some` on the decoded proto, failing closed instead of silently normalizing an
   unobserved `None` shape to `0`; both fns are therefore fallible and only called from the
-  compiler's strict `canonical_payloads` path (`compiler/nr.rs`), never from a lenient report
-  reader (`build_combos`/inspect/compare/check stay lenient on purpose — no assertions
-  there). Because the four header fields are now always `Some` once a payload is built either
+  compiler's strict `canonical_payloads` path (`compiler/nr.rs`), never from report projection:
+  reports validate wire/reference integrity but preserve optional observations instead of applying
+  compiler representability constraints. Because the four header fields are always `Some` once a payload is built either
   way, `RawNrPayload::header()` always returns `Some(ComboHeader{..})` (the `Option` return
   type is kept only because `ComboGroup::combo_header` itself is `Option<ComboHeader>`).
   Corpus-verified: every real combo header's `power_class` is in fact always `0` (never
@@ -1266,7 +1254,7 @@ rule below. NR: a value fully **derived** from the per-CC feature set (corpus-ve
   catalog). Secondary counts behind the LTE-placeholder omission: the LTE per-CC ids are the
   all-zero placeholder on ~1.74M DL and ~710K UL entries; the UL-disabled short-circuit
   (`ul_bw_class == 0`) covers 687K NR + 1.03M LTE sub-blocks.
-- **Numeric codes** (rendered as labels by `report/combos.rs`; `—` for `0`/absent, `(n)` out-of-table):
+- **Numeric codes** (full carrier reports retain the raw code and explicit absence):
 
   | Field | code → value |
   | --- | --- |

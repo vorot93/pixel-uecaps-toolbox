@@ -4,6 +4,269 @@ use pixel_uecaps_toolbox::proto::*;
 use std::{ffi::OsStr, fs};
 use support::{carrier, compare_pair, text};
 
+#[test]
+fn every_modeled_feature_and_header_field_is_compared_and_rendered() {
+    let a = carrier();
+    type FieldMutation = (&'static str, fn(&mut UeCaps));
+    let cases: &[FieldMutation] = &[
+        ("power_class=7", |c| {
+            c.combo_groups[0].combo_header.as_mut().unwrap().power_class = Some(7)
+        }),
+        ("bcs_nr=7", |c| {
+            c.combo_groups[0].combo_header.as_mut().unwrap().bcs_nr = Some(7)
+        }),
+        ("bcs_intra_endc=7", |c| {
+            c.combo_groups[0]
+                .combo_header
+                .as_mut()
+                .unwrap()
+                .bcs_intra_endc = Some(7)
+        }),
+        ("bcs_eutra=7", |c| {
+            c.combo_groups[0].combo_header.as_mut().unwrap().bcs_eutra = Some(7)
+        }),
+        ("intra_band_en_dc_support=7", |c| {
+            c.combo_groups[0]
+                .combo_header
+                .as_mut()
+                .unwrap()
+                .intra_band_en_dc_support = Some(7)
+        }),
+        ("max_scs=7", |c| {
+            c.dl_feature_per_cc_list[0].max_scs = Some(7)
+        }),
+        ("max_mimo=7", |c| {
+            c.dl_feature_per_cc_list[0].max_mimo = Some(7)
+        }),
+        ("max_bw=7", |c| c.dl_feature_per_cc_list[0].max_bw = Some(7)),
+        ("max_mod_order=7", |c| {
+            c.dl_feature_per_cc_list[0].max_mod_order = Some(7)
+        }),
+        ("bw_90mhz_supported=false", |c| {
+            c.dl_feature_per_cc_list[0].bw_90mhz_supported = Some(false)
+        }),
+        ("max_scs=7", |c| {
+            c.ul_feature_per_cc_list[0].max_scs = Some(7)
+        }),
+        ("max_mimo_cb=7", |c| {
+            c.ul_feature_per_cc_list[0].max_mimo_cb = Some(7)
+        }),
+        ("max_bw=7", |c| c.ul_feature_per_cc_list[0].max_bw = Some(7)),
+        ("max_mod_order=7", |c| {
+            c.ul_feature_per_cc_list[0].max_mod_order = Some(7)
+        }),
+        ("bw_90mhz_supported=false", |c| {
+            c.ul_feature_per_cc_list[0].bw_90mhz_supported = Some(false)
+        }),
+        ("max_mimo_non_cb=7", |c| {
+            c.ul_feature_per_cc_list[0].max_mimo_non_cb = Some(7)
+        }),
+    ];
+    for (token, mutate) in cases {
+        let mut b = a.clone();
+        mutate(&mut b);
+        let body = changed(&a, &b);
+        assert!(body.contains(token), "{token}: {body}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn folders_disclose_supported_unreadable_inputs_and_legend_errors() {
+    let dir = support::fixture();
+    support::write_message(&dir.path().join("VALID_66813533.binarypb"), &carrier());
+    std::os::unix::fs::symlink("missing", dir.path().join("lte_400907661.binarypb")).unwrap();
+    fs::create_dir(dir.path().join("ALPHA_1.binarypb")).unwrap();
+    support::write_message(
+        &dir.path().join("ap_plmn_mapping.binarypb"),
+        &PlmnMap {
+            carriers: vec![Carrier {
+                name: "".into(),
+                index: 0,
+                plmns: vec![1 << 24],
+            }],
+        },
+    );
+    for command in ["check", "matrix"] {
+        let out = support::run([OsStr::new(command), dir.path().as_os_str()]);
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(2), "{body}");
+        for token in [
+            "cannot read",
+            "lte_400907661.binarypb",
+            "ALPHA_1.binarypb",
+            "anchor",
+            "16777216",
+            "empty",
+        ] {
+            assert!(body.contains(token), "{token}: {body}");
+        }
+        if command == "matrix" {
+            assert_eq!(rows(&out.stdout).len(), 1);
+        }
+    }
+}
+
+#[test]
+fn full_comparison_explains_different_shapes_with_identical_labels() {
+    let mut a = carrier();
+    a.combo_groups[0].combo[0].sub_blocks[0].ul_bw_class = None;
+    let mut b = a.clone();
+    b.combo_groups[0].combo[0].sub_blocks[0].ul_bw_class = Some(0);
+    let out = compare_pair(&a, &b, true);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(0));
+    for token in [
+        "1 only in A",
+        "1 only in B",
+        "ul_bw_class=absent",
+        "ul_bw_class=0",
+    ] {
+        assert!(body.contains(token), "{token}: {body}");
+    }
+}
+#[test]
+fn repeated_components_retain_multiplicity() {
+    let a = carrier();
+    let mut b = a.clone();
+    let component = b.combo_groups[0].combo[0].sub_blocks[0].clone();
+    b.combo_groups[0].combo[0].sub_blocks.push(component);
+    let out = compare_pair(&a, &b, true);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        body.contains("1 only in A") && body.contains("1 only in B"),
+        "{body}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_error_stream_returns_two_instead_of_panicking() {
+    let dir = support::fixture();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_pixel-uecaps-toolbox"))
+        .args([
+            OsStr::new("inspect"),
+            dir.path().join("missing.binarypb").as_os_str(),
+        ])
+        .stderr(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn report_stdout_failures_return_two() {
+    let dir = support::fixture();
+    let path = dir.path().join("ALPHA_66813533.binarypb");
+    support::write_message(&path, &carrier());
+    for args in [
+        vec![OsStr::new("inspect"), path.as_os_str()],
+        vec![OsStr::new("check"), dir.path().as_os_str()],
+        vec![OsStr::new("matrix"), dir.path().as_os_str()],
+        vec![OsStr::new("compare"), path.as_os_str(), path.as_os_str()],
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_pixel-uecaps-toolbox"))
+            .args(args)
+            .stdout(
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
+    }
+}
+#[test]
+fn report_commands_share_zero_two_contract() {
+    let dir = support::fixture();
+    let path = dir.path().join("ALPHA_66813533.binarypb");
+    for invalid in [false, true] {
+        if invalid {
+            fs::write(&path, [0x78, 1]).unwrap();
+        } else {
+            support::write_message(&path, &carrier());
+        }
+        for args in [
+            vec![OsStr::new("inspect"), path.as_os_str()],
+            vec![OsStr::new("check"), dir.path().as_os_str()],
+            vec![OsStr::new("matrix"), dir.path().as_os_str()],
+            vec![OsStr::new("compare"), path.as_os_str(), path.as_os_str()],
+        ] {
+            let out = support::run(args);
+            assert_eq!(
+                out.status.code(),
+                Some(if invalid { 2 } else { 0 }),
+                "{}",
+                text(&out)
+            );
+        }
+    }
+}
+#[test]
+fn comparison_flags_do_not_change_identity_or_status() {
+    let dir = support::fixture();
+    let a = dir.path().join("a.binarypb");
+    let b = dir.path().join("b.binarypb");
+    let caps = carrier();
+    support::write_message(&a, &caps);
+    for equal in [true, false] {
+        let mut right = caps.clone();
+        if !equal {
+            right.dl_feature_per_cc_list[0].max_bw = Some(50);
+        }
+        support::write_message(&b, &right);
+        for flags in [
+            vec![],
+            vec!["--common"],
+            vec!["--full"],
+            vec!["--full", "--common"],
+        ] {
+            let mut args = vec![OsStr::new("compare"), a.as_os_str(), b.as_os_str()];
+            args.extend(flags.iter().map(OsStr::new));
+            let out = support::run(args);
+            let body = text(&out);
+            assert_eq!(out.status.code(), Some(0), "{body}");
+            assert!(
+                body.contains(if equal {
+                    "no differences"
+                } else {
+                    "1 caps-changed"
+                }),
+                "{body}"
+            );
+            assert_eq!(body.contains("\ncommon ("), flags.contains(&"--common"));
+        }
+    }
+}
+#[test]
+fn matrix_diagnostics_and_csv_are_repeatable_with_mixed_inputs() {
+    let dir = support::fixture();
+    support::write_message(&dir.path().join("ALPHA_66813533.binarypb"), &carrier());
+    fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 1]).unwrap();
+    fs::create_dir(dir.path().join("unsupported.binarypb")).unwrap();
+    let a = matrix(dir.path());
+    let b = matrix(dir.path());
+    assert_eq!(a.status.code(), Some(2));
+    assert_eq!(b.status.code(), Some(2));
+    assert_eq!(a.stdout, b.stdout);
+    assert_eq!(a.stderr, b.stderr);
+    assert_eq!(rows(&a.stdout).len(), 1);
+    let err = String::from_utf8_lossy(&a.stderr);
+    assert!(
+        err.contains("unsupported/not validated") && err.contains("field #15"),
+        "{err}"
+    );
+}
+
 fn matrix(dir: &std::path::Path) -> std::process::Output {
     support::run([OsStr::new("matrix"), dir.as_os_str()])
 }

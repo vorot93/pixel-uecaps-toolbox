@@ -86,18 +86,10 @@ $ pixel-uecaps-toolbox decompose \
 $ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 ```
 
-> Piping and early exit: every command that writes to stdout does so with `print!`, so a reader
-> that closes the pipe before the end — quitting the pager early, or `| head` — ends the process
-> with a broken-pipe panic and exit code 101 rather than the usual `error:` line and exit 2. This
-> can happen in any of `decompose`, `matrix`, `inspect` (with and without `--full`), or `check`.
-> Whether a given run trips it depends on how the output is written, not how much of it there is:
-> a command whose entire output is one `print!` call that fits the kernel's pipe buffer can finish
-> before the reader's close has any effect and exit `0`, while one that writes through many
-> separate calls — or writes enough in one call to overrun the buffer — can still have output left
-> to send when the reader goes away, and panics on whichever write comes next. On the reference
-> corpus this is why `matrix` (one write, well under the buffer) exits `0` under `| head` while
-> `decompose`, `inspect`, and `check` panic; a larger `matrix` report would overrun the buffer and
-> panic the same way. Nothing is written or corrupted either way; `-o FILE` is unaffected.
+> Piping and early exit: `inspect`, `compare`, `check`, and `matrix` return 2 on an encountered
+> stdout/stderr write or flush failure, including a broken pipe. A short report may finish before
+> an early reader close is observed. `decompose` and `self-test` still use print macros and can
+> panic (exit 101) on stdout failure. File outputs use atomic replacement.
 
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled
@@ -438,27 +430,27 @@ files: 1398  |  carriers: 89  |  legend entries: 80
    DT_NL
    …
 
-## incomplete profile sets (fewer files than the tier expects)
+## validated profile coverage
    GOOGLE_COMCAST_  15/16 profiles (main tier)
 
 ## non-capability files
    ap_plmn_mapping.binarypb : 1 (the legend)
    lte_*.binarypb           : 8 (LTE-only fallback)
-   unparseable names        : none
 ```
 
-**Read:** `check` exits 2 on a genuine anomaly (unknown fingerprint,
-wrong anchor count, or a family/fingerprint contradiction). Reference stubs,
+**Read:** `check` exits 2 on validation or I/O errors (including unknown fingerprint,
+wrong anchor count, family/fingerprint contradiction, collision, and corrupt LTE/legend files).
+Otherwise it exits 0. Reference stubs,
 alt-tier carriers, legend gaps, and incomplete sets are informational. For
 data-independent sanity checks, `pixel-uecaps-toolbox self-test` runs the built-in
 suite and prints `ALL TESTS PASSED`.
-
-### Export the carrier × profile matrix as CSV
 
 Folder checks strictly decode carrier, LTE fallback, and legend files, report selector collisions
 and legend semantic errors, and return 0 only without errors. “Validated profile coverage” counts
 unique eligible anchors, so invalid files never inflate coverage. Unsupported `.binarypb` names
 are listed as unsupported/not validated and remain informational.
+
+### Export the carrier × profile matrix as CSV
 
 ```console
 $ pixel-uecaps-toolbox matrix <uecapconfig folder> > matrix.csv
@@ -466,8 +458,8 @@ $ pixel-uecaps-toolbox matrix <uecapconfig folder> -o matrix.csv   # or write st
 ```
 
 One row per carrier, one column per SKU capability profile; each cell is the
-`<NUMBER>` of that carrier's file for that profile (empty when the carrier ships no
-file for it — e.g. alt-tier carriers leave the last two profiles blank). Columns are
+`<NUMBER>` of that carrier's validated file for that profile (empty when no eligible file
+exists; carriers with no eligible files have no row). Columns are
 headed by the profile's **known Pixel model**, or its **anchor prime** when the model
 isn't known, and are sorted by that header:
 

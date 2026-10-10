@@ -1,10 +1,9 @@
 //! pixel-uecaps-toolbox — inspect and audit Google Pixel UE-capabilities files, and compile a
 //! complete offline `uecapconfig` folder into a flashable replacement module.
 
-use pixel_uecaps_toolbox::{compiler, outcome::Outcome, report};
-
 use clap::{Parser, Subcommand};
-use std::{path::PathBuf, process::ExitCode};
+use pixel_uecaps_toolbox::{compiler, outcome::Outcome, report};
+use std::{io::Write, path::PathBuf, process::ExitCode};
 
 /// Inspect, audit, and compile Pixel UE-capabilities `.binarypb` files.
 #[derive(Parser)]
@@ -79,7 +78,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(outcome) => outcome.into(),
         Err(e) => {
-            eprintln!("error: {e:#}");
+            let _ = writeln!(std::io::stderr().lock(), "error: {e:#}");
             ExitCode::from(2)
         }
     }

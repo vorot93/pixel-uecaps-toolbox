@@ -34,7 +34,7 @@ const fn lte_class(value: i32) -> (Option<i32>, i32) {
 /// This module is statically single-kind, so every band it prints is an E-UTRA band — including
 /// one at or above `NR_BAND_OFFSET`, which is an out-of-range E-UTRA band rather than an NR one.
 /// Going through the kind-known method keeps that true everywhere here; the inferring free
-/// `report::combos::band_label` would render such a band as NR.
+/// The raw-band `render_component` helper would render such a band as NR.
 fn eutra(band: i32) -> CompactString {
     SubBlockKind::Lte.band_label(band)
 }
@@ -58,7 +58,7 @@ fn component_label(c: &LteComponent) -> String {
         return format!("{}{}/[{}]", eutra(c.band), bw_letter(dl_idx), ul);
     }
     // The kind is statically E-UTRA here, so the label comes from `SubBlockKind::Lte`, not from
-    // the free `report::combos::band_label`, which *infers* the kind from the raw band. That
+    // the raw-band `render_component`, which *infers* the kind from the raw band. That
     // inference reads any band >= NR_BAND_OFFSET as NR, so a crafted `lte_*.binarypb` carrying
     // band 10078 rendered as `n78A↓` on the combo line while the `--full` per-CC line below
     // printed `B10078` — two contradictory labels for one component in one report. This module

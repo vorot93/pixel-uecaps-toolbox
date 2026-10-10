@@ -26,8 +26,7 @@ Corpus-measured statistics and rejected-hypothesis reasoning are exactly this ki
 non-reconstructible knowledge; when you measure something that justifies a rule, record the
 number next to the rule (see DESIGN.md's format sections for the pattern).
 
-The tool is feature-complete and corpus-validated, with no open review backlog. For the
-commit-level state — including any local commits not yet on `origin` — run
+For the commit-level state — including any local commits not yet on `origin` — run
 `git log --oneline origin/master..master` (empty = in sync); pushing is at the user's
 discretion. Don't pin a baseline SHA in the docs; it self-stales on the next commit.
 
@@ -100,23 +99,37 @@ compiler::provision::`, `cargo test --test compiler_cli`) have no such failure m
 filter down to a single test, check that the reported count is non-zero before believing the
 result.
 
-Full-corpus compiler verification activates only when **both**
-`UECAPS_BITMASK_CORPUS` and `UECAPS_PROFILED_CORPUS` point at their respective input
-directories; with either unset, that one test (`tests/compiler_corpus.rs`) prints a single
-skip note and returns. With both set, it compares two independently decomposed canonical
-sources, checks the observed LTE invariants, provisions every registered `PHONE_MODELS` target,
-and inspects every generated NR file for fully referenced, strictly canonical compact
-feature catalogs and one-byte resolved selectors. Its feature-palette expectation is an
-independent oracle: the integration test prost-decodes raw rows, accumulates its own per-field
-domains, enumerates the products without production palette helpers/constants, unions literal
-additions, and compares the exact sorted KDL rows. A skipped pass validates only the guard:
-claim real-corpus coverage only from a run in which those assertions actually execute.
+Four tests in `tests/compiler_corpus.rs` are corpus-gated by
+`UECAPS_BITMASK_CORPUS` and `UECAPS_PROFILED_CORPUS`:
+
+- `optional_corpora_decompose_and_provision_every_registered_target`
+- `nr_feature_index_matches_derivation_formula`
+- `lte_feature_index_is_always_some_in_corpus`
+- `att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features`
+
+With either variable unset, their bodies return early; Cargo still reports them as passes.
+The separate `layout_aware_oracle_observes_bitmask_lte_carrier_but_skips_profiled_lte_id` and
+`layout_aware_oracle_inspects_generated_bitmask_lte_carrier_but_skips_profiled_lte_id` tests
+are hermetic and always execute. Claim real-corpus coverage only when the gated assertions ran.
+The full pipeline gate independently decomposes both layouts, provisions every registered target,
+and checks compact catalogs and selector fidelity. Its feature-palette oracle derives raw domains
+and literal additions independently of production helpers.
+
+For hermetic reporting work, explicitly unset both variables. Use persistent runtime roots
+(for example `TMPDIR=$HOME/.superpowers/pixel-uecaps-toolbox/report-correctness-runtime`, created
+before running tests). Cargo builds share the system-wide target configured in
+`~/.cargo/config.toml`; never override it per task. Refresh dependencies once before the first
+build through updated beta Cargo, then compile with stable. `Cargo.lock` stays uncommitted.
+
+Actual product decompositions require a new branch in the primary `*-decomposed` checkout,
+serialized with any active decomposition for that product. Do not create corpus copies,
+worktrees, or generated outputs under `/tmp`; keep process artifacts under `~/.superpowers`.
 
 ```sh
 env UECAPS_BITMASK_CORPUS=/path/to/uecapconfig-bitmask \
     UECAPS_PROFILED_CORPUS=/path/to/uecapconfig-profiled \
-    CARGO_TARGET_DIR=/tmp/pixel-uecaps-toolbox-exhaustive-target \
-    cargo test --release --test compiler_corpus -- --nocapture
+    TMPDIR="$HOME/.superpowers/pixel-uecaps-toolbox/corpus-runtime" \
+    cargo +stable test --release --test compiler_corpus -- --nocapture
 ```
 
 Configured-corpus observation on 2026-08-17, not an accepted constant: the resulting source
@@ -328,15 +341,17 @@ Every fact that used to be duplicated across the compiler↔report surfaces (and
 `patch`) has one home. When you need one of these, **call the helper**; re-inlining it is exactly
 the drift that consolidation removed.
 
-- **Band prefix (`n`/`B`).** `raw_nr::SubBlockKind::band_label(band)` (a method on the kind, beside its `raw_band`/`split_raw_band` siblings) is the source. The free `report::combos::band_label(raw_band)` *infers* the kind from `NR_BAND_OFFSET` and delegates to the method; every caller that already **knows** the kind (`RawSubBlock::band_label` and `raw_nr`'s validation/guard messages) calls the method directly. **Do not** route a known-kind band through the inferring free `band_label` — it would mislabel an out-of-range value (a stray LTE band ≥ offset would render as NR). This infer-vs-assert split is the subtle trap here. `report::lte` is statically single-kind and now routes every band through the method too (via its local `eutra` helper): it used to format `B` inline for the per-CC lines but call the *inferring* free function for the combo label, so a crafted `lte_*.binarypb` carrying band 10078 printed `n78A↓` and `B10078` for the same component in one report. "Statically single-kind" is a reason to call the method, not a licence to skip it.
+- **Band prefix (`n`/`B`).** `raw_nr::SubBlockKind::band_label(band)` owns the prefix.
+  `report::combos::render_component` infers the kind through `split_raw_band`; callers that
+  already know the kind use `render_known_component` or the method directly. An LTE fallback
+  band ≥10000 must remain LTE even though that raw value would mean NR in a carrier message.
 - **Fingerprint ↔ (family, tier).** `model::FINGERPRINTS` is the table; `fp_info` (inverse), `fingerprint_for` (forward), `tier_fingerprints`, and the compiler's `modern_fingerprint` wrapper all derive from it.
 - **Per-tier profile counts (16/14).** `model::tier_profile_count` + `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its 16/14 from these.
 - **Selector-only-stays-unresolved check (1-based leading byte).** `report::combos::feature_index(ids, len)` — used by the compiler's generated-file self-verification (`verify_compact_feature_list`, `src/compiler/nr.rs`), its only caller, to confirm a raw selector-only array still does *not* resolve against a (possibly shrunk) list; **not** the real per-CC resolution path — that's `resolve_all(ids, list)` (also in `report::combos`), which resolves a whole direction's array all-or-nothing across every byte. `feature_index`'s first-byte check is sufficient here only because, by construction, a resolved reference's bytes are all-or-none catalog indices.
-- **DL/UL display projection.** `report::combos::fmt_cc_features`. The decoded display values
-  (SCS kHz, MIMO/mod-order labels, max BW, 90 MHz) are **not** stored on
-  `report::combos::SubBlock` — they are pure functions of its `dl_features`/`ul_features`
-  records and are projected only here. Don't re-add pre-rendered scalar fields to the DTO;
-  that is two representations of one fact with nothing keeping them in agreement.
+- **DL/UL report projection.** `report::identity` retains observed fields and every ordered CC;
+  `report::combos` formats them. Never use formatted strings or compiler-derived indexes for
+  equality, and never reintroduce CC0-only detail. NR references resolve against catalogs;
+  E-UTRA selector bytes remain exact raw observations.
 - **Raw protobuf band → (kind, plain band).** `raw_nr::SubBlockKind::split_raw_band(raw)`, the
   inverse of `SubBlockKind::raw_band(band)`. Every site that *asserts* a component's kind from
   its raw band goes through it, so the `>= NR_BAND_OFFSET` comparison and the `- NR_BAND_OFFSET`
@@ -349,7 +364,10 @@ the drift that consolidation removed.
   deliberately no `FromStr`.
 - **`ComboHeader` combo header.** `raw_nr::RawNrPayload::header()`.
 - **Shortest-decimal `u64`.** `compiler::parse_shortest_u64`. **Exception:** `compiler::decompose::parse_filename_number` keeps its own two-step form on purpose — it needs a distinct, *tested* "does not fit u64" vs "must be shortest decimal" message the `Option` primitive can't express. Don't "finish the dedup" by folding it in.
-- **File-or-stdout output.** `report::matrix` and `compiler::decompose` are the two file-or-stdout sites, and each keeps its own inline `match` on `Option<&Path>` — `Some(path)` through `atomic::write_bytes_atomic`, `None` through `print!`. There is still no shared helper (`output::write_out` had one caller left and went with `magisk`); two four-line `match`es that already read identically are not worth one. Note what `print!` costs: a reader closing the pipe early panics the process (exit 101) instead of producing the crate's `error:`/exit 2, which is documented in README rather than special-cased.
+- **File-or-stdout output.** `matrix` and `decompose` use `atomic::write_bytes_atomic` for files.
+  The four report commands share checked stdout/stderr writes and flushes, returning 2 on output
+  failure. Their main error envelope is best-effort, so failed stderr does not trigger another
+  panic. `decompose` and `self-test` still use print macros for stdout and may exit 101 on failure.
 - **Carrier-name validation.** `compiler::schema::validate_carrier_name`.
 - **The PLMN legend projection.** `compiler::schema::legend_root(carriers)` — the id-ordered
   `MappingRoot` every validated carrier with a legend entry contributes. `provision`'s
@@ -363,10 +381,9 @@ the drift that consolidation removed.
 - **1-based catalog references.** `compiler::features::catalog_indices` — the four DL/UL ×
   local-plan/global-catalog `binary_search(..) + 1` lookups are one generic helper.
 
-Historically, correctness findings clustered on the single-file editing surfaces while the
-compiler (`src/compiler/**`, `src/wire.rs`) stayed clean. Those surfaces have been removed; the
-compiler's strict discipline is now the crate's baseline, and a new shared helper should meet it
-rather than the old report-side leniency.
+Strict decoding, semantic validation, and representability are distinct boundaries. Reporting
+correctness does not establish compiler fidelity: compiler normalization and expansion-budget
+findings require their own remediation and verification.
 
 ## Corpus wire-format evidence
 
@@ -431,7 +448,7 @@ These are verified correct against the real code paths and stay guarded by the t
 invariants documented here — don't re-audit them absent a concrete new symptom: the PLMN
 packed-BCD math (both directions, all five documented vectors), the canonical
 rectangle/selection algebra, Kahn topological-ordering determinism, ZIP output determinism,
-`atomic.rs` temp/rename semantics, the strict-vs-lenient PLMN duplicate polarity, LTE
+`atomic.rs` temp/rename semantics, PLMN duplicate validation, LTE
 class-letter bit decoding, and the clap argument relationships.
 
 ## Gotchas

@@ -1,6 +1,8 @@
 //! Observation-preserving identity. Never pass through compiler-derived defaults.
-use super::combos::NR_BAND_OFFSET;
-use crate::proto::{ComboHeader, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps};
+use crate::{
+    proto::{ComboHeader, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+    raw_nr::SubBlockKind,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Selector<T> {
@@ -38,11 +40,11 @@ pub(super) struct LocatedCombination {
 fn selector<T: Clone>(
     raw: &Option<Vec<u8>>,
     rows: &[T],
-    nr: bool,
+    kind: SubBlockKind,
     context: &str,
     errors: &mut Vec<String>,
 ) -> Selector<T> {
-    if !nr {
+    if kind == SubBlockKind::Lte {
         return Selector::Eutra(raw.clone());
     }
     let Some(ids) = raw else {
@@ -85,14 +87,14 @@ pub(super) fn project_combinations(caps: &UeCaps) -> Result<Vec<LocatedCombinati
                     dl: selector(
                         &c.dl_feature_per_cc_ids,
                         &caps.dl_feature_per_cc_list,
-                        c.band >= NR_BAND_OFFSET,
+                        SubBlockKind::split_raw_band(c.band).0,
                         &format!("{context} DL"),
                         &mut errors,
                     ),
                     ul: selector(
                         &c.ul_feature_per_cc_ids,
                         &caps.ul_feature_per_cc_list,
-                        c.band >= NR_BAND_OFFSET,
+                        SubBlockKind::split_raw_band(c.band).0,
                         &format!("{context} UL"),
                         &mut errors,
                     ),

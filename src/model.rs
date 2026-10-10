@@ -180,17 +180,6 @@ fn matching_profiles(number: u64) -> impl Iterator<Item = &'static Profile> {
         .filter(move |p| number != 0 && number.is_multiple_of(p.anchor))
 }
 
-/// The "ambiguous SKU" message shared by the `check` and `inspect` report paths: a number
-/// divisible by more than one anchor prime cannot pick a single profile.
-pub(crate) fn ambiguous_anchors(anchors: &[&'static Profile]) -> String {
-    let anchor_ids: Vec<_> = anchors.iter().map(|p| p.anchor).collect();
-    format!(
-        "ambiguous: divisible by {} anchors {:?}",
-        anchors.len(),
-        anchor_ids
-    )
-}
-
 /// A modem LTE-config selection-table entry: the `lte_<id>` filename number, the Shannon
 /// firmware family name, the hardware/SKU category codes that select it, and the identified
 /// Pixel model label (`None` when only the raw family is known; inferred identities
