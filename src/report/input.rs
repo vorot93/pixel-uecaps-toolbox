@@ -34,7 +34,7 @@ impl<T> Observation<T> {
     fn from_result(path: &Path, result: Result<T, InputError>) -> Self {
         let (value, issues) = match result {
             Ok(value) => (Some(value), Vec::new()),
-            Err(error) => (None, vec![Issue::input(path, error)]),
+            Err(error) => (None, vec![Issue::input(error)]),
         };
         Self {
             path: path.into(),
@@ -113,12 +113,12 @@ pub(super) fn load_validated(path: &Path, kind: FileKind<'_>) -> Option<FileEvid
 }
 #[derive(Debug, thiserror::Error)]
 pub(super) enum InputError {
-    #[error("cannot read {path}: {source}")]
+    #[error("cannot read {path}")]
     Read {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{path}: {source:#}")]
+    #[error("invalid input {path}")]
     Wire {
         path: PathBuf,
         source: anyhow::Error,
@@ -131,27 +131,21 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, InputError> {
     })
 }
 pub(super) fn read_carrier(path: &Path) -> Result<UeCaps, InputError> {
-    wire::decode_uecaps(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
-        InputError::Wire {
-            path: path.into(),
-            source,
-        }
+    wire::decode_uecaps(&read_bytes(path)?, "UeCaps").map_err(|source| InputError::Wire {
+        path: path.into(),
+        source,
     })
 }
 pub(super) fn read_lte(path: &Path) -> Result<LteCaps, InputError> {
-    wire::decode_lte_caps(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
-        InputError::Wire {
-            path: path.into(),
-            source,
-        }
+    wire::decode_lte_caps(&read_bytes(path)?, "LteCaps").map_err(|source| InputError::Wire {
+        path: path.into(),
+        source,
     })
 }
 pub(super) fn read_legend(path: &Path) -> Result<PlmnMap, InputError> {
-    wire::decode_plmn_map(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
-        InputError::Wire {
-            path: path.into(),
-            source,
-        }
+    wire::decode_plmn_map(&read_bytes(path)?, "PlmnMap").map_err(|source| InputError::Wire {
+        path: path.into(),
+        source,
     })
 }
 pub(super) fn read_optional_legend(dir: &Path) -> Result<Option<PlmnMap>, InputError> {
@@ -169,6 +163,33 @@ mod tests {
     use prost::Message;
 
     #[test]
+    fn error_chains_and_issue_diagnostics_include_path_and_cause_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, corrupt) in [("missing.binarypb", false), ("bad.binarypb", true)] {
+            let path = dir.path().join(name);
+            if corrupt {
+                fs::write(&path, [0x78, 1]).unwrap();
+            }
+            let error = read_carrier(&path).unwrap_err();
+            let cause = match &error {
+                InputError::Read { source, .. } => source.to_string(),
+                InputError::Wire { source, .. } => source.root_cause().to_string(),
+            };
+            let chain = format!("{:#}", anyhow::Error::from(error));
+            assert_eq!(chain.matches(path.to_str().unwrap()).count(), 1, "{chain}");
+            assert_eq!(chain.matches(&cause).count(), 1, "{chain}");
+            let issue = Issue::input(read_carrier(&path).unwrap_err());
+            let diagnostic = super::super::validation::diagnostics([&issue]);
+            assert_eq!(
+                diagnostic.matches(path.to_str().unwrap()).count(),
+                1,
+                "{diagnostic}"
+            );
+            assert_eq!(diagnostic.matches(&cause).count(), 1, "{diagnostic}");
+        }
+    }
+
+    #[test]
     fn rejects_a_file_carrying_an_unmodeled_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("VZW_311480.binarypb");
@@ -182,7 +203,13 @@ mod tests {
         assert!(UeCaps::decode(&bytes[..]).is_ok());
         let error = read_carrier(&path).unwrap_err();
         assert!(matches!(error, InputError::Wire { .. }));
-        assert!(error.to_string().contains("field #15"));
+        assert!(
+            format!(
+                "{:#}",
+                anyhow::Error::from(read_carrier(&path).unwrap_err())
+            )
+            .contains("field #15")
+        );
         assert!(error.to_string().contains("VZW_311480.binarypb"));
     }
     #[test]
@@ -222,6 +249,6 @@ mod tests {
         assert_eq!(decoded, map);
         fs::write(&path, [0x78, 0x01]).unwrap();
         let error = read_optional_legend(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("field #15"));
+        assert!(format!("{:#}", anyhow::Error::from(error)).contains("field #15"));
     }
 }

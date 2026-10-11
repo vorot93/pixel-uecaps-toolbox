@@ -140,7 +140,7 @@ impl NrSelectionIndex {
     fn build(combos: &[ValidatedNrCombo]) -> Self {
         let mut index: HashMap<(CarrierId, SkuId), Vec<u32>> = HashMap::new();
         for (combo_index, combo) in combos.iter().enumerate() {
-            let combo_index = u32::try_from(combo_index).expect("c count fits in u32");
+            let combo_index = u32::try_from(combo_index).expect("combo count fits in u32");
             for member in combo.relation.members() {
                 index.entry(member).or_default().push(combo_index);
             }
@@ -179,7 +179,7 @@ impl ValidatedNr {
         self.source.dl_features = self.palette.dl.clone();
         self.source.ul_features = self.palette.ul.clone();
         self.source.combos = nr_source_combos(&self.combos, &self.domain, &self.palette)
-            .expect("c surgery must produce serializable source combos");
+            .expect("combo surgery must produce serializable source combos");
     }
 }
 
@@ -428,13 +428,12 @@ fn validate_nr_combos(
             .iter()
             .enumerate()
             .map(|(component_index, component)| {
-                component.resolve(palette).map_err(|error| {
-                    let context = format!(
-                        "validating NR combo {} component {}: {error}",
+                component.resolve(palette).with_context(|| {
+                    format!(
+                        "validating NR combo {} component {}",
                         index + 1,
                         component_index + 1,
-                    );
-                    error.context(context)
+                    )
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -750,7 +749,7 @@ fn validate_fingerprint_partition(nr: &NrDocument) -> anyhow::Result<BTreeMap<St
             validate_carrier_name(carrier)?;
             ensure!(
                 whitelist.contains(carrier.as_str()),
-                "fp carrier `{carrier}` is not a bitmask carrier"
+                "fingerprint-group carrier `{carrier}` is not a bitmask carrier"
             );
             ensure!(
                 assigned.insert(carrier.as_str()),
@@ -1227,7 +1226,7 @@ bf 1 {
     c "A" "B"
 }
 "#,
-            "not a bitmask carrier",
+            "fingerprint-group carrier `B` is not a bitmask carrier",
         );
 
         assert_nr_error(
@@ -1628,13 +1627,13 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
         let legend_plmns: Vec<u64> = carrier
             .legend
             .as_ref()
-            .expect("cr has a legend entry")
+            .expect("carrier has a legend entry")
             .plmns
             .iter()
             .map(|plmn| plmn.to_encoded())
             .collect();
         assert_eq!(legend_plmns, [197_154, 5_435_408, 197_154]);
-        let profiled = carrier.profiled.as_ref().expect("cr is profiled");
+        let profiled = carrier.profiled.as_ref().expect("carrier is profiled");
         let profile = &profiled.profiles[&66_813_533];
         assert_eq!(profile.number, 66_813_533);
         assert_eq!(profile.fingerprint, 627_223_094);

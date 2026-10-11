@@ -59,6 +59,15 @@ pub(crate) enum SubBlockKind {
     Nr,
 }
 
+impl Display for SubBlockKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Lte => "LTE",
+            Self::Nr => "NR",
+        })
+    }
+}
+
 impl SubBlockKind {
     /// The protobuf band value for a plain band number of this kind (NR bands are stored
     /// offset by [`NR_BAND_OFFSET`]).
@@ -410,7 +419,7 @@ pub(crate) fn cc_count(kind: SubBlockKind, bw_class: u8) -> anyhow::Result<usize
         .iter()
         .find_map(|&(class, count)| (class == bw_class).then_some(count))
         .ok_or_else(|| {
-            anyhow::anyhow!("unknown {kind:?} bw_class {bw_class}: cannot determine CC count")
+            anyhow::anyhow!("unknown {kind} bw_class {bw_class}: cannot determine CC count")
         })
 }
 

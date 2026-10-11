@@ -839,7 +839,7 @@ mod tests {
         .resolve(&FeaturePalette::from_rows(vec![], vec![]))
         .unwrap_err()
         .to_string();
-        assert!(error.contains("unknown Nr bw_class 99"), "{error}");
+        assert!(error.contains("unknown NR bw_class 99"), "{error}");
     }
 
     #[test]

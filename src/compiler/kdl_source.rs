@@ -255,10 +255,9 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
             opt_str_prop(&mut node, nr_combo::BCS_INTRA_ENDC, Some(spelling.as_str()));
         }
         None => bail!(
-            "bcs_intra_endc=None with ie=1 cannot be represented by \
-             omission (would re-derive as Some(0)); this combo is unexpected \
-             (sub-block bands {:?}) — see \
-             DESIGN.md",
+            "absent intra-ENDC BCS with intra-band EN-DC support 1 cannot be represented: \
+             omission derives a present value of 0; supply that BCS value or correct the \
+             support flag (sub-block bands {:?})",
             combo
                 .sub_blocks
                 .iter()
@@ -1622,7 +1621,7 @@ mod nr_tests {
     }
 
     fn parse_combo(text: &str) -> KdlNode {
-        let doc: KdlDocument = text.parse().expect("c KDL parses");
+        let doc: KdlDocument = text.parse().expect("combo KDL parses");
         doc.nodes().first().expect("one combo node").clone()
     }
 

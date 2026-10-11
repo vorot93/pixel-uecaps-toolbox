@@ -6,7 +6,7 @@ use super::{
     identity::{CombinationKey, ShapeKey, project_combinations, shape},
 };
 use crate::{
-    model::{FileKind, classify_filename, fingerprint_info, identify_profile},
+    model::{FileKind, FingerprintLabel, classify_filename, identify_profile},
     outcome::Outcome,
 };
 use std::{
@@ -72,9 +72,7 @@ fn load(path: &Path) -> anyhow::Result<ComparisonInput> {
         _ => None,
     }
     .unwrap_or_else(|| "?".into());
-    let fingerprint = fingerprint_info(caps.version)
-        .map(|(f, t)| format!("{}/{}", t.as_str(), f.short()))
-        .unwrap_or_else(|| "unknown".into());
+    let fingerprint = FingerprintLabel(caps.version);
     Ok(ComparisonInput {
         index,
         label: format!(

@@ -26,6 +26,30 @@ fn direct_inspection_retains_read_and_filename_failures() {
             .contains("Content unavailable; filename-only analysis")
     );
 }
+
+#[test]
+fn inspection_and_comparison_use_the_same_fingerprint_labels() {
+    let dir = support::fixture();
+    let path = dir.path().join("A_167.binarypb");
+    for (version, label) in [(874_888_686, "main/A"), (123, "unknown")] {
+        let mut caps = carrier();
+        caps.version = version;
+        support::write_message(&path, &caps);
+        let inspected = report::inspect(&path, report::Detail::Summary).unwrap();
+        let compared =
+            report::compare(&path, &path, report::Detail::Summary, report::Common::Hide).unwrap();
+        assert!(
+            inspected.body.contains(&format!("({label})")),
+            "{}",
+            inspected.body
+        );
+        assert!(
+            compared.body.contains(&format!("({label})")),
+            "{}",
+            compared.body
+        );
+    }
+}
 use std::{ffi::OsStr, fs, process::Output};
 use support::{CLEAN, REJECTED, command, stderr, stdout};
 

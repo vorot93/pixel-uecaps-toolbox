@@ -92,6 +92,9 @@ $ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 > diagnostic failure preserves an existing output file. `decompose` still uses a print macro and
 > can panic (exit 101) on stdout failure. File outputs use atomic replacement.
 
+Reports label known fingerprints consistently as tier/family (for example, `main/A` or
+`alt/B`), and unknown ones as `unknown`. Diagnostics print the input path and root cause once.
+
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled
 input must contain exactly one `ap_plmn_mapping.binarypb`, at least one numbered

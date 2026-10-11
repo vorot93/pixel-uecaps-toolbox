@@ -118,11 +118,11 @@ pub fn self_test() -> Report {
 
     checks.section("fingerprint tiers");
     checks.check(
-        "874888686 -> A/main",
+        "874888686 -> main/A",
         fingerprint_info(874_888_686) == Some((Family::A, Tier::Main)),
     );
     checks.check(
-        "627223094 -> B/alt",
+        "627223094 -> alt/B",
         fingerprint_info(627_223_094) == Some((Family::B, Tier::Alt)),
     );
 

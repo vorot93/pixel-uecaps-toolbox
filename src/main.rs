@@ -42,6 +42,7 @@ enum Cmd {
     },
     /// Inspect one <CARRIER>_<NUMBER>.binarypb file
     Inspect {
+        /// Capability or PLMN legend .binarypb file to inspect
         file: PathBuf,
         /// Reveal per-component combo detail and the SKU-selection math
         #[arg(long)]
@@ -49,11 +50,13 @@ enum Cmd {
     },
     /// Scan a folder and report everything that does not match
     Check {
+        /// Directory of capability and legend .binarypb files
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
     /// Emit a carrier × profile matrix (CSV) for a folder of capability files
     Matrix {
+        /// Directory of profiled capability .binarypb files
         #[arg(default_value = ".")]
         dir: PathBuf,
         /// Write the CSV here instead of stdout
@@ -64,8 +67,11 @@ enum Cmd {
     SelfTest,
     /// Compare the band combinations of two capability files
     Compare {
+        /// First carrier capability file
         file_a: PathBuf,
+        /// Second carrier capability file
         file_b: PathBuf,
+        /// Show complete capability records for differing combinations
         #[arg(long)]
         full: bool,
         /// Also list the combos common to both files (= identical caps, ~ caps differ)

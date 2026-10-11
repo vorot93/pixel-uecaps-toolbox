@@ -10,7 +10,7 @@ use super::{
 use crate::{
     factor::{factor_display, gcd},
     model::{
-        FileKind, MAPPING_BASENAME, classify_filename, decode_plmn, fingerprint_info,
+        FileKind, FingerprintLabel, MAPPING_BASENAME, classify_filename, decode_plmn,
         matching_anchors, mcc_country,
     },
     outcome::Outcome,
@@ -79,7 +79,7 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> anyhow::Result
 fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carrier: &str) {
     match read_optional_legend(dir) {
         Err(error) => {
-            issues.push(Issue::input(&dir.join(MAPPING_BASENAME), error));
+            issues.push(Issue::input(error));
             out.push_str("Legend identity: unavailable\n");
         }
         Ok(None) => out.push_str("Legend: absent (optional)\n"),
@@ -199,9 +199,7 @@ fn render_carrier_file(
         }
     }
     if let Some(caps) = &observation.value {
-        let fp = fingerprint_info(caps.version)
-            .map(|(f, t)| format!("{}/{}", f.short(), t.as_str()))
-            .unwrap_or_else(|| "UNKNOWN".into());
+        let fp = FingerprintLabel(caps.version);
         writeln!(out, "In-file fingerprint: {} ({fp})", caps.version)?;
         if caps.combo_groups.is_empty() {
             out.push_str("Band combinations: none (reference stub)\n");

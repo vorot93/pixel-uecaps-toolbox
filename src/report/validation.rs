@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum IssueKind {
     Read,
     Wire,
@@ -21,6 +21,20 @@ pub(super) enum IssueKind {
     Legend,
     Collision,
     MixedTier,
+}
+impl std::fmt::Display for IssueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Read => "Read",
+            Self::Wire => "Wire",
+            Self::Reference => "Reference",
+            Self::Anchor => "Anchor",
+            Self::Fingerprint => "Fingerprint",
+            Self::Legend => "Legend",
+            Self::Collision => "Collision",
+            Self::MixedTier => "MixedTier",
+        })
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) struct Issue {
@@ -36,12 +50,20 @@ impl Issue {
             message: message.into(),
         }
     }
-    pub fn input(path: &Path, error: InputError) -> Self {
-        let kind = match error {
-            InputError::Read { .. } => IssueKind::Read,
-            InputError::Wire { .. } => IssueKind::Wire,
+    pub fn input(error: InputError) -> Self {
+        let (path, kind, message) = match error {
+            InputError::Read { path, source } => {
+                (path, IssueKind::Read, format!("cannot read: {source}"))
+            }
+            InputError::Wire { path, source } => {
+                (path, IssueKind::Wire, format!("invalid input: {source:#}"))
+            }
         };
-        Self::new(kind, path, error.to_string())
+        Self {
+            kind,
+            paths: vec![path],
+            message,
+        }
     }
 }
 pub(super) fn diagnostics<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> String {
@@ -53,7 +75,7 @@ pub(super) fn diagnostics<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> St
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let _ = writeln!(out, "error: {paths} [{:?}]: {}", issue.kind, issue.message);
+        let _ = writeln!(out, "error: {paths} [{}]: {}", issue.kind, issue.message);
     }
     out
 }

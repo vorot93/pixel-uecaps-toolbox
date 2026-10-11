@@ -479,6 +479,16 @@ pub(crate) fn profile(anchor: u64) -> Option<&'static Profile> {
     PROFILES.iter().find(|profile| profile.anchor == anchor)
 }
 
+pub(crate) struct FingerprintLabel(pub u64);
+impl std::fmt::Display for FingerprintLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match fingerprint_info(self.0) {
+            Some((family, tier)) => write!(f, "{}/{}", tier.as_str(), family.short()),
+            None => f.write_str("unknown"),
+        }
+    }
+}
+
 /// What a filename refers to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FileKind<'a> {
