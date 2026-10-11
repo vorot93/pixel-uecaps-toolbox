@@ -100,7 +100,7 @@ pub(super) fn payload_issues(input: &LoadedInput) -> Vec<Issue> {
             .err()
             .unwrap_or_default()
             .into_iter()
-            .map(|message| Issue::new(IssueKind::Reference, &input.path, message))
+            .map(|error| Issue::new(IssueKind::Reference, &input.path, error.to_string()))
             .collect(),
         Payload::Legend(map) => legend_issues(&input.path, map),
         Payload::Lte(_) => Vec::new(),

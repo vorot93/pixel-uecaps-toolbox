@@ -16,6 +16,10 @@ use std::{
 };
 
 type Index = BTreeMap<ShapeKey, BTreeSet<CombinationKey>>;
+struct ComparisonInput {
+    index: Index,
+    label: String,
+}
 fn render_variants(
     out: &mut String,
     label: char,
@@ -26,7 +30,7 @@ fn render_variants(
     }
     Ok(())
 }
-fn load(path: &Path) -> anyhow::Result<(Index, String)> {
+fn load(path: &Path) -> anyhow::Result<ComparisonInput> {
     let name = path.file_name().and_then(|p| p.to_str()).unwrap_or("?");
     match parse_name(name) {
         Parsed::Mapping => anyhow::bail!(
@@ -48,8 +52,17 @@ fn load(path: &Path) -> anyhow::Result<(Index, String)> {
         "{} is a reference stub",
         path.display()
     );
-    let combos = project_combinations(&caps)
-        .map_err(|errors| anyhow::anyhow!("{}: {}", path.display(), errors.join("; ")))?;
+    let combos = project_combinations(&caps).map_err(|errors| {
+        anyhow::anyhow!(
+            "{}: {}",
+            path.display(),
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
     let mut index = Index::new();
     for combo in combos {
         index
@@ -65,19 +78,25 @@ fn load(path: &Path) -> anyhow::Result<(Index, String)> {
     let fingerprint = fingerprint_info(caps.version)
         .map(|(f, t)| format!("{}/{}", t.as_str(), f.short()))
         .unwrap_or_else(|| "unknown".into());
-    Ok((
+    Ok(ComparisonInput {
         index,
-        format!(
+        label: format!(
             "{}   {profile}   fp {} ({fingerprint})",
             path.display(),
             caps.version
         ),
-    ))
+    })
 }
 
 pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Result<Report> {
-    let (left, header_a) = load(a)?;
-    let (right, header_b) = load(b)?;
+    let ComparisonInput {
+        index: left,
+        label: header_a,
+    } = load(a)?;
+    let ComparisonInput {
+        index: right,
+        label: header_b,
+    } = load(b)?;
     let shared: Vec<_> = left.keys().filter(|k| right.contains_key(*k)).collect();
     let changed: Vec<_> = shared
         .iter()

@@ -44,7 +44,7 @@ pub(crate) fn render_known_component(
 
 pub(super) fn render_shape(key: &ShapeKey) -> String {
     key.iter()
-        .map(|&(band, dl, ul)| render_component(band, dl, ul))
+        .map(|component| render_component(component.band, component.dl, component.ul))
         .collect::<Vec<_>>()
         .join(" + ")
 }
