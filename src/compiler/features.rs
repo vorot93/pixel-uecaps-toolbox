@@ -680,16 +680,9 @@ mod tests {
             "the all-zero placeholder must survive generation byte-for-byte"
         );
 
-        // The NR half. This used to assert that a *UL-disabled* NR sub-block carries an
-        // all-zero placeholder on the UL side and that it "must survive generation
-        // byte-for-byte" — a guarantee that was only ever true on a path `provision` never
-        // takes, because the fixture was built directly instead of through `resolve`.
-        // `resolve` filters `ul_bw_class` to `>= 1` before deriving presence, so it yields
-        // `None` there, and the sibling test below (`resolve_derives_the_omitted_placeholder`)
-        // asserted exactly the opposite. The corpus settles which is right: `ul_bw_class == 0`
-        // never carries field 7, in any of 687 438 occurrences. So the placeholder is tested
-        // where it actually lives — under a real class — and the UL-disabled direction carries
-        // nothing, which is now also what `validate` enforces.
+        // NR UL class 0 never carries field 7 in 687,438 corpus occurrences. Test the
+        // placeholder under a live class and leave the disabled direction absent, matching
+        // `resolve` and `validate` rather than inventing a fixture-only presence state.
         let nr_sb: RawSubBlock = RawNrSubBlock {
             band: 78,
             // cc_count(Nr, 1) == 1: a one-byte all-zero placeholder under a live class.

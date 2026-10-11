@@ -6,7 +6,8 @@
 /// `report::inspect` / `report::compare` are its public entry points, so this type appears in
 /// a public signature. `main.rs` never names `Detail` itself — `bool::into()` infers it from
 /// the parameter type — but the type still has to be as visible as the functions that carry
-/// it (`private_interfaces` is a hard error at that boundary, not a lint).
+/// it. `private_interfaces` warns within the library; using an inaccessible type from the
+/// binary is a hard privacy error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Detail {
     /// The default view.

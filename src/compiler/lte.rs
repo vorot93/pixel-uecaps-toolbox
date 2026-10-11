@@ -639,7 +639,7 @@ mod tests {
         );
     }
 
-    /// The byte-identity self-check's *residual* job. `wire::scan` now rejects every other
+    /// The byte-identity self-check's *residual* job. Strict wire decoding rejects every other
     /// non-canonical encoding (unknown field, wrong wire type, out-of-range varint, duplicate
     /// singular field, descending tag order, overlong varint), which leaves exactly one form it
     /// cannot reject: an explicit zero for a bare, non-`optional` scalar. prost drops that on

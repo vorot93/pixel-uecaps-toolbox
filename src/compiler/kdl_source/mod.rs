@@ -6,8 +6,7 @@ mod tests;
 mod write;
 pub(in crate::compiler) use read::read_sources;
 pub(in crate::compiler) use write::write_sources;
-// ---- NR document mapping ----
-/// A sub-block's node name: its kind prefix followed by the plain band, e.g. `nr257`, `lte66`.
+/// A sub-block's node name: its kind prefix followed by the plain band, e.g. `n257`, `B66`.
 ///
 /// This is the tool's own band-label convention (`SubBlockKind::band_label`) used as the node
 /// name, so a source line reads as the 3GPP band designation it describes.
@@ -16,8 +15,8 @@ fn sub_block_node_name(prefix: &str, band: u16) -> String {
 }
 
 /// The inverse of [`sub_block_node_name`]. `None` when `name` does not start with `prefix`, or
-/// the remainder is not a nonempty run of ASCII digits that fits `u16` — so `nr`, `nr257x`,
-/// `nrfoo` and `nr99999999` all fail rather than silently yielding a band.
+/// the remainder is not a nonempty run of ASCII digits that fits `u16` — so `n`, `n257x`,
+/// `nrfoo` and `n99999999` all fail rather than silently yielding a band.
 fn parse_sub_block_name(name: &str, prefix: &str) -> Option<u16> {
     let digits = name.strip_prefix(prefix)?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {

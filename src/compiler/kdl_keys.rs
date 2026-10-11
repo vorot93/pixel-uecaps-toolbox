@@ -1,8 +1,6 @@
 //! Every KDL node name and property key the compiler's source document uses, in one place.
 //!
-//! The reader and the writer both consume these. They used to spell all 121 keys independently
-//! (`KdlNode::new("combo")` in the writer, `r.children("combo")` in the reader), which is a
-//! drift hazard: a mismatched pair only fails if a test happens to exercise that key.
+//! The reader and writer share these keys so vocabulary cannot drift between the two codecs.
 //!
 //! **Grouped by scope, and the grouping is load-bearing.** Two keys may share a spelling only if
 //! they are never siblings. `tests::collisions_are_only_across_scopes` enforces that, so a key

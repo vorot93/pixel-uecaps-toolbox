@@ -308,7 +308,7 @@ fn read_omitted_zero_bcs(
 pub(super) fn read_nr_combo(node: &KdlNode) -> Result<NrSourceCombo> {
     let mut r = NodeReader::new(node);
     // `power-class`/`bcs-nr`/`bcs-eutra`/`intra-band-en-dc-support` are corpus-verified
-    // always `Some`: an absent property is the writer's omitted-zero (Task 8), so it
+    // always `Some`: an absent property is the writer's omitted-zero, so it
     // defaults back to `Some(0)`. `bcs-intra-endc` derives from `intra-band-en-dc-support` —
     // see below.
     let power_class = r.opt_int::<i32>(nr_combo::POWER_CLASS)?.or(Some(0));
@@ -341,9 +341,8 @@ pub(super) fn read_nr_combo(node: &KdlNode) -> Result<NrSourceCombo> {
         .into_iter()
         .map(read_selection)
         .collect::<Result<Vec<_>>>()?;
-    // Reading NR before E-UTRA preserves the previous behaviour; `validate_nr_combos` sorts
-    // sub-blocks by `RawSubBlockKey` regardless, which is why the reader could already read
-    // NR-first while real documents store E-UTRA first and still round-trip byte-identically.
+    // Read NR before E-UTRA for diagnostic precedence. Validation sorts by RawSubBlockKey,
+    // so source order remains byte-stable regardless of this read traversal.
     let mut sub_blocks = Vec::new();
     for cnode in
         r.children_matching(|name| parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some())
@@ -388,12 +387,8 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
 
 /// Read and check the format version before any other node is mapped.
 ///
-/// The ordering is the whole point. The mapping that follows is what rejects an unknown
-/// vocabulary (`unknown property`, `missing required property`), and every format change so far
-/// has also changed the vocabulary — so a stale source tree used to die there, unhelpfully, while
-/// the check that exists to diagnose exactly that case sat downstream in `validate_documents` and
-/// never ran. Scanning for the marker up front is also order-independent, so the diagnosis holds
-/// for a hand-written document that puts `version` somewhere other than the top.
+/// Diagnose a format mismatch before vocabulary errors, even when a hand-written document
+/// puts `version` somewhere other than the top.
 ///
 /// Returns nothing: success means the number equals [`SOURCE_FORMAT_VERSION`], so handing it back
 /// would only propagate a value every caller already has as a constant.

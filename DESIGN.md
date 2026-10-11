@@ -41,9 +41,8 @@ Performance), `model::PHONE_MODELS` (+
 `CapabilityLayout`/`PhoneModel`) for enumerating registered targets, and `proto` for building
 test fixtures. Compiler submodules are private; their shared items stay within `crate::compiler`.
 Other internals use parent-module or crate visibility. The library tracks current HEAD without
-compatibility wrappers or a stable-API promise. An earlier plan sketched
-a broader library API (a WASM-facing "Plan 2") on top of this crate; it was never built and
-was dropped — do not reintroduce a speculative `pub` surface in anticipation of it.
+compatibility wrappers or a stable-API promise. Export types for concrete external consumers,
+not speculative future interfaces.
 
 **The mental model.** There are two modem-selected layouts. Older Tensor Pixels use one
 unnumbered `<CARRIER>.binarypb` file per carrier and select combos through an in-file

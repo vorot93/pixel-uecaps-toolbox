@@ -235,15 +235,10 @@ impl<'a> NodeReader<'a> {
     ///
     /// The duplicate check is what makes the reader honest about hand edits. `node.get(key)`
     /// returns the *last* matching entry, and each `opt_*` reader then marks the key consumed,
-    /// so a duplicated property used to be silently last-wins with nothing left for `finish` to
-    /// object to — and the shadowed entry was never even type-checked, so `mcc="oops" mcc=310`
-    /// parsed clean. Since the source document is the only editing surface in the tool, that
-    /// turned a duplicated line into silent data loss.
+    /// so accepting duplicate properties would silently discard earlier values, even ill-typed
+    /// ones such as the first value in `mcc="oops" mcc=310`.
     ///
-    /// The check is unconditional: no property in either document is multi-valued. It once
-    /// exempted keys read through a `repeated_int` reader — the per-CC feature list, spelled as
-    /// repeated `dl-feature=` entries — but that list is now one comma-separated value, so both
-    /// the reader and the exemption are gone.
+    /// The check is unconditional: no source property is multi-valued.
     pub(crate) fn finish(self) -> Result<()> {
         let total = self.positional().len();
         if self.args_used < total {
@@ -389,7 +384,7 @@ mod combinator_tests {
         assert!(r.finish().is_err());
     }
 
-    /// Dynamic child names (a sub-block is spelled `nr257`, not `nr` + a positional) cannot be looked up by
+    /// Dynamic child names (a sub-block is spelled `n257`, not `n` + a positional) cannot be looked up by
     /// name, so `NodeReader` needs a predicate — and `finish()` must treat what the predicate
     /// consumed as known, or every sub-block would read as an unknown child.
     #[test]

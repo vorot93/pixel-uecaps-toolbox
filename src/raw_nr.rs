@@ -236,12 +236,10 @@ impl<T: Copy> NrDirection<T> {
 ///
 /// The selector is always the all-zero placeholder in the corpus (LTE references no per-CC
 /// feature catalog), so its *contents* are fully derivable from `bw_class` — and since
-/// [`RawSubBlock::validate`] now requires presence and `bw_class >= 1` to imply each other, so
+/// [`RawSubBlock::validate`] requires presence and `bw_class >= 1` to imply each other, so
 /// is its presence. It is kept as a field because the length is what
 /// [`validate_cc_count`](RawSubBlock::validate_cc_count) checks against `cc_count`, which is
-/// how a wrong-length list is caught. (It previously claimed to exist "only so a decoded
-/// component re-encodes with the field presence it arrived with" — that was never true:
-/// regeneration re-derives presence from the class and never consulted this field.)
+/// how a wrong-length list is caught. Regeneration re-derives presence from the class.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LteDirection {
     pub(crate) bw_class: Option<u8>,
@@ -250,8 +248,7 @@ pub(crate) struct LteDirection {
 }
 
 /// An E-UTRA component inside an EN-DC combo. It carries no resolved per-CC feature sets and
-/// no `srs_tx_switch` — both NR-only, and previously excluded by a runtime check
-/// (`has_nr_only_fields`) rather than by the type.
+/// no `srs_tx_switch`: NR-only fields are excluded structurally.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RawLteSubBlock {
     pub(crate) band: u16,
@@ -619,7 +616,7 @@ impl RawSubBlock {
     ///
     /// This is the strict ingest boundary for `ul_bw_class`: corpus-verified always `Some`
     /// on a real decoded sub-block (never `None`), so its absence here — which the compiler
-    /// KDL source now normalizes away by omitting `Some(0)` (Task 8) — fails closed instead
+    /// KDL source normalizes away by omitting `Some(0)` — fails closed instead
     /// of silently normalizing to `0` on data that has never actually shown that shape. Kind
     /// dispatch is [`lte_from_proto_sub_block`](Self::lte_from_proto_sub_block) /
     /// [`nr_from_proto_sub_block`](Self::nr_from_proto_sub_block).
@@ -663,7 +660,7 @@ impl RawSubBlock {
     /// presence — `resolve` re-derives it from the class via `placeholder_ids` — so a component
     /// that breaks the correspondence cannot survive a round trip in either direction: per-CC
     /// data under a `0`/absent class is silently **dropped**, and a class with no per-CC data
-    /// has an all-zero selector **invented** for it. Both used to validate `Ok`.
+    /// has an all-zero selector **invented** for it.
     ///
     /// This is corpus-verified rather than assumed: across 3.46M real sub-blocks the
     /// correspondence is exact — `class >= 1` always carries a selector (LTE DL 1 741 849,
@@ -1151,7 +1148,7 @@ mod tests {
             combo_groups: vec![ComboGroup {
                 // The four corpus-verified always-`Some` header fields (all but
                 // `bcs_intra_endc`) must be `Some` here — the strict `from_proto_combo`
-                // ingest boundary now fails closed on a missing one (Task 8).
+                // ingest boundary fails closed on a missing one.
                 combo_header: Some(ComboHeader {
                     power_class: Some(3),
                     bcs_nr: Some(1),
@@ -1305,7 +1302,7 @@ mod tests {
 
     #[test]
     fn from_proto_sub_block_rejects_missing_ul_bw_class() {
-        // Task 8: `ul_bw_class` is corpus-verified always `Some` on a real sub-block, so a
+        // `ul_bw_class` is corpus-verified always `Some` on a real sub-block, so a
         // synthetic decode with it truly absent (`None`, not the omitted-`Some(0)` KDL
         // shape) must fail closed rather than silently normalize to `0`.
         let component = ProtoSubBlock {
@@ -1493,7 +1490,7 @@ mod tests {
 
     #[test]
     fn from_proto_combo_rejects_missing_header_or_header_fields() {
-        // Task 8: a real combo always carries a header with the four always-`Some` fields
+        // A real combo always carries a header with the four always-`Some` fields
         // set (all but `bcs_intra_endc`); a missing header, or a header missing one of
         // those fields, must fail closed.
         let combo = ProtoCombo {
@@ -2006,15 +2003,6 @@ mod conversion_tests {
         assert_eq!(component.bw_class(Direction::Ul), Some(0));
         assert_eq!(component.selector(Direction::Ul), None);
     }
-
-    // The former `raw_conversion_preserves_every_selector_only_presence_shape` lived here. It
-    // fed arbitrary selectors (`[1, 9]`, `[2]`) and a mismatched NR `dl_feature_index` through
-    // the report-DTO ingest path, which applied neither the unresolvable-selector nor the
-    // index-derivation guard. That path is gone, and the guards it bypassed are covered
-    // directly by `raw_nr`'s `from_proto_rejects_non_placeholder_unresolvable_selector`,
-    // `from_proto_accepts_the_all_zero_placeholder_selector`,
-    // `from_proto_rejects_nr_feature_index_mismatch`, and
-    // `from_proto_accepts_a_matching_nr_feature_index`.
 
     #[test]
     fn compiler_conversion_preserves_a_referenced_default_feature_record() {

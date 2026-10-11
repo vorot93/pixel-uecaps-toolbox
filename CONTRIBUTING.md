@@ -503,6 +503,14 @@ class-letter bit decoding, and the clap argument relationships.
 
 ## Gotchas
 
+- **Verification stays on typed wire values.** Building a report display tree just to inspect
+  each combo's bitmask costs roughly 7–8 million throwaway allocations per decomposition:
+  a sub-block vector per combo, plus a band string, two selector-resolution vectors, and a
+  rendered component string per component, then a joined band string. Read bitmasks directly
+  from decoded protobufs. The selection index likewise avoids a full combo scan plus an
+  O(log n) membership probe per combo for every carrier/target; its ascending indices preserve
+  canonical payload order.
+
 - **Reader and fixture contracts.** `NodeReader::arg_str`/`arg_int` consume positional
   arguments; property and exact-child keys are static vocabulary strings. Dynamic child
   names are claimed by predicates. Report validation accumulates issues; source parsing

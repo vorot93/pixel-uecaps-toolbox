@@ -274,9 +274,8 @@ pub(in crate::compiler) fn replace(file: &mut FixtureFile, message: &impl Messag
 /// Rewrite `file` into a non-canonical encoding of the *same* value, so the LTE byte-identity
 /// self-check is what rejects it.
 ///
-/// This deliberately uses an explicit zero for the bare `bitmask` scalar rather than the
-/// reordered-fields trick it used before: `wire::scan` now rejects descending tag order (and
-/// duplicates, and overlong varints), so a reordered encoding never reaches the byte comparison.
+/// This uses an explicit zero for the bare `bitmask` scalar: strict wire decoding rejects
+/// descending tag order, duplicates, and overlong varints before the byte comparison.
 /// An explicit zero for a non-`optional` scalar is the one non-canonical form the scanner cannot
 /// reject — prost drops it on re-encode — which makes it the right probe here.
 pub(in crate::compiler) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
@@ -300,9 +299,7 @@ pub(in crate::compiler) fn inject_unknown_nr_cc_field(file: &mut FixtureFile) {
     if let Some(bitmask) = combo.bitmask {
         combo_bytes.extend(varint_field(2, u64::from(bitmask)));
     }
-    // Preserve the group's header bytes (field 1), if any — `nr_caps` now gives every
-    // fixture combo a value-bearing header (Task 8), so it must survive this manual
-    // re-encode rather than silently dropping it.
+    // Preserve the value-bearing group header (field 1) during manual re-encoding.
     let mut group_bytes = Vec::new();
     if let Some(header) = &group.combo_header {
         group_bytes.extend(length_delimited_field(1, &header.encode_to_vec()));

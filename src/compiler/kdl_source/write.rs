@@ -53,8 +53,8 @@ fn write_selection(rect: &SelectionRect) -> KdlNode {
 ///     here and re-derived by the reader.
 ///   * `lte`: the index becomes the single trailing number in the positional DL/UL value (the
 ///     LTE MIMO × CC-count value). LTE never carries a per-CC list. `ul_feature` is
-///     always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted (Task 8
-///     omit-when-0) by dropping the whole UL argument, and the reader re-defaults it. LTE has
+///     always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted by dropping
+///     the whole UL argument, and the reader re-defaults it. LTE has
 ///     no `srs-tx-switch`.
 fn write_sub_block(cc: &SourceSubBlock) -> Result<KdlNode> {
     let prefix = match cc.kind() {
@@ -179,7 +179,7 @@ pub(super) fn write_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     let mut node = KdlNode::new(doc::NR_COMBO);
     // `power-class`/`bcs-nr`/`bcs-eutra`/`intra-band-en-dc-support` are corpus-verified
     // always `Some` on a real combo header (never `None`), so `Some(0)` is omitted here and
-    // re-defaulted to `Some(0)` by `read_nr_combo` below (Task 8 omit-when-0).
+    // re-defaulted to `Some(0)` by `read_nr_combo`.
     opt_int_prop(
         &mut node,
         nr_combo::POWER_CLASS,
@@ -195,7 +195,7 @@ pub(super) fn write_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
             .map(format_bcs)
             .as_deref(),
     );
-    // Task 2: `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
+    // `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
     // exactly when it advertises that mode (`intra-band-en-dc-support == 1`). Derive the
     // common `Some(0)` from that flag and omit it; write only the ~20 exceptional zeros
     // (intra_band != 1) and every nonzero explicitly. The one unrepresentable state

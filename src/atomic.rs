@@ -77,9 +77,7 @@ fn parent_dir(path: &Path) -> &Path {
     }
 }
 
-/// The module's only entry point. The two-phase API below it exists so a writer can be fully
-/// flushed and synced before anything replaces the destination; it stopped having an outside
-/// caller when `decompose` went from writing a pair of files to writing one.
+/// Flush and sync the sibling temporary file before replacing the destination.
 pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     write_sibling_atomic(path, |writer| {
         writer.write_all(bytes)?;

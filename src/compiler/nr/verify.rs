@@ -146,12 +146,8 @@ pub(super) fn verify_generated_file(
             && decoded.unknown == expected_caps.unknown,
         "generated NR identity self-check failed for {basename}"
     );
-    // Read the bitmask straight off the decoded message. This used to call
-    // `build_combos_with_bitmasks` and use only the tuple's second element, allocating and
-    // discarding the entire report display tree — a `Vec<SubBlock>` per combo plus a band
-    // `CompactString`, two `resolve_all` vectors and a `render_component` `String` per
-    // component, then a joined `bands` string — on the order of 7-8M throwaway allocations per
-    // `decompose`, to check one integer per combo.
+    // Verify wire bitmasks directly; building report projections for this integer check
+    // incurs millions of allocations (measured rationale in CONTRIBUTING).
     ensure!(
         decoded
             .combo_groups

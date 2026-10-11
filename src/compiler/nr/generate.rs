@@ -60,8 +60,7 @@ fn generate_profiled_files(
 
     let mut files = Vec::new();
     for (carrier, source) in &nr.carriers {
-        // A carrier without a profiled role has no profile for this anchor either; the two
-        // used to be separate `Option`s that this loop re-checked one at a time.
+        // Only profiled roles can carry an anchor's profile metadata.
         let Some(profiled) = &source.profiled else {
             continue;
         };
@@ -88,13 +87,9 @@ fn generate_profiled_files(
 }
 
 fn selected_payloads<'a>(nr: &'a ValidatedNr, carrier: &str, sku: &Sku) -> Vec<&'a RawNrPayload> {
-    // Intern the (carrier, sku) probe once against the domain, then fetch the combos it selects
-    // from the prebuilt inverted index — an O(1) lookup that replaces the former per-combo scan
-    // (each combo used to cost its own O(log n) membership probe against the domain; the
-    // prebuilt index removes that per-combo cost entirely). Generation calls this
-    // once per carrier per target, so the scan was the dominant `decompose`/`provision` cost. A carrier or
-    // sku outside the domain selects nothing. Stored indices are ascending, so payload order
-    // matches the old `combo.iter().filter(..)` order and generated output stays byte-identical.
+    // Probe the domain once per carrier/target. The inverted index avoids a full combo scan
+    // and an O(log n) membership test for each combo. Ascending indices retain canonical
+    // payload order; a carrier or SKU outside the domain selects nothing.
     let Some(target) = nr.domain.probe(carrier, sku) else {
         return Vec::new();
     };

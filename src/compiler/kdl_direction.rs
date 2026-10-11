@@ -23,7 +23,7 @@
 //! interpretation, the same way a sub-block node name carries no radio-kind tag.
 //! `format_direction`/`parse_direction` serve the first, `format_class_mimo`/`parse_class_mimo`
 //! the second, and `identical_sub_block_text_means_different_things_under_n_and_l` in
-//! `kdl_source.rs` is where the trade is meant to be learned before anyone "unifies" the two
+//! `kdl_source/tests.rs` is where the trade is meant to be learned before anyone "unifies" the two
 //! codecs.
 
 use crate::{

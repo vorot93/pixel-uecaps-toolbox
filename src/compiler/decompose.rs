@@ -456,13 +456,10 @@ fn ensure_mapping_order(mapping: &PlmnMap) -> anyhow::Result<()> {
 /// re-emits every combo with the all-ones sentinel (`InputLayout::Legacy::bitmask()` == 65535).
 /// Real bitmask-folder files carry ~150 distinct mask values and never 65535, so requiring
 /// byte-identity here would fail on every genuine input. The authoritative per-SKU selection
-/// lives in the profiled folder, which `verify_profiled_nr_targets` does check byte-for-byte.
+/// lives in the profiled folder, whose file set `verify_profiled_nr_targets` checks independently.
 ///
-/// What this fixes is the tautology: the file set used to be compared against a list built by
-/// mapping the same `nr.source.bitmask_carriers` field `generate_legacy_files` iterates, through
-/// the same `format!`, then sorted the same way — a re-derivation that could not disagree. It is
-/// now compared against the basenames the folder actually contained, so an `ingest_nr` that
-/// dropped or renamed a carrier fails here.
+/// Compare against observed input basenames, not a list derived from the generator's own
+/// source fields: the latter cannot detect an ingestion step dropping or renaming a carrier.
 fn verify_legacy_nr_target(
     sources: &ValidatedNr,
     original_nr: &OriginalNrBytes,
@@ -490,9 +487,7 @@ fn verify_legacy_nr_target(
 /// Self-verifies every profiled NR anchor: the union of every anchor's regenerated output must
 /// be exactly the file set the profiled folder held, and every regenerated file must decode.
 ///
-/// Like its legacy twin, this used to compare basenames against a list re-derived from the same
-/// `profile.number` the generator already `ensure!`s equal, so it could not fail. It is now
-/// compared against the basenames the folder actually contained.
+/// Expected basenames come from the input folder, independently of the generator's profile data.
 ///
 /// Also like its legacy twin, it is **not** a byte comparison, and the reason is measured
 /// rather than assumed: regenerating a real profiled file does not reproduce its input bytes.
@@ -579,10 +574,7 @@ fn verify_lte_targets(
 /// is not an available invariant there. See [`verify_legacy_nr_target`] and
 /// [`verify_profiled_nr_targets`] for the measurements.
 ///
-/// What changed is that the NR checks now touch the input at all. Both previously compared
-/// generated basenames against a list re-derived from the very source field the generator
-/// iterates, so they could not fail — an `ingest_nr` that dropped or renamed a file would have
-/// passed every check here.
+/// Input observations remain independent of the source fields used by generation.
 fn verify_internal_targets(
     sources: &ValidatedSources,
     originals: &OriginalInputs,
@@ -854,16 +846,12 @@ mod tests {
     }
 
     /// The NR self-checks must be tied to the input folder, not re-derived from the source the
-    /// generator reads. Both used to compare generated basenames against a list built from the
-    /// same field `generate_*_files` iterates — sorted the same way — so they passed no matter
-    /// what the folder held, and an `ingest_nr` that dropped or renamed a file would have gone
-    /// unnoticed.
+    /// generator reads: re-deriving expectations cannot detect lost or renamed input files.
     ///
     /// Driving that through `decode_documents` is not possible: the sources are *derived* from
     /// the folder, so under normal operation the two always agree and only an ingest bug could
     /// separate them. The checks are therefore exercised directly, against a folder listing
-    /// that disagrees with the sources in each direction. Under the old implementation both
-    /// calls below returned `Ok`.
+    /// that disagrees with the sources in each direction.
     #[test]
     fn nr_self_verification_is_tied_to_the_input_folder_not_re_derived() {
         let temp = tempdir().unwrap();
