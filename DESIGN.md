@@ -103,7 +103,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/report/inspect.rs` | Single-file analysis (text) for carrier / LTE / mapping files. |
 | `src/report/selftest.rs` | Data-independent runtime sanity checks; prints `ALL TESTS PASSED`. |
 | `tests/compiler_cli.rs` | Hermetic end-to-end CLI decompose/provision tests over miniature folders. |
-| `tests/compiler_corpus.rs` | Opt-in full-corpus decompose/provision and observed LTE-order checks, guarded by two explicit environment variables. |
+| `tests/compiler_corpus.rs`, `tests/corpus/mod.rs` | Independent opt-in corpus oracles and primary-checkout guard; two input variables, plus an authorized output root for emitting tests. |
 
 ## Invariants that must not break
 
@@ -864,6 +864,13 @@ supplied, the opt-in corpus test pins the eight-file and 3,878-payload counts, a
 within-file duplicates, acyclic global order, and equal-sequence pairs; it does not
 recompute the historical feature-residue or 482 component-order counts. A skipped test
 run proves only that its environment-variable guard works.
+
+Emitting corpus tests require `UECAPS_CORPUS_OUTPUT_ROOT` at the existing primary
+`*-decomposed` repository root, on a new non-master branch selected by the executor.
+They run serially (`--test-threads=1`), retaining one temporary source at a time and
+repeating decomposition at that same path. ZIPs have separate temporary guards in the
+same root; per-model provisioning remains parallel and parse-once. Guards remove only
+their test-owned files. See CONTRIBUTING for the complete three-variable invocation.
 
 ### Input and output boundaries
 

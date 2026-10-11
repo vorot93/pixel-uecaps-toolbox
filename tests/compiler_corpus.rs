@@ -1,3 +1,5 @@
+mod corpus;
+use corpus::{components, corpora, is_uecaps_basename, raw_carriers, resolve_selector};
 use kdl::{KdlDocument, KdlNode};
 use pixel_uecaps_toolbox::{
     NR_BAND_OFFSET,
@@ -6,40 +8,14 @@ use pixel_uecaps_toolbox::{
     proto::{LteCaps, LteCombo, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
 };
 use prost::Message;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     io::{Cursor, Read, Write},
     path::Path,
 };
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
-
-const BITMASK_CORPUS: &str = "UECAPS_BITMASK_CORPUS";
-const PROFILED_CORPUS: &str = "UECAPS_PROFILED_CORPUS";
-
-fn is_profiled_lte_basename(name: &str) -> bool {
-    let Some(decimal) = name
-        .strip_prefix("lte_")
-        .and_then(|name| name.strip_suffix(".binarypb"))
-    else {
-        return false;
-    };
-    !decimal.is_empty()
-        && decimal.bytes().all(|byte| byte.is_ascii_digit())
-        && decimal
-            .parse::<u64>()
-            .is_ok_and(|id| id.to_string() == decimal)
-}
-
-fn is_uecaps_basename(layout: CapabilityLayout, name: &str) -> bool {
-    name.ends_with(".binarypb")
-        && name != "ap_plmn_mapping.binarypb"
-        && match layout {
-            CapabilityLayout::Bitmask => true,
-            CapabilityLayout::Profiled { .. } => !is_profiled_lte_basename(name),
-        }
-}
 
 #[derive(Default)]
 struct ExpectedDlDomains {
@@ -70,45 +46,22 @@ fn expected_raw_feature_palettes(
     let mut dl = ExpectedDlDomains::default();
     let mut ul = ExpectedUlDomains::default();
     let mut decoded_files = 0_usize;
-    for (directory, layout) in [
-        (bitmask, CapabilityLayout::Bitmask),
-        (
-            profiled,
-            CapabilityLayout::Profiled {
-                nr_anchor: 0,
-                lte_id: 0,
-            },
-        ),
-    ] {
-        for entry in fs::read_dir(directory).expect("reading an optional NR corpus directory") {
-            let entry = entry.expect("reading an optional NR corpus entry");
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if !is_uecaps_basename(layout, name) {
-                continue;
-            }
-            let bytes = fs::read(entry.path()).expect("reading an optional NR corpus file");
-            let caps = UeCaps::decode(bytes.as_slice()).unwrap_or_else(|error| {
-                panic!("prost-decoding raw NR corpus file {name}: {error}")
-            });
-            decoded_files += 1;
-            for row in caps.dl_feature_per_cc_list {
-                dl.max_scs.insert(row.max_scs);
-                dl.max_mimo.insert(row.max_mimo);
-                dl.max_bw.insert(row.max_bw);
-                dl.max_mod_order.insert(row.max_mod_order);
-                dl.bw_90mhz_supported.insert(row.bw_90mhz_supported);
-            }
-            for row in caps.ul_feature_per_cc_list {
-                ul.max_scs.insert(row.max_scs);
-                ul.max_mimo_cb.insert(row.max_mimo_cb);
-                ul.max_bw.insert(row.max_bw);
-                ul.max_mod_order.insert(row.max_mod_order);
-                ul.bw_90mhz_supported.insert(row.bw_90mhz_supported);
-                ul.max_mimo_non_cb.insert(row.max_mimo_non_cb);
-            }
+    for (_, caps) in raw_carriers(bitmask, profiled) {
+        decoded_files += 1;
+        for row in caps.dl_feature_per_cc_list {
+            dl.max_scs.insert(row.max_scs);
+            dl.max_mimo.insert(row.max_mimo);
+            dl.max_bw.insert(row.max_bw);
+            dl.max_mod_order.insert(row.max_mod_order);
+            dl.bw_90mhz_supported.insert(row.bw_90mhz_supported);
+        }
+        for row in caps.ul_feature_per_cc_list {
+            ul.max_scs.insert(row.max_scs);
+            ul.max_mimo_cb.insert(row.max_mimo_cb);
+            ul.max_bw.insert(row.max_bw);
+            ul.max_mod_order.insert(row.max_mod_order);
+            ul.bw_90mhz_supported.insert(row.bw_90mhz_supported);
+            ul.max_mimo_non_cb.insert(row.max_mimo_non_cb);
         }
     }
     assert!(decoded_files > 0, "no raw NR corpus files were decoded");
@@ -365,48 +318,44 @@ fn nr_cc_count(bw_class: Option<i32>) -> Option<usize> {
 fn assert_compact_nr_features(caps: &UeCaps, model_code: &str, basename: &str) {
     let mut dl_refs = BTreeSet::new();
     let mut ul_refs = BTreeSet::new();
-    for component in caps
-        .combo_groups
-        .iter()
-        .flat_map(|group| &group.combo)
-        .flat_map(|combo| &combo.sub_blocks)
-    {
-        if let Some(ids) = &component.dl_feature_per_cc_ids
-            && let Some(first) = ids.first().copied()
-            && (1..=caps.dl_feature_per_cc_list.len()).contains(&usize::from(first))
-        {
-            let expected = nr_cc_count(component.dl_bw_class).unwrap_or_else(|| {
-                panic!(
-                    "model {model_code} NR entry {basename} resolved DL selector has unknown bw_class {:?}",
-                    component.dl_bw_class
-                )
-            });
-            assert_eq!(
-                ids.len(),
-                expected,
-                "model {model_code} NR entry {basename} has a resolved DL selector whose length disagrees with its bw_class CC count"
-            );
-            for &id in ids {
-                dl_refs.insert(usize::from(id) - 1);
+    for component in components(caps) {
+        for (direction, selector, class, len, refs) in [
+            (
+                "DL",
+                component.dl_feature_per_cc_ids.as_deref(),
+                component.dl_bw_class,
+                caps.dl_feature_per_cc_list.len(),
+                &mut dl_refs,
+            ),
+            (
+                "UL",
+                component.ul_feature_per_cc_ids.as_deref(),
+                component.ul_bw_class,
+                caps.ul_feature_per_cc_list.len(),
+                &mut ul_refs,
+            ),
+        ] {
+            if component.band >= NR_BAND_OFFSET
+                && let Some(ids) = selector
+                && ids.iter().any(|&id| id != 0)
+            {
+                assert!(
+                    ids.iter().all(|&id| (1..=len).contains(&usize::from(id))),
+                    "model {model_code} NR entry {basename} has an invalid {direction} selector {ids:?}"
+                );
             }
-        }
-        if let Some(ids) = &component.ul_feature_per_cc_ids
-            && let Some(first) = ids.first().copied()
-            && (1..=caps.ul_feature_per_cc_list.len()).contains(&usize::from(first))
-        {
-            let expected = nr_cc_count(component.ul_bw_class).unwrap_or_else(|| {
-                panic!(
-                    "model {model_code} NR entry {basename} resolved UL selector has unknown bw_class {:?}",
-                    component.ul_bw_class
-                )
-            });
-            assert_eq!(
-                ids.len(),
-                expected,
-                "model {model_code} NR entry {basename} has a resolved UL selector whose length disagrees with its bw_class CC count"
-            );
-            for &id in ids {
-                ul_refs.insert(usize::from(id) - 1);
+            if let Some(ids) = selector.filter(|ids| {
+                !ids.is_empty() && ids.iter().all(|&id| (1..=len).contains(&usize::from(id)))
+            }) {
+                let expected = nr_cc_count(class).unwrap_or_else(|| panic!(
+                    "model {model_code} NR entry {basename} resolved {direction} selector has unknown bw_class {class:?}"
+                ));
+                assert_eq!(
+                    ids.len(),
+                    expected,
+                    "model {model_code} NR entry {basename} has a resolved {direction} selector whose length disagrees with its bw_class CC count"
+                );
+                refs.extend(ids.iter().map(|&id| usize::from(id) - 1));
             }
         }
     }
@@ -421,47 +370,51 @@ fn assert_compact_nr_features(caps: &UeCaps, model_code: &str, basename: &str) {
         "model {model_code} NR entry {basename} has an unused UL feature record"
     );
     assert!(
-        caps.dl_feature_per_cc_list.windows(2).all(|pair| {
-            let left = (
-                pair[0].max_scs,
-                pair[0].max_mimo,
-                pair[0].max_bw,
-                pair[0].max_mod_order,
-                pair[0].bw_90mhz_supported,
-            );
-            let right = (
-                pair[1].max_scs,
-                pair[1].max_mimo,
-                pair[1].max_bw,
-                pair[1].max_mod_order,
-                pair[1].bw_90mhz_supported,
-            );
-            left < right
-        }),
+        caps.dl_feature_per_cc_list
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
         "model {model_code} NR entry {basename} DL list is not strictly canonical"
     );
     assert!(
-        caps.ul_feature_per_cc_list.windows(2).all(|pair| {
-            let left = (
-                pair[0].max_scs,
-                pair[0].max_mimo_cb,
-                pair[0].max_bw,
-                pair[0].max_mod_order,
-                pair[0].bw_90mhz_supported,
-                pair[0].max_mimo_non_cb,
-            );
-            let right = (
-                pair[1].max_scs,
-                pair[1].max_mimo_cb,
-                pair[1].max_bw,
-                pair[1].max_mod_order,
-                pair[1].bw_90mhz_supported,
-                pair[1].max_mimo_non_cb,
-            );
-            left < right
-        }),
+        caps.ul_feature_per_cc_list
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
         "model {model_code} NR entry {basename} UL list is not strictly canonical"
     );
+}
+
+#[test]
+fn compact_catalog_oracle_rejects_mixed_invalid_nr_selectors_even_when_rows_are_used() {
+    let valid = pixel_uecaps_toolbox::proto::SubBlock {
+        band: NR_BAND_OFFSET + 78,
+        dl_bw_class: Some(1),
+        dl_feature_per_cc_ids: Some(vec![1]),
+        ..Default::default()
+    };
+    for ids in [vec![1, 0], vec![1, 99]] {
+        let mut invalid = valid.clone();
+        invalid.dl_bw_class = Some(2);
+        invalid.dl_feature_per_cc_ids = Some(ids);
+        let caps = UeCaps {
+            combo_groups: vec![pixel_uecaps_toolbox::proto::ComboGroup {
+                combo: vec![pixel_uecaps_toolbox::proto::Combo {
+                    sub_blocks: vec![valid.clone(), invalid],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            dl_feature_per_cc_list: vec![Default::default()],
+            ..Default::default()
+        };
+        assert!(
+            std::panic::catch_unwind(|| assert_compact_nr_features(
+                &caps,
+                "fixture",
+                "fixture.binarypb"
+            ))
+            .is_err()
+        );
+    }
 }
 
 fn assert_module_nr_features(path: &Path, model: PhoneModel) -> BTreeSet<String> {
@@ -592,41 +545,22 @@ fn layout_aware_oracle_inspects_generated_bitmask_lte_carrier_but_skips_profiled
 
 #[test]
 fn optional_corpora_decompose_and_provision_every_registered_target() {
-    let (Some(bitmask), Some(profiled)) =
-        (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
-    else {
-        eprintln!("skipping optional compiler corpus test: set both corpus variables");
-        return;
-    };
+    let Some(corpora) = corpora() else { return };
+    let (bitmask, profiled) = (corpora.bitmask.as_path(), corpora.profiled.as_path());
+    let root = corpus::output_root().expect("authorized UECAPS_CORPUS_OUTPUT_ROOT");
+    let source_file = tempfile::NamedTempFile::new_in(&root).expect("source fixture");
 
-    let bitmask = Path::new(&bitmask);
-    let profiled = Path::new(&profiled);
-    let temp = tempfile::tempdir().expect("creating optional corpus test workspace");
-    let first_source =
-        tempfile::NamedTempFile::new_in(temp.path()).expect("creating the first source file");
-    let second_source =
-        tempfile::NamedTempFile::new_in(temp.path()).expect("creating the second source file");
-
-    // A successful decompose has already reparsed/reserialized the canonical document and
-    // self-verified every internal NR anchor, LTE ID, and mapping target. Repeating it also pins
-    // directory-order-independent source bytes at the public boundary. The two decompose runs are
-    // independent (distinct output files) and each is CPU-bound, so run them concurrently.
-    rayon::join(
-        || {
-            decompose(bitmask, profiled, Some(first_source.path()))
-                .expect("decomposing both optional corpora")
-        },
-        || {
-            decompose(bitmask, profiled, Some(second_source.path()))
-                .expect("re-decomposing both optional corpora")
-        },
-    );
+    // One active source per product; repeat serially at the same owned path.
+    decompose(bitmask, profiled, Some(source_file.path()))
+        .expect("decomposing both optional corpora");
+    let source = fs::read(source_file.path()).expect("reading first canonical source");
+    decompose(bitmask, profiled, Some(source_file.path()))
+        .expect("re-decomposing both optional corpora");
     assert_eq!(
-        fs::read(first_source.path()).expect("reading first canonical source"),
-        fs::read(second_source.path()).expect("reading second canonical source"),
+        source,
+        fs::read(source_file.path()).expect("reading second canonical source"),
         "canonical source must be byte-idempotent"
     );
-    let source = fs::read(first_source.path()).expect("reading canonical source for palette");
     let expected = expected_raw_feature_palettes(bitmask, profiled);
     let actual = emitted_feature_palettes(&source);
     assert_eq!(actual.0, expected.0, "emitted DL feature palette differs");
@@ -640,35 +574,29 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
 
     let sequences = read_lte_sequences(profiled);
     assert_lte_invariants(&sequences);
-    // Parse and validate the multi-megabyte canonical source ONCE, then generate every registered
-    // model from the shared validated set instead of re-reading and re-parsing it per model (was 52×,
-    // which dominated this test's wall-clock). The models are independent — each reads the shared
-    // immutable `sources` and writes its own `model-{index}.zip` — so fan them across rayon's pool.
+    // Parse once; independent models share immutable sources and own temporary ZIPs.
     let sources =
-        load_sources(first_source.path()).expect("parsing the canonical corpus source once");
-    PHONE_MODELS
-        .par_iter()
-        .enumerate()
-        .for_each(|(index, model)| {
-            let out = temp.path().join(format!("model-{index}.zip"));
-            provision_from_sources(&sources, model.code, &out, None).unwrap_or_else(|error| {
-                panic!("provisioning registered model {}: {error:#}", model.code)
-            });
-            let module_len = fs::metadata(&out)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "reading corpus module metadata for registered model {}: {error}",
-                        model.code
-                    )
-                })
-                .len();
-            assert!(
-                module_len > 0,
-                "registered model {} generated an empty corpus module",
-                model.code
-            );
-            let _validated_basenames = assert_module_nr_features(&out, *model);
+        load_sources(source_file.path()).expect("parsing the canonical corpus source once");
+    PHONE_MODELS.par_iter().for_each(|model| {
+        let out = tempfile::NamedTempFile::new_in(&root).expect("module fixture");
+        provision_from_sources(&sources, model.code, out.path(), None).unwrap_or_else(|error| {
+            panic!("provisioning registered model {}: {error:#}", model.code)
         });
+        let module_len = fs::metadata(out.path())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "reading corpus module metadata for registered model {}: {error}",
+                    model.code
+                )
+            })
+            .len();
+        assert!(
+            module_len > 0,
+            "registered model {} generated an empty corpus module",
+            model.code
+        );
+        let _validated_basenames = assert_module_nr_features(out.path(), *model);
+    });
 }
 
 /// Independently verify (against the real corpus) that every NR component's stored
@@ -677,98 +605,61 @@ fn optional_corpora_decompose_and_provision_every_registered_target() {
 /// Env-gated exactly like the other corpus test.
 #[test]
 fn nr_feature_index_matches_derivation_formula() {
-    let (Some(bitmask), Some(profiled)) =
-        (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
-    else {
-        eprintln!("skipping NR feature-index formula test: set both corpus variables");
-        return;
-    };
-
-    /// All-or-nothing per-CC resolution (mirrors `report::combos::resolve_all`): every
-    /// selector byte must be a valid 1-based catalog index, or none of them resolve.
-    fn resolved_indices(ids: &Option<Vec<u8>>, len: usize) -> Option<Vec<usize>> {
-        let ids = ids.as_ref()?;
-        if ids.is_empty() {
-            return None;
-        }
-        ids.iter()
-            .map(|&b| {
-                let k = b as usize;
-                (1..=len).contains(&k).then(|| k - 1)
-            })
-            .collect()
-    }
-
+    let Some(corpora) = corpora() else { return };
     let mut checked = 0u64;
-    for dir in [Path::new(&bitmask), Path::new(&profiled)] {
-        for entry in fs::read_dir(dir).expect("reading corpus dir") {
-            let path = entry.expect("corpus entry").path();
-            if path.extension().and_then(|x| x.to_str()) != Some("binarypb") {
-                continue;
-            }
-            let bytes = fs::read(&path).expect("reading corpus file");
-            let Ok(caps) = UeCaps::decode(&bytes[..]) else {
-                continue; // non-UeCaps file (e.g. an LTE config)
+    for (path, caps) in raw_carriers(&corpora.bitmask, &corpora.profiled) {
+        let dl_list = &caps.dl_feature_per_cc_list;
+        let ul_list = &caps.ul_feature_per_cc_list;
+        for cc in components(&caps).filter(|cc| cc.band >= NR_BAND_OFFSET) {
+            let derived_dl = match resolve_selector(cc.dl_feature_per_cc_ids.as_deref(), dl_list) {
+                None => 0,
+                Some(indices) => {
+                    let per_cc: Vec<i32> = indices
+                        .iter()
+                        .map(|row| {
+                            let scs = row.max_scs.unwrap_or(0);
+                            if scs >= 4 { 2 } else { 1 }
+                        })
+                        .collect();
+                    assert!(
+                        per_cc.windows(2).all(|pair| pair[0] == pair[1]),
+                        "NR DL per-CC derived feature-index disagrees across CCs in {}",
+                        path.display()
+                    );
+                    per_cc[0]
+                }
             };
-            let dl_list = &caps.dl_feature_per_cc_list;
-            let ul_list = &caps.ul_feature_per_cc_list;
-            for cc in caps
-                .combo_groups
-                .iter()
-                .flat_map(|g| &g.combo)
-                .flat_map(|c| &c.sub_blocks)
-                .filter(|cc| cc.band >= NR_BAND_OFFSET)
-            {
-                let derived_dl = match resolved_indices(&cc.dl_feature_per_cc_ids, dl_list.len()) {
-                    None => 0,
-                    Some(indices) => {
-                        let per_cc: Vec<i32> = indices
-                            .iter()
-                            .map(|&i| {
-                                let scs = dl_list[i].max_scs.unwrap_or(0);
-                                if scs >= 4 { 2 } else { 1 }
-                            })
-                            .collect();
-                        assert!(
-                            per_cc.windows(2).all(|pair| pair[0] == pair[1]),
-                            "NR DL per-CC derived feature-index disagrees across CCs in {}",
-                            path.display()
-                        );
-                        per_cc[0]
-                    }
-                };
-                assert_eq!(
-                    cc.dl_feature_index.unwrap_or(0),
-                    derived_dl,
-                    "NR DL feature-index != derived in {}",
-                    path.display()
-                );
-                let derived_ul = match resolved_indices(&cc.ul_feature_per_cc_ids, ul_list.len()) {
-                    None => 0,
-                    Some(indices) => {
-                        let per_cc: Vec<i32> = indices
-                            .iter()
-                            .map(|&i| {
-                                let cb = ul_list[i].max_mimo_cb.unwrap_or(0);
-                                if cb == 2 { 2 } else { 1 }
-                            })
-                            .collect();
-                        assert!(
-                            per_cc.windows(2).all(|pair| pair[0] == pair[1]),
-                            "NR UL per-CC derived feature-index disagrees across CCs in {}",
-                            path.display()
-                        );
-                        per_cc[0]
-                    }
-                };
-                assert_eq!(
-                    cc.ul_feature_index.unwrap_or(0),
-                    derived_ul,
-                    "NR UL feature-index != derived in {}",
-                    path.display()
-                );
-                checked += 1;
-            }
+            assert_eq!(
+                cc.dl_feature_index.unwrap_or(0),
+                derived_dl,
+                "NR DL feature-index != derived in {}",
+                path.display()
+            );
+            let derived_ul = match resolve_selector(cc.ul_feature_per_cc_ids.as_deref(), ul_list) {
+                None => 0,
+                Some(indices) => {
+                    let per_cc: Vec<i32> = indices
+                        .iter()
+                        .map(|row| {
+                            let cb = row.max_mimo_cb.unwrap_or(0);
+                            if cb == 2 { 2 } else { 1 }
+                        })
+                        .collect();
+                    assert!(
+                        per_cc.windows(2).all(|pair| pair[0] == pair[1]),
+                        "NR UL per-CC derived feature-index disagrees across CCs in {}",
+                        path.display()
+                    );
+                    per_cc[0]
+                }
+            };
+            assert_eq!(
+                cc.ul_feature_index.unwrap_or(0),
+                derived_ul,
+                "NR UL feature-index != derived in {}",
+                path.display()
+            );
+            checked += 1;
         }
     }
     assert!(
@@ -784,43 +675,22 @@ fn nr_feature_index_matches_derivation_formula() {
 /// zero, never a genuine `None`. Env-gated exactly like the other corpus tests.
 #[test]
 fn lte_feature_index_is_always_some_in_corpus() {
-    let (Some(bitmask), Some(profiled)) =
-        (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
-    else {
-        eprintln!("skipping LTE feature-index always-Some test: set both corpus variables");
-        return;
-    };
+    let Some(corpora) = corpora() else { return };
 
     let mut checked = 0u64;
-    for dir in [Path::new(&bitmask), Path::new(&profiled)] {
-        for entry in fs::read_dir(dir).expect("reading corpus dir") {
-            let path = entry.expect("corpus entry").path();
-            if path.extension().and_then(|x| x.to_str()) != Some("binarypb") {
-                continue;
-            }
-            let bytes = fs::read(&path).expect("reading corpus file");
-            let Ok(caps) = UeCaps::decode(&bytes[..]) else {
-                continue; // non-UeCaps file (e.g. an LTE-only config)
-            };
-            for cc in caps
-                .combo_groups
-                .iter()
-                .flat_map(|g| &g.combo)
-                .flat_map(|c| &c.sub_blocks)
-                .filter(|cc| cc.band > 0 && cc.band < NR_BAND_OFFSET)
-            {
-                assert!(
-                    cc.dl_feature_index.is_some(),
-                    "LTE sub-block with absent dl_feature_index in {}",
-                    path.display()
-                );
-                assert!(
-                    cc.ul_feature_index.is_some(),
-                    "LTE sub-block with absent ul_feature_index in {}",
-                    path.display()
-                );
-                checked += 1;
-            }
+    for (path, caps) in raw_carriers(&corpora.bitmask, &corpora.profiled) {
+        for cc in components(&caps).filter(|cc| cc.band > 0 && cc.band < NR_BAND_OFFSET) {
+            assert!(
+                cc.dl_feature_index.is_some(),
+                "LTE sub-block with absent dl_feature_index in {}",
+                path.display()
+            );
+            assert!(
+                cc.ul_feature_index.is_some(),
+                "LTE sub-block with absent ul_feature_index in {}",
+                path.display()
+            );
+            checked += 1;
         }
     }
     assert!(
@@ -828,25 +698,6 @@ fn lte_feature_index_is_always_some_in_corpus() {
         "no LTE components checked — are the corpus dirs populated?"
     );
     eprintln!("verified LTE feature-index always-Some on {checked} LTE components");
-}
-
-/// Resolve a selector's bytes against a per-CC feature catalog the same way the compiler
-/// does: all-or-nothing, 1-based, in order. `None` means "not fully resolved" (out-of-range
-/// byte, missing selector, or empty selector) — mirrors `report::combos::resolve_all`
-/// (`pub(crate)`, unreachable from this integration test crate).
-fn resolve_selector<T: Clone>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec<T>> {
-    let ids = ids?;
-    if ids.is_empty() {
-        return None;
-    }
-    ids.iter()
-        .map(|&byte| {
-            let index = usize::from(byte);
-            (1..=list.len())
-                .contains(&index)
-                .then(|| list[index - 1].clone())
-        })
-        .collect()
 }
 
 /// The bug this regression pins was invisible to a plain decompose->provision round trip: `decompose`
@@ -867,16 +718,10 @@ fn resolve_selector<T: Clone>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec<T>> 
 /// equal the two original records in original order.
 #[test]
 fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
-    let (Some(bitmask), Some(profiled)) =
-        (env::var_os(BITMASK_CORPUS), env::var_os(PROFILED_CORPUS))
-    else {
-        eprintln!("skipping ATT n48 non-uniform sub-block regression: set both corpus variables");
-        return;
-    };
+    let Some(corpora) = corpora() else { return };
     const ATT_N48_BAND: i32 = NR_BAND_OFFSET + 48;
 
-    let bitmask = Path::new(&bitmask);
-    let profiled = Path::new(&profiled);
+    let (bitmask, profiled) = (corpora.bitmask.as_path(), corpora.profiled.as_path());
 
     // Capture ground truth directly from the raw corpus file — no compiler code involved.
     let att_path = bitmask.join("ATT.binarypb");
@@ -884,11 +729,7 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
         .unwrap_or_else(|error| panic!("reading {}: {error}", att_path.display()));
     let att_caps = UeCaps::decode(att_bytes.as_slice())
         .unwrap_or_else(|error| panic!("decoding {}: {error}", att_path.display()));
-    let original = att_caps
-        .combo_groups
-        .iter()
-        .flat_map(|group| &group.combo)
-        .flat_map(|combo| &combo.sub_blocks)
+    let original = components(&att_caps)
         .filter(|cc| cc.band == ATT_N48_BAND)
         .find_map(|cc| {
             let resolved = resolve_selector(
@@ -910,9 +751,9 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
 
     // Run the real pipeline: decompose the full corpus into canonical sources, then provision a
     // legacy (bitmask-layout) model, which regenerates ATT.binarypb from those sources.
-    let temp = tempfile::tempdir().expect("creating regression test workspace");
+    let root = corpus::output_root().expect("authorized UECAPS_CORPUS_OUTPUT_ROOT");
     let source =
-        tempfile::NamedTempFile::new_in(temp.path()).expect("creating the regression source file");
+        tempfile::NamedTempFile::new_in(&root).expect("creating the regression source file");
     decompose(bitmask, profiled, Some(source.path()))
         .expect("decoding the corpus for the regression test");
     let sources = load_sources(source.path()).expect("parsing the decomposed canonical source");
@@ -920,8 +761,8 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
         .iter()
         .find(|model| model.is_bitmask())
         .expect("the registered model list must include at least one bitmask-layout model");
-    let module_path = temp.path().join("module.zip");
-    provision_from_sources(&sources, model.code, &module_path, None).unwrap_or_else(|error| {
+    let module = tempfile::NamedTempFile::new_in(&root).expect("module fixture");
+    provision_from_sources(&sources, model.code, module.path(), None).unwrap_or_else(|error| {
         panic!(
             "provisioning bitmask-layout model {}: {error:#}",
             model.code
@@ -930,29 +771,17 @@ fn att_n48_non_uniform_subblock_preserves_distinct_per_cc_dl_features() {
 
     // Extract the rebuilt ATT.binarypb from the generated module and resolve its n48
     // sub-block(s) the same way.
-    let module_bytes = fs::read(&module_path).expect("reading generated module");
+    let module_bytes = fs::read(module.path()).expect("reading generated module");
     let mut zip = ZipArchive::new(Cursor::new(module_bytes)).expect("opening generated module");
-    let mut rebuilt_att = None;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).expect("reading generated module entry");
-        if entry.name() == "system/vendor/firmware/uecapconfig/ATT.binarypb" {
-            let mut payload = Vec::new();
-            entry
-                .read_to_end(&mut payload)
-                .expect("reading rebuilt ATT.binarypb from the generated module");
-            rebuilt_att = Some(payload);
-            break;
-        }
-    }
-    let rebuilt_att = rebuilt_att.expect("generated bitmask module must contain ATT.binarypb");
+    let mut rebuilt_att = Vec::new();
+    zip.by_name("system/vendor/firmware/uecapconfig/ATT.binarypb")
+        .expect("generated bitmask module must contain ATT.binarypb")
+        .read_to_end(&mut rebuilt_att)
+        .expect("reading rebuilt ATT.binarypb from the generated module");
     let rebuilt_caps =
         UeCaps::decode(rebuilt_att.as_slice()).expect("decoding rebuilt ATT.binarypb");
 
-    let rebuilt_matches = rebuilt_caps
-        .combo_groups
-        .iter()
-        .flat_map(|group| &group.combo)
-        .flat_map(|combo| &combo.sub_blocks)
+    let rebuilt_matches = components(&rebuilt_caps)
         .filter(|cc| cc.band == ATT_N48_BAND)
         .filter_map(|cc| {
             resolve_selector(
