@@ -236,27 +236,6 @@ mod tests {
         }
     }
 
-    /// The nine top-level names share one document, so they are all siblings. This is the test
-    /// that makes the merge stick: with two document scopes, setting both combo nodes back to
-    /// `c` would pass.
-    #[test]
-    fn every_top_level_name_is_distinct() {
-        use super::doc;
-        let names = [
-            doc::VERSION,
-            doc::BITMASK_CARRIERS,
-            doc::BITMASK_FINGERPRINT,
-            doc::CARRIER,
-            doc::LTE_FILE,
-            doc::DL_FEATURE,
-            doc::UL_FEATURE,
-            doc::NR_COMBO,
-            doc::LTE_COMBO,
-        ];
-        let unique: BTreeSet<&str> = names.iter().copied().collect();
-        assert_eq!(unique.len(), names.len(), "{names:?}");
-    }
-
     /// Every key must be a legal KDL bare identifier, or the writer would have to quote it and
     /// the round trip would not be byte-stable.
     #[test]

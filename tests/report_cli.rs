@@ -453,27 +453,39 @@ fn matrix_retains_valid_collision_partners_in_numeric_order() {
 }
 #[test]
 fn matrix_omits_each_invalid_candidate_and_keeps_valid_siblings() {
-    for case in 0..5 {
+    type InvalidCandidate = (&'static str, &'static str, fn(&mut UeCaps));
+    let cases: &[InvalidCandidate] = &[
+        (
+            "ALPHA_1.binarypb",
+            "expected one anchor, found 0: []",
+            |_| {},
+        ),
+        (
+            "ALPHA_558949.binarypb",
+            "expected one anchor, found 2: [167, 3347]",
+            |_| {},
+        ),
+        ("ALPHA_66813533.binarypb", "unknown fingerprint 123", |c| {
+            c.version = 123
+        }),
+        (
+            "ALPHA_66813533.binarypb",
+            "fingerprint family capability family A != profile 66813533 family capability family B",
+            |c| c.version = 874_888_686,
+        ),
+        (
+            "ALPHA_66813533.binarypb",
+            "g1 c1 component 1 DL[2]: invalid NR reference 255 in selector [1, 255]",
+            |c| {
+                c.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids = Some(vec![1, 255]);
+            },
+        ),
+    ];
+    for &(name, reason, mutate) in cases {
         let dir = support::fixture();
         support::write_message(&dir.path().join("VALID_66813533.binarypb"), &carrier());
         let mut bad = carrier();
-        let (name, reason) = match case {
-            0 => ("ALPHA_1.binarypb", "anchor"),
-            1 => ("ALPHA_558949.binarypb", "anchor"),
-            2 => {
-                bad.version = 123;
-                ("ALPHA_66813533.binarypb", "unknown fingerprint")
-            }
-            3 => {
-                bad.version = 874_888_686;
-                ("ALPHA_66813533.binarypb", "fingerprint family")
-            }
-            _ => {
-                bad.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids =
-                    Some(vec![1, 255]);
-                ("ALPHA_66813533.binarypb", "DL[2]")
-            }
-        };
+        mutate(&mut bad);
         support::write_message(&dir.path().join(name), &bad);
         let out = matrix(dir.path());
         let observed = report::matrix(dir.path()).unwrap();
@@ -944,19 +956,34 @@ fn later_dl_and_ul_changes_are_visible_and_successful() {
 #[test]
 fn optional_presence_and_observed_indexes_are_different() {
     let a = carrier();
-    for field in 0..7 {
+    type FieldMutation = (&'static str, fn(&mut UeCaps));
+    let cases: &[FieldMutation] = &[
+        ("header=absent", |c| c.combo_groups[0].combo_header = None),
+        ("bitmask=absent", |c| {
+            c.combo_groups[0].combo[0].bitmask = None
+        }),
+        ("bw_90mhz_supported=false", |c| {
+            c.dl_feature_per_cc_list[0].bw_90mhz_supported = Some(false)
+        }),
+        ("dl_feature_index=7", |c| {
+            c.combo_groups[0].combo[0].sub_blocks[0].dl_feature_index = Some(7)
+        }),
+        ("ul_feature_index=absent", |c| {
+            c.combo_groups[0].combo[0].sub_blocks[0].ul_feature_index = None
+        }),
+        ("srstxswitch=0", |c| {
+            c.combo_groups[0].combo[0].sub_blocks[0].srstxswitch = Some(0)
+        }),
+        ("max_mimo_non_cb=0", |c| {
+            c.ul_feature_per_cc_list[0].max_mimo_non_cb = Some(0)
+        }),
+    ];
+    for &(label, mutate) in cases {
         let mut b = a.clone();
-        match field {
-            0 => b.combo_groups[0].combo_header = None,
-            1 => b.combo_groups[0].combo[0].bitmask = None,
-            2 => b.dl_feature_per_cc_list[0].bw_90mhz_supported = Some(false),
-            3 => b.combo_groups[0].combo[0].sub_blocks[0].dl_feature_index = Some(7),
-            4 => b.combo_groups[0].combo[0].sub_blocks[0].ul_feature_index = None,
-            5 => b.combo_groups[0].combo[0].sub_blocks[0].srstxswitch = Some(0),
-            _ => b.ul_feature_per_cc_list[0].max_mimo_non_cb = Some(0),
-        }
+        mutate(&mut b);
         let body = changed(&a, &b);
-        if field == 2 {
+        assert!(body.contains(label), "{label}: {body}");
+        if label == "bw_90mhz_supported=false" {
             assert!(body.contains("bw_90mhz_supported=absent"), "{body}");
             assert!(body.contains("bw_90mhz_supported=false"), "{body}");
         }

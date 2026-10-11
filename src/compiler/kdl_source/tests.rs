@@ -199,10 +199,17 @@ mod nr_tests {
             text.contains("n78 A1"),
             "class and per-CC list merge into one value: {text}"
         );
-        assert!(
-            !text.contains("dl-cc-id") && !text.contains("dl-feature-index"),
-            "removed escape-hatch surface keys must not appear: {text}"
-        );
+        let parsed: KdlDocument = text.parse().unwrap();
+        let combo = parsed
+            .get(crate::compiler::kdl_keys::doc::NR_COMBO)
+            .unwrap();
+        let component = combo.children().unwrap().get("n78").unwrap();
+        let properties: Vec<_> = component
+            .entries()
+            .iter()
+            .filter_map(|entry| entry.name().map(|name| name.value()))
+            .collect();
+        assert_eq!(properties, Vec::<&str>::new());
         assert!(text.contains("mi=18446744073709551615"), "{text}");
     }
 
@@ -394,12 +401,17 @@ mod nr_tests {
     /// unknown child.
     #[test]
     fn malformed_sub_block_node_names_are_rejected() {
+        for good in ["n78", "B66"] {
+            nr_from(&format!("version 1\nbc ATT\nn {{\n    {good} A\n}}\n")).unwrap();
+        }
         for bad in ["nr", "n257x", "nrfoo", "lte", "x99", "n99999999"] {
-            let text = format!("version 1\nbc ATT\nn {{\n    {bad} dl-bw-class=1 df=1\n}}\n");
+            let text = format!("version 1\nbc ATT\nn {{\n    {bad} A\n}}\n");
+            let error = format!("{:#}", nr_from(&text).unwrap_err());
             assert!(
-                nr_from(&text).is_err(),
-                "`{bad}` must not parse as a sub-block"
+                error.contains(&format!("`n` has unknown child node `{bad}`")),
+                "{error}"
             );
+            assert!(!error.contains("unknown property"), "{error}");
         }
     }
 
@@ -438,18 +450,27 @@ mod nr_tests {
         assert!(!error.contains("duplicate c "), "{error}");
     }
 
-    /// The three renamed node names, pinned. `c` is a carrier at every level it appears — the
-    /// document, a `bf` group, and a `s` selection — which is why the combos had to move off it.
     #[test]
-    fn renamed_node_names_are_emitted() {
+    fn carrier_and_combo_nodes_use_distinct_document_keys() {
         let text = nr_only(&sample()).unwrap();
-        assert!(text.contains("\nc VZW"), "{text}");
-        assert!(
-            text.lines()
-                .any(|line| line == "n {" || line.starts_with("n ")),
-            "{text}"
+        let parsed: KdlDocument = text.parse().unwrap();
+        use crate::compiler::kdl_keys::doc;
+        assert_eq!(
+            parsed
+                .get(doc::CARRIER)
+                .unwrap()
+                .get(0)
+                .and_then(|v| v.as_string()),
+            Some("VZW")
         );
-        assert!(!text.contains("\ncr "), "{text}");
+        assert_eq!(
+            parsed
+                .nodes()
+                .iter()
+                .filter(|node| node.name().value() == doc::NR_COMBO)
+                .count(),
+            sample().combos.len()
+        );
     }
 
     #[test]
@@ -505,9 +526,10 @@ mod nr_tests {
         // Some(0) + intra=1: derived == actual → omitted on disk, re-derived on read.
         let node = write_nr_combo(&combo_with(Some(0), Some(1))).unwrap();
         let text = node.to_string();
-        assert!(
-            !text.contains("bcs-intra-endc"),
-            "derivable zero omitted: {text}"
+        assert_eq!(
+            node.get(crate::compiler::kdl_keys::nr_combo::BCS_INTRA_ENDC),
+            None,
+            "{text}"
         );
         let back = read_nr_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.header.bcs_intra_endc, Some(0));
@@ -520,7 +542,12 @@ mod nr_tests {
         // spelled as the empty BCS index list.
         let node = write_nr_combo(&combo_with(Some(0), Some(0))).unwrap();
         let text = node.to_string();
-        assert!(text.contains("bi=\"\""), "exception zero explicit: {text}");
+        assert_eq!(
+            node.get(crate::compiler::kdl_keys::nr_combo::BCS_INTRA_ENDC)
+                .and_then(|v| v.as_string()),
+            Some(""),
+            "{text}"
+        );
         let back = read_nr_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.header.bcs_intra_endc, Some(0));
         assert_eq!(back.header.intra_band_en_dc_support, Some(0));
@@ -530,7 +557,12 @@ mod nr_tests {
     fn bcs_intra_endc_nonzero_stays_explicit() {
         let node = write_nr_combo(&combo_with(Some(7), Some(1))).unwrap();
         let text = node.to_string();
-        assert!(text.contains("bi=b29,30,31"), "{text}");
+        assert_eq!(
+            node.get(crate::compiler::kdl_keys::nr_combo::BCS_INTRA_ENDC)
+                .and_then(|v| v.as_string()),
+            Some("b29,30,31"),
+            "{text}"
+        );
         let back = read_nr_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.header.bcs_intra_endc, Some(7));
     }
@@ -539,7 +571,11 @@ mod nr_tests {
     fn bcs_intra_endc_none_without_intra1_is_omitted() {
         let node = write_nr_combo(&combo_with(None, Some(0))).unwrap();
         let text = node.to_string();
-        assert!(!text.contains("bcs-intra-endc"), "{text}");
+        assert_eq!(
+            node.get(crate::compiler::kdl_keys::nr_combo::BCS_INTRA_ENDC),
+            None,
+            "{text}"
+        );
         let back = read_nr_combo(&parse_combo(&text)).unwrap();
         assert_eq!(back.header.bcs_intra_endc, None);
     }
