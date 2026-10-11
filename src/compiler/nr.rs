@@ -875,10 +875,6 @@ fn canonical_payloads(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use prost::Message;
-
     use super::*;
     use crate::{
         compiler::{
@@ -895,6 +891,8 @@ mod tests {
         },
         raw_nr::{NrDirection, RawNrPayload, RawNrSubBlock, RawSubBlock, RawSubBlockKey},
     };
+    use prost::Message;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// A component that differs from its siblings only in `srs_tx_switch`. (It used to vary
     /// `dl_feature_index`, but an NR component no longer stores one — the index is derived,
@@ -914,7 +912,7 @@ mod tests {
     }
 
     fn raw_payloads(caps: &UeCaps) -> Vec<RawNrPayload> {
-        RawNrPayload::all_from_caps(caps).expect("fixture caps carry a complete combo header")
+        RawNrPayload::all_from_caps(caps).expect("fixture caps must be representable")
     }
 
     /// The four corpus-verified always-`Some` header fields. Ingest fails closed on a missing
@@ -1033,6 +1031,7 @@ mod tests {
                 dl_bw_class: Some(1),
                 // DL-only: UL disabled but corpus-verified `Some(0)`, never absent.
                 ul_bw_class: Some(0),
+                dl_feature_index: Some(1),
                 dl_feature_per_cc_ids: Some(vec![1]),
                 ..Default::default()
             },
@@ -1040,6 +1039,7 @@ mod tests {
                 band: 10_041,
                 dl_bw_class: Some(1),
                 ul_bw_class: Some(0),
+                dl_feature_index: Some(1),
                 dl_feature_per_cc_ids: Some(vec![1]),
                 ..Default::default()
             },
@@ -1126,6 +1126,7 @@ mod tests {
                         // selector bytes, not on which class they sit under.
                         dl_bw_class: Some(1),
                         ul_bw_class: Some(1),
+                        dl_feature_index: Some(1),
                         // A single in-range byte, so all-or-nothing resolution still
                         // resolves (the out-of-range multi-byte case is covered by
                         // `raw_conversion_preserves_every_selector_only_presence_shape`
@@ -1220,6 +1221,7 @@ mod tests {
                         // `validate` now enforces, and the shape every real file has.
                         dl_bw_class: Some(1),
                         ul_bw_class: Some(0),
+                        dl_feature_index: Some(1),
                         // A single in-range byte: all-or-nothing resolution needs every
                         // byte in range to resolve, unlike the old first-byte rule.
                         dl_feature_per_cc_ids: Some(vec![1]),
@@ -1256,12 +1258,10 @@ mod tests {
         // instead of resolving on the in-range prefix — see `resolve_all`).
         component.dl_feature_per_cc_ids = Some(vec![2]);
         component.ul_feature_per_cc_ids = Some(vec![2]);
-        // `cc()` seeds `dl_feature_index = Some(0)`, but selector `[2]` resolves to the
-        // max_scs=3 (FR1) record whose derived index is 1. NR no longer carries a source
-        // index override, so the strict decode boundary rejects a stored≠derived index —
-        // clear it (the derived 1 is materialized on provision) so this test isolates raw palette
-        // construction from the dropped override.
-        component.dl_feature_index = None;
+        // Both selectors now resolve real records: FR1 DL and non-MIMO UL require
+        // explicit index 1, including when max_mimo_cb is absent in the UL record.
+        component.dl_feature_index = Some(1);
+        component.ul_feature_index = Some(1);
         caps.dl_feature_per_cc_list = vec![
             ShannonFeatureSetDlPerCcNr {
                 max_scs: Some(1),

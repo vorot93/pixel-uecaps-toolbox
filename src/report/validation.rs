@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     mapping::Plmn,
-    model::{family_desc, fp_info, matching_anchors},
+    model::{MAIN_ONLY_ANCHORS, Tier, family_desc, fp_info, matching_anchors},
     outcome::Outcome,
     proto::{PlmnMap, UeCaps},
 };
@@ -139,17 +139,30 @@ pub(super) fn carrier_context_issues(
                 path,
                 format!("unknown fingerprint {}", caps.version),
             )),
-            Some((family, _)) if anchors.len() == 1 && family != anchors[0].family => {
-                issues.push(Issue::new(
-                    IssueKind::Fingerprint,
-                    path,
-                    format!(
-                        "fingerprint family {} != profile {} family {}",
-                        family_desc(family),
-                        anchors[0].anchor,
-                        family_desc(anchors[0].family)
-                    ),
-                ))
+            Some((family, tier)) if anchors.len() == 1 => {
+                let profile = anchors[0];
+                if family != profile.family {
+                    issues.push(Issue::new(
+                        IssueKind::Fingerprint,
+                        path,
+                        format!(
+                            "fingerprint family {} != profile {} family {}",
+                            family_desc(family),
+                            profile.anchor,
+                            family_desc(profile.family)
+                        ),
+                    ));
+                }
+                if tier == Tier::Alt && MAIN_ONLY_ANCHORS.contains(&profile.anchor) {
+                    issues.push(Issue::new(
+                        IssueKind::Fingerprint,
+                        path,
+                        format!(
+                            "Alt fingerprint {} is not eligible for Main-only profile anchor {}",
+                            caps.version, profile.anchor
+                        ),
+                    ));
+                }
             }
             _ => (),
         }

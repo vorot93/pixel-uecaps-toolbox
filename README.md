@@ -202,7 +202,9 @@ The source document stores no feature index for NR components at all: that value
 the component's per-CC feature set on provision (DL from the subcarrier-spacing band FR1/FR2, UL from
 MIMO presence). The old `dl-feature-index`/`ul-feature-index` override was removed — a decoded NR
 index that contradicts the derivation is now a hard decode error rather than a carried override
-(the proto field is still materialized on provision/decompose). LTE components keep the value explicit
+(the proto field is still materialized on provision/decompose). A missing DL or UL index is
+accepted only when it derives to zero; ingest rejects absence that would invent a nonzero index.
+LTE components keep the value explicit
 (the LTE MIMO × CC-count encoding, which is not derivable), but it is not a property — it is the
 single trailing number in the sub-block's positional direction argument (`B66 C2` is class C,
 feature index 2); an omitted UL argument means feature index `0` — the common "no UL" default —
@@ -366,8 +368,11 @@ LTE band combinations (1053)
 
 **Read:** `lte_*.binarypb` files carry LTE-only carrier aggregation combinations (no NR). Each
 line is one combination — band + CA bandwidth class, `↓` marks a downlink-only component (UL
-disabled). `--full` adds per-CC DL class·MIMO / UL class and the `bcs`. That `bcs` prints the
-raw stored decimal (e.g. `2147483648`), not the `b`-prefixed index-list spelling the source
+disabled). `--full` adds per-component DL and UL class·MIMO, raw `dl_bw_class_mimo` and
+`ul_bw_class_mimo` values, and each combo's `bcs`, `unknown1`, and `unknown2`.
+Optional values explicitly show `absent` versus `0`; a disabled direction displays `—`
+alongside its raw zero. That `bcs` prints the raw stored decimal (e.g. `2147483648`),
+not the `b`-prefixed index-list spelling the source
 document uses for the same value — deliberately, since this report is a decode-side view of
 the protobuf; see
 DESIGN.md's [BCS: a 3GPP bit string, not an opaque number](DESIGN.md#bcs-a-3gpp-bit-string-not-an-opaque-number)
@@ -439,7 +444,8 @@ files: 1398  |  carriers: 89  |  legend entries: 80
 ```
 
 **Read:** `check` exits 2 on validation or I/O errors (including unknown fingerprint,
-wrong anchor count, family/fingerprint contradiction, collision, and corrupt LTE/legend files).
+wrong anchor count, family/fingerprint contradiction, Main-only anchors paired with Alt
+fingerprints, collision, and corrupt LTE/legend files).
 Otherwise it exits 0. Reference stubs,
 alt-tier carriers, legend gaps, and incomplete sets are informational. For
 data-independent sanity checks, `pixel-uecaps-toolbox self-test` runs the built-in
@@ -447,7 +453,9 @@ suite and prints `ALL TESTS PASSED`.
 
 Folder checks strictly decode carrier, LTE fallback, and legend files, report selector collisions
 and legend semantic errors, and return 0 only without errors. “Validated profile coverage” counts
-unique eligible anchors, so invalid files never inflate coverage. Unsupported `.binarypb` names
+unique eligible anchors, so invalid files never inflate coverage. Alt fingerprints cannot
+validate Main-only anchors `2912407` or `3539`; `inspect`, `check`, and `matrix` share this rule.
+Unsupported `.binarypb` names
 are listed as unsupported/not validated and remain informational.
 
 ### Export the carrier × profile matrix as CSV

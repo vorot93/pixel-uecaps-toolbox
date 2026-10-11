@@ -1,8 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-use anyhow::{Context, bail, ensure};
-use compact_str::CompactString;
-
 use super::{
     feature_palette::FeaturePalette,
     features::NrSourceSubBlock,
@@ -17,6 +12,9 @@ use crate::{
     proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
+use anyhow::{Context, bail, ensure};
+use compact_str::CompactString;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The source document's format version.
 ///
@@ -685,7 +683,7 @@ fn validated_profiles(
         let anchor =
             parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
         let Some(profile) = PROFILES.iter().find(|profile| profile.anchor == anchor) else {
-            bail!("u profile anchor {anchor} for carrier `{carrier}`");
+            bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
         };
         let number = signature
             .checked_mul(profile_source.multiplier.0)
@@ -1447,7 +1445,7 @@ c "MAPPING" mi=18446744073709551615 {
     fn profile_products_resolve_exactly_the_keyed_registered_anchor() {
         parse_sources(&source(&profiled_nr("66813533"), MINIMAL_LTE)).unwrap();
 
-        assert_nr_error(&profiled_nr("123"), "u profile anchor");
+        assert_nr_error(&profiled_nr("123"), "unknown profile anchor");
         assert_nr_error(
             &profiled_nr("66813533").replace("x=66813533", "x=1176929627"),
             "wrong profile anchor",

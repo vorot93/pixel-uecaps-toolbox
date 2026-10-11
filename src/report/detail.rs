@@ -1,5 +1,10 @@
 //! How much a report shows. The CLI's `--full` / `--common` flags become these at the
 //! dispatch boundary and travel as named values from there.
+use std::fmt::Display;
+
+pub(super) fn optional<T: Display>(value: Option<T>) -> String {
+    value.map_or_else(|| "absent".into(), |value| value.to_string())
+}
 
 /// How much detail a report renders.
 ///

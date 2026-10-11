@@ -2,7 +2,7 @@
 
 use super::{
     combos::{bw_letter, render_known_component},
-    detail::Detail,
+    detail::{Detail, optional},
 };
 use crate::{
     proto::{LteCaps, LteCombo, LteComponent},
@@ -76,27 +76,20 @@ fn combo_bands(combo: &LteCombo) -> String {
         .join(" + ")
 }
 
-/// `--full` per-CC detail, e.g. `DL A 2x2  UL —`.
+fn direction_detail(value: i32) -> String {
+    match lte_class(value) {
+        (None, 0) => "—".into(),
+        (None, _) => format!("[{value}]"),
+        (class, mimo) => format!("{} {mimo}x{mimo}", bw_letter(class)),
+    }
+}
+
+/// `--full` per-CC detail; a missing UL field is distinct from explicit disabled UL.
 fn cc_detail(c: &LteComponent) -> String {
-    let (dl_idx, dl_mimo) = lte_class(c.dl_bw_class_mimo);
-    let dl = if c.dl_bw_class_mimo == 0 {
-        // DL disabled: render "—", mirroring the UL twin below. (Observed DL is never 0;
-        // this only fires on crafted/foreign files.)
-        "—".to_string()
-    } else if out_of_table(c.dl_bw_class_mimo, dl_idx) {
-        format!("[{}]", c.dl_bw_class_mimo)
-    } else {
-        format!("{} {dl_mimo}x{dl_mimo}", bw_letter(dl_idx))
-    };
-    let ul = c.ul_bw_class_mimo.unwrap_or(0);
-    let (ul_idx, _) = lte_class(ul);
-    let ul = if ul == 0 {
-        "—".to_string()
-    } else if ul_idx.is_none() {
-        format!("[{ul}]")
-    } else {
-        bw_letter(ul_idx)
-    };
+    let dl = direction_detail(c.dl_bw_class_mimo);
+    let ul = c
+        .ul_bw_class_mimo
+        .map_or_else(|| "absent".into(), direction_detail);
     format!("DL {dl}  UL {ul}")
 }
 
@@ -134,9 +127,22 @@ pub(crate) fn render_lte_combos(caps: &LteCaps, detail: Detail) -> String {
         let _ = writeln!(out, "  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
         if detail.is_full() {
             for c in &combo.components {
-                let _ = writeln!(out, "       {:<5} {}", eutra(c.band), cc_detail(c));
+                let _ = writeln!(
+                    out,
+                    "       {:<5} {}  dl_bw_class_mimo={} ul_bw_class_mimo={}",
+                    eutra(c.band),
+                    cc_detail(c),
+                    c.dl_bw_class_mimo,
+                    optional(c.ul_bw_class_mimo)
+                );
             }
-            let _ = writeln!(out, "       bcs {}", combo.bcs.unwrap_or(0));
+            let _ = writeln!(
+                out,
+                "       bcs={} unknown1={} unknown2={}",
+                optional(combo.bcs),
+                optional(combo.unknown1),
+                optional(combo.unknown2)
+            );
         }
     }
     out
@@ -268,7 +274,7 @@ mod tests {
     fn cc_detail_dl_disabled_renders_dash() {
         // A DL-disabled component (dl_bw_class_mimo == 0) must render "DL —",
         // mirroring the UL twin — not "DL  0x0" from an unguarded `0x0` MIMO format.
-        assert_eq!(cc_detail(&comp(1, 0, 32768)), "DL —  UL A"); // DL off, UL A
+        assert_eq!(cc_detail(&comp(1, 0, 32768)), "DL —  UL A 2x2"); // DL off, UL A
         assert_eq!(cc_detail(&comp(1, 32768, 0)), "DL A 2x2  UL —"); // UL off, DL A 2x2
     }
 

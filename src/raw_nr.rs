@@ -414,22 +414,17 @@ fn resolve_or_placeholder<T: Copy>(
 impl RawNrSubBlock {
     /// For NR the feature index is derived, never stored, so a decoded index that disagrees
     /// with the derivation cannot round-trip — reject it at the decode boundary rather than
-    /// silently dropping it.
+    /// silently dropping it. Absence may normalize only to zero, never to a nonzero index.
     fn ensure_feature_index_derivable(&self, stored: FeatureIndexes) -> anyhow::Result<()> {
-        if let Some(stored) = stored.dl {
-            let derived = self.derived_dl_feature_index();
+        for (direction, stored, derived) in [
+            (Direction::Dl, stored.dl, self.derived_dl_feature_index()),
+            (Direction::Ul, stored.ul, self.derived_ul_feature_index()),
+        ] {
             anyhow::ensure!(
-                stored == derived,
-                "NR component {} stored DL feature index {stored} != derived {derived}",
-                self.band_label()
-            );
-        }
-        if let Some(stored) = stored.ul {
-            let derived = self.derived_ul_feature_index();
-            anyhow::ensure!(
-                stored == derived,
-                "NR component {} stored UL feature index {stored} != derived {derived}",
-                self.band_label()
+                stored.unwrap_or(0) == derived,
+                "NR component {} stored {direction} feature index {} != derived {derived}",
+                self.band_label(),
+                stored.map_or_else(|| "absent".into(), |value| value.to_string()),
             );
         }
         Ok(())
@@ -1116,6 +1111,8 @@ mod tests {
                             band: NR_BAND_OFFSET + 78,
                             dl_bw_class: Some(1),
                             ul_bw_class: Some(1),
+                            dl_feature_index: Some(1),
+                            ul_feature_index: Some(2),
                             dl_feature_per_cc_ids: Some(vec![1]),
                             ul_feature_per_cc_ids: Some(vec![1]),
                             ..Default::default()
@@ -1199,8 +1196,9 @@ mod tests {
         ];
         let component = ProtoSubBlock {
             band: NR_BAND_OFFSET + 78,
-            dl_bw_class: Some(1),
+            dl_bw_class: Some(3),
             ul_bw_class: Some(0),
+            dl_feature_index: Some(1),
             dl_feature_per_cc_ids: Some(vec![1, 2]),
             ..Default::default()
         };
@@ -1230,8 +1228,9 @@ mod tests {
         ];
         let base = ProtoSubBlock {
             band: NR_BAND_OFFSET + 78,
-            dl_bw_class: Some(1),
+            dl_bw_class: Some(3),
             ul_bw_class: Some(0),
+            dl_feature_index: Some(1),
             dl_feature_per_cc_ids: Some(vec![1, 2]),
             ..Default::default()
         };
@@ -1290,6 +1289,62 @@ mod tests {
         );
     }
 
+    fn assert_nr_feature_index_presence(direction: Direction) {
+        // A resolved record with absent fields still derives index 1, not zero.
+        for (scs, mimo, index) in [
+            (None, None, 1),
+            (Some(1), Some(1), 1),
+            (Some(4), Some(2), 2),
+        ] {
+            let dl = [ShannonFeatureSetDlPerCcNr {
+                max_scs: scs,
+                ..Default::default()
+            }];
+            let ul = [ShannonFeatureSetUlPerCcNr {
+                max_mimo_cb: mimo,
+                ..Default::default()
+            }];
+            let mut proto = ProtoSubBlock {
+                band: NR_BAND_OFFSET + 78,
+                dl_bw_class: Some(1),
+                ul_bw_class: Some(1),
+                dl_feature_index: Some(index),
+                ul_feature_index: Some(index),
+                dl_feature_per_cc_ids: Some(vec![1]),
+                ul_feature_per_cc_ids: Some(vec![1]),
+                ..Default::default()
+            };
+            let raw = RawSubBlock::from_proto_sub_block(&proto, &dl, &ul).unwrap();
+            assert_eq!(raw.dl_feature_index(), Some(index));
+            assert_eq!(raw.ul_feature_index(), Some(index));
+
+            match direction {
+                Direction::Dl => proto.dl_feature_index = None,
+                Direction::Ul => proto.ul_feature_index = None,
+            }
+            let error = RawSubBlock::from_proto_sub_block(&proto, &dl, &ul)
+                .expect_err("an absent index must not silently become nonzero")
+                .to_string();
+            for context in [
+                direction.to_string(),
+                "absent".into(),
+                format!("derived {index}"),
+            ] {
+                assert!(error.contains(&context), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn from_proto_rejects_missing_nonzero_nr_dl_feature_index() {
+        assert_nr_feature_index_presence(Direction::Dl);
+    }
+
+    #[test]
+    fn from_proto_rejects_missing_nonzero_nr_ul_feature_index() {
+        assert_nr_feature_index_presence(Direction::Ul);
+    }
+
     #[test]
     fn from_proto_rejects_non_placeholder_unresolvable_selector() {
         // A non-zero selector byte that indexes past the feature list can no longer be carried
@@ -1335,6 +1390,8 @@ mod tests {
             Some([0].as_slice()),
             "placeholder bytes are kept verbatim"
         );
+        assert_eq!(raw.dl_feature_index(), Some(0));
+        assert_eq!(raw.ul_feature_index(), Some(0));
     }
 
     #[test]

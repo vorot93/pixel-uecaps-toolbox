@@ -1,13 +1,13 @@
 //! Human-readable views of typed capability values, plus shared wire helpers.
 use super::{
-    detail::Detail,
+    detail::{Detail, optional},
     identity::{CombinationKey, LocatedCombination, Selector, ShapeKey, shape},
 };
 use crate::{
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::SubBlockKind,
 };
-use std::fmt::{Display, Write};
+use std::fmt::Write;
 
 pub const NR_BAND_OFFSET: i32 = 10_000;
 pub(crate) fn bw_letter(c: Option<i32>) -> String {
@@ -57,9 +57,6 @@ pub(crate) fn resolve_all<T: Copy>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec
             (1..=list.len()).contains(&k).then(|| list[k - 1])
         })
         .collect()
-}
-fn optional<T: Display>(value: Option<T>) -> String {
-    value.map_or_else(|| "absent".into(), |v| v.to_string())
 }
 pub(super) fn render_shape(key: &ShapeKey) -> String {
     key.iter()

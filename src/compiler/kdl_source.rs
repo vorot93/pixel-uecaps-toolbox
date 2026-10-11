@@ -1,11 +1,6 @@
 //! KDL (de)serialization boundary for the folder-compiler source document.
 //! Hand-mapped over the `kdl` crate (KDL v2); replaces the former TOML/serde path.
 
-use std::collections::BTreeMap;
-
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use kdl::{KdlDocument, KdlEntry, KdlNode};
-
 use crate::{
     compiler::{
         features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
@@ -29,6 +24,9 @@ use crate::{
     proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{SubBlockKind, cc_count},
 };
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use kdl::{KdlDocument, KdlEntry, KdlNode};
+use std::collections::BTreeMap;
 
 // ---- NR document mapping ----
 fn tier_to_str(t: CarrierTier) -> &'static str {
@@ -41,7 +39,7 @@ fn str_to_tier(s: &str) -> Result<CarrierTier> {
     match s {
         "main" => Ok(CarrierTier::Main),
         "alt" => Ok(CarrierTier::Alt),
-        other => bail!("u tier `{other}` (expected `main` or `alt`)"),
+        other => bail!("unknown tier `{other}` (expected `main` or `alt`)"),
     }
 }
 

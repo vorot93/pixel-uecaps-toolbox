@@ -346,7 +346,10 @@ the drift that consolidation removed.
   already know the kind use `render_known_component` or the method directly. An LTE fallback
   band ≥10000 must remain LTE even though that raw value would mean NR in a carrier message.
 - **Fingerprint ↔ (family, tier).** `model::FINGERPRINTS` is the table; `fp_info` (inverse), `fingerprint_for` (forward), `tier_fingerprints`, and the compiler's `modern_fingerprint` wrapper all derive from it.
-- **Per-tier profile counts (16/14).** `model::tier_profile_count` + `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its 16/14 from these.
+- **Per-tier eligibility and counts (16/14).** `model::tier_profile_count` +
+  `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its
+  16/14 from these. The shared report carrier-context validator uses the same anchor set
+  before candidates reach coverage or the matrix, and also governs single-file inspection.
 - **Selector-only-stays-unresolved check (1-based leading byte).** `report::combos::feature_index(ids, len)` — used by the compiler's generated-file self-verification (`verify_compact_feature_list`, `src/compiler/nr.rs`), its only caller, to confirm a raw selector-only array still does *not* resolve against a (possibly shrunk) list; **not** the real per-CC resolution path — that's `resolve_all(ids, list)` (also in `report::combos`), which resolves a whole direction's array all-or-nothing across every byte. `feature_index`'s first-byte check is sufficient here only because, by construction, a resolved reference's bytes are all-or-none catalog indices.
 - **DL/UL report projection.** `report::identity` retains observed fields and every ordered CC;
   `report::combos` formats them. Never use formatted strings or compiler-derived indexes for

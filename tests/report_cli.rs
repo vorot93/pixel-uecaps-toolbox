@@ -509,6 +509,133 @@ fn inspect(path: &std::path::Path) -> std::process::Output {
 }
 
 #[test]
+fn main_only_profiles_are_rejected_in_alt_inspection_coverage_and_matrix() {
+    for anchor in [2_912_407, 3539] {
+        let dir = support::fixture();
+        let path = dir.path().join(format!("ALPHA_{anchor}.binarypb"));
+        for (fingerprint, status, coverage) in [
+            (707_802_847, 2, "0/14 profiles"),
+            (627_223_094, 2, "0/14 profiles"),
+            (874_888_686, 0, "1/16 profiles"),
+        ] {
+            support::write_message(
+                &path,
+                &UeCaps {
+                    version: fingerprint,
+                    ..Default::default()
+                },
+            );
+            let inspected = inspect(&path);
+            assert_eq!(
+                inspected.status.code(),
+                Some(status),
+                "{}",
+                text(&inspected)
+            );
+            let checked = support::run([OsStr::new("check"), dir.path().as_os_str()]);
+            assert_eq!(checked.status.code(), Some(status), "{}", text(&checked));
+            assert!(text(&checked).contains(coverage), "{}", text(&checked));
+            let matrix = matrix(dir.path());
+            assert_eq!(matrix.status.code(), Some(status), "{}", text(&matrix));
+            let records = rows(&matrix.stdout);
+            if status == 2 {
+                assert!(records.is_empty());
+                for output in [&inspected, &checked, &matrix] {
+                    let body = text(output);
+                    for token in [anchor.to_string(), "Main-only".into(), "Alt".into()] {
+                        assert!(body.contains(&token), "{body}");
+                    }
+                    if fingerprint == 627_223_094 {
+                        assert!(body.contains("fingerprint family"), "{body}");
+                    }
+                }
+            } else {
+                assert_eq!(records.len(), 1);
+                assert!(records[0].iter().any(|value| value == anchor.to_string()));
+            }
+        }
+    }
+}
+
+fn lte_caps() -> LteCaps {
+    LteCaps {
+        fingerprint: 862_505_271,
+        bitmask: 1,
+        combos: vec![LteCombo {
+            components: vec![LteComponent {
+                band: 1,
+                dl_bw_class_mimo: 32768,
+                ul_bw_class_mimo: Some(0),
+            }],
+            bcs: Some(0),
+            unknown1: Some(0),
+            unknown2: Some(0),
+        }],
+    }
+}
+
+#[test]
+fn lte_full_inspection_renders_dl_and_ul_mimo() {
+    let dir = support::fixture();
+    let path = dir.path().join("lte_400907661.binarypb");
+    for (dl, ul, expected) in [
+        (32768, 32768, "DL A 2x2  UL A 2x2"),
+        (32768, 32769, "DL A 2x2  UL A 4x4"),
+        (32769, 32768, "DL A 4x4  UL A 2x2"),
+    ] {
+        let mut caps = lte_caps();
+        caps.combos[0].components[0].dl_bw_class_mimo = dl;
+        caps.combos[0].components[0].ul_bw_class_mimo = Some(ul);
+        support::write_message(&path, &caps);
+        let out = inspect(&path);
+        let body = text(&out);
+        assert_eq!(out.status.code(), Some(0), "{body}");
+        assert!(body.contains(expected), "{expected}: {body}");
+    }
+}
+
+#[test]
+fn lte_full_inspection_preserves_each_optional_fields_presence_and_value() {
+    let dir = support::fixture();
+    let path = dir.path().join("lte_400907661.binarypb");
+    type LteMutation = (&'static str, fn(&mut LteCaps));
+    let cases: &[LteMutation] = &[
+        ("ul_bw_class_mimo=absent", |c| {
+            c.combos[0].components[0].ul_bw_class_mimo = None
+        }),
+        ("ul_bw_class_mimo=32769", |c| {
+            c.combos[0].components[0].ul_bw_class_mimo = Some(32769)
+        }),
+        ("bcs=absent", |c| c.combos[0].bcs = None),
+        ("bcs=2147483648", |c| c.combos[0].bcs = Some(2_147_483_648)),
+        ("unknown1=absent", |c| c.combos[0].unknown1 = None),
+        ("unknown1=15060300583598546945", |c| {
+            c.combos[0].unknown1 = Some(15_060_300_583_598_546_945)
+        }),
+        ("unknown2=absent", |c| c.combos[0].unknown2 = None),
+        ("unknown2=123", |c| c.combos[0].unknown2 = Some(123)),
+    ];
+    let baseline = lte_caps();
+    support::write_message(&path, &baseline);
+    let out = inspect(&path);
+    let body = text(&out);
+    assert_eq!(out.status.code(), Some(0), "{body}");
+    for field in ["ul_bw_class_mimo=0", "bcs=0", "unknown1=0", "unknown2=0"] {
+        assert!(body.contains(field), "{field}: {body}");
+    }
+    for (expected, mutate) in cases {
+        let mut changed = baseline.clone();
+        mutate(&mut changed);
+        support::write_message(&path, &changed);
+        let changed = inspect(&path);
+        let body = text(&changed);
+        assert_eq!(changed.status.code(), Some(0), "{body}");
+        assert!(body.contains(expected), "{expected}: {body}");
+        assert_ne!(out.stdout, changed.stdout, "{expected}");
+    }
+}
+
+#[test]
 fn inspect_corruption_and_missing_files_fail() {
     let dir = support::fixture();
     for name in [
