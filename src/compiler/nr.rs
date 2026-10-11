@@ -1,12 +1,12 @@
 use crate::{
     compiler::{
-        GeneratedFile,
+        GeneratedFile, GeneratedRole,
         additional_features::{ADDITIONAL_DL_FEATURES, ADDITIONAL_UL_FEATURES},
         feature_palette::{FeaturePalette, ObservedFeatureDomains},
         features::LocalFeaturePlan,
         schema::{
             BitmaskFingerprint, CarrierSource, NrDocument, ProfileSource, ValidatedNr,
-            modern_fingerprint, nr_source_combo, validate_carrier_name,
+            nr_source_combo, validate_carrier_name,
         },
         selection::{NrDomain, Sku},
     },
@@ -72,11 +72,13 @@ fn generate_legacy_files(nr: &ValidatedNr) -> anyhow::Result<Vec<GeneratedFile>>
         files.push(build_generated_file(
             &nr.palette,
             &Sku::Legacy,
-            format!("{carrier}.binarypb"),
-            fingerprint,
-            id,
-            0,
-            payloads,
+            NrFileIdentity {
+                basename: format!("{carrier}.binarypb"),
+                fingerprint,
+                carrier_id: id,
+                reference: 0,
+            },
+            &payloads,
             InputLayout::Legacy,
         )?);
     }
@@ -88,7 +90,7 @@ fn generate_profiled_files(
     anchor: u64,
     sku: &Sku,
 ) -> anyhow::Result<Vec<GeneratedFile>> {
-    let profile = profile(anchor).with_context(|| format!("unknown NR profile anchor {anchor}"))?;
+    profile(anchor).with_context(|| format!("unknown NR profile anchor {anchor}"))?;
     validate_profile_target(anchor, sku)?;
 
     let mut files = Vec::new();
@@ -101,31 +103,19 @@ fn generate_profiled_files(
         let Some(profile_source) = profiled.profiles.get(&anchor) else {
             continue;
         };
-        let number = profiled
-            .signature
-            .checked_mul(profile_source.multiplier)
-            .with_context(|| {
-                format!("filename product overflow for carrier `{carrier}` profile {anchor}")
-            })?;
-        ensure!(
-            number == profile_source.number,
-            "filename product changed for carrier `{carrier}` profile {anchor}"
-        );
-        let fingerprint = modern_fingerprint(profile.family, profiled.tier);
-        ensure!(
-            fingerprint == profile_source.fingerprint,
-            "derived fingerprint changed for carrier `{carrier}` profile {anchor}"
-        );
+        let number = profile_source.number;
         let id = source.profiled_id;
         let payloads = selected_payloads(nr, carrier, sku);
         files.push(build_generated_file(
             &nr.palette,
             sku,
-            format!("{carrier}_{number}.binarypb"),
-            fingerprint,
-            id,
-            profile_source.unknown,
-            payloads,
+            NrFileIdentity {
+                basename: format!("{carrier}_{number}.binarypb"),
+                fingerprint: profile_source.fingerprint,
+                carrier_id: id,
+                reference: profile_source.unknown,
+            },
+            &payloads,
             InputLayout::Profiled,
         )?);
     }
@@ -167,19 +157,28 @@ fn validate_profile_target(anchor: u64, sku: &Sku) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+struct NrFileIdentity {
+    basename: String,
+    fingerprint: u64,
+    carrier_id: Option<i32>,
+    reference: u64,
+}
+
 fn build_generated_file(
     palette: &FeaturePalette,
     sku: &Sku,
-    basename: String,
-    version: u64,
-    id: Option<i32>,
-    unknown: u64,
-    payloads: Vec<&RawNrPayload>,
+    identity: NrFileIdentity,
+    payloads: &[&RawNrPayload],
     layout: InputLayout,
 ) -> anyhow::Result<GeneratedFile> {
+    let NrFileIdentity {
+        basename,
+        fingerprint,
+        carrier_id,
+        reference,
+    } = identity;
     let bitmask = layout.bitmask();
-    let plan = LocalFeaturePlan::new(palette, &payloads, &basename, &sku.to_string())?;
+    let plan = LocalFeaturePlan::new(palette, payloads, &basename, &sku.to_string())?;
     let mut combo_groups = Vec::with_capacity(payloads.len());
     for (payload_index, payload) in payloads.iter().enumerate() {
         // `payload.sub_blocks` is already sorted by `RawSubBlockKey` when the combo is
@@ -210,16 +209,24 @@ fn build_generated_file(
     }
     let catalogs = plan.into_catalogs();
     let caps = UeCaps {
-        version,
-        id,
+        version: fingerprint,
+        id: carrier_id,
         combo_groups,
         dl_feature_per_cc_list: catalogs.dl,
         ul_feature_per_cc_list: catalogs.ul,
-        unknown,
+        unknown: reference,
     };
     let bytes = caps.encode_to_vec();
-    verify_generated_file(&basename, &bytes, &caps, &payloads, layout)?;
-    Ok(GeneratedFile { basename, bytes })
+    verify_generated_file(&basename, &bytes, &caps, payloads, layout)?;
+    let role = match layout {
+        InputLayout::Legacy => GeneratedRole::LegacyNr,
+        InputLayout::Profiled => GeneratedRole::ProfiledNr,
+    };
+    Ok(GeneratedFile {
+        basename,
+        bytes,
+        role,
+    })
 }
 
 /// `entries` yields `(raw_band, bw_class, selector)` per component — `dl_bw_class`/DL or

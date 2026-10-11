@@ -233,6 +233,19 @@ at most 65,535 values: its exclusive `u16` range bound must fit, not just the la
 Both lengths are checked before interning; overflow is an ordinary contextual input error
 at domain construction, before combo validation, and cannot truncate a wildcard domain.
 
+Generated files retain their declared `GeneratedRole` through verification. A basename cannot
+change the decoder or turn NR bytes into a mapping/LTE file: the role must match the target
+layout, its filename grammar, and (for LTE) the selected ID. Profiled sets require one mapping,
+one selected LTE file and nonempty NR coverage; bitmask sets contain only legacy NR. Duplicate
+and unsafe names are rejected independently. Validated profile number/fingerprint values are
+used directly in generation; their checked derivation belongs at source validation.
+
+After verification, provisioning moves file buffers into owned `ModuleEntry` values. The
+packager sorts those entries in place and borrows bytes while writing; it never clones payloads.
+Its archive paths and metadata share the fixed `/vendor/firmware/uecapconfig` destination.
+The single-model API loads and validates the source before resolving the model, just like the
+parse-once `load_sources`/`provision_from_sources` sequence.
+
 ## Full-folder compiler
 
 The `decompose`/`provision` workflow is the **only** editing surface in this crate: every other

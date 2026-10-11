@@ -1,5 +1,5 @@
 use super::{
-    GeneratedFile,
+    GeneratedFile, GeneratedRole,
     decompose::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
     lte::generate_lte_file,
     nr::{NrTarget, generate_nr_files},
@@ -27,8 +27,7 @@ pub fn provision(
     out: &Path,
     name: Option<&str>,
 ) -> anyhow::Result<Outcome> {
-    let (model, files) = load_and_generate(source, model_code)?;
-    write_module(model, files, out, name)
+    provision_from_sources(&load_sources(source)?, model_code, out, name)
 }
 
 /// Provision one registered model's replacement module from **already-parsed** sources. A caller
@@ -56,10 +55,13 @@ fn write_module(
 ) -> anyhow::Result<Outcome> {
     let inputs = files
         .into_iter()
-        .map(|file| (file.basename, file.bytes))
+        .map(|file| ModuleEntry {
+            basename: file.basename,
+            bytes: file.bytes,
+        })
         .collect::<Vec<ModuleEntry>>();
     let default_name = format!("Pixel UE-caps: {}", model.code);
-    let zip = replacement_module(&inputs, name.unwrap_or(&default_name))?;
+    let zip = replacement_module(inputs, name.unwrap_or(&default_name))?;
     write_bytes_atomic(out, &zip)?;
     Ok(Outcome::Clean)
 }
@@ -76,17 +78,6 @@ fn read_source(path: &Path) -> anyhow::Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("reading source document {}", path.display()))
 }
 
-/// Load the document first, then resolve one real registered model and assemble its files.
-pub(crate) fn load_and_generate(
-    source: &Path,
-    model_code: &str,
-) -> anyhow::Result<(&'static PhoneModel, Vec<GeneratedFile>)> {
-    let sources = load_sources(source)?;
-    let model = resolve_model(model_code)?;
-    let files = generate_files(&sources, model)?;
-    Ok((model, files))
-}
-
 fn resolve_model(model_code: &str) -> anyhow::Result<&'static PhoneModel> {
     phone_model(model_code).with_context(|| {
         format!(
@@ -101,11 +92,8 @@ pub(crate) fn generate_files(
     sources: &ValidatedSources,
     model: &'static PhoneModel,
 ) -> anyhow::Result<Vec<GeneratedFile>> {
-    let (files, verification) = match model.layout {
-        CapabilityLayout::Bitmask => (
-            generate_nr_files(&sources.nr, NrTarget::Legacy)?,
-            VerificationLayout::Bitmask,
-        ),
+    let files = match model.layout {
+        CapabilityLayout::Bitmask => generate_nr_files(&sources.nr, NrTarget::Legacy)?,
         CapabilityLayout::Profiled { nr_anchor, lte_id } => {
             let sku = Sku::Model(model.code.into());
             let mut files = generate_nr_files(
@@ -117,17 +105,12 @@ pub(crate) fn generate_files(
             )?;
             files.push(generate_mapping_file(&sources.nr)?);
             files.push(generate_lte_file(&sources.lte, lte_id, &sku)?);
-            (
-                files,
-                VerificationLayout::Profiled {
-                    lte_basename: lte_basename(lte_id),
-                },
-            )
+            files
         }
     };
 
     let files = finalize_files(files)?;
-    verify_generated_files(&files, &verification)?;
+    verify_generated_files(&files, model.layout)?;
     Ok(files)
 }
 
@@ -137,6 +120,7 @@ fn generate_mapping_file(nr: &ValidatedNr) -> anyhow::Result<GeneratedFile> {
     Ok(GeneratedFile {
         basename: MAPPING_BASENAME.into(),
         bytes,
+        role: GeneratedRole::Mapping,
     })
 }
 
@@ -164,58 +148,81 @@ fn ensure_safe_basename(basename: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-enum VerificationLayout {
-    Bitmask,
-    Profiled { lte_basename: String },
-}
-
-/// Verifies one generated NR carrier file: its basename must classify (via `validate_basename`,
-/// which distinguishes bitmask/legacy vs. profiled layouts) and its bytes must decode as a valid
-/// `.binarypb`. `label` ("legacy"/"profiled") only shapes the error context.
-fn verify_generated_nr_file(
-    file: &GeneratedFile,
-    validate_basename: fn(&str) -> anyhow::Result<()>,
-    label: &str,
-) -> anyhow::Result<()> {
-    validate_basename(&file.basename).with_context(|| {
-        format!(
-            "validating generated {label} NR basename `{}`",
-            file.basename
-        )
-    })?;
-    decode_uecaps(&file.bytes, &format!("generated {}", file.basename))?;
-    Ok(())
-}
-
-fn verify_generated_files(
-    files: &[GeneratedFile],
-    layout: &VerificationLayout,
-) -> anyhow::Result<()> {
+fn verify_generated_files(files: &[GeneratedFile], layout: CapabilityLayout) -> anyhow::Result<()> {
+    let mut nr_count = 0;
+    let mut mappings = 0;
+    let mut lte_count = 0;
     for file in files {
-        match layout {
-            VerificationLayout::Bitmask => {
-                verify_generated_nr_file(file, validate_bitmask_carrier_basename, "legacy")?
+        let label = format!("generated {}", file.basename);
+        match (layout, file.role) {
+            (CapabilityLayout::Bitmask, GeneratedRole::LegacyNr) => {
+                validate_bitmask_carrier_basename(&file.basename).with_context(|| {
+                    format!(
+                        "validating generated legacy NR basename `{}`",
+                        file.basename
+                    )
+                })?;
+                decode_uecaps(&file.bytes, &label)?;
+                nr_count += 1;
             }
-            VerificationLayout::Profiled { .. } if file.basename == MAPPING_BASENAME => {
-                decode_plmn_map(&file.bytes, &format!("generated {}", file.basename))?;
+            (CapabilityLayout::Profiled { .. }, GeneratedRole::ProfiledNr) => {
+                validate_profiled_carrier_basename(&file.basename).with_context(|| {
+                    format!(
+                        "validating generated profiled NR basename `{}`",
+                        file.basename
+                    )
+                })?;
+                decode_uecaps(&file.bytes, &label)?;
+                nr_count += 1;
             }
-            VerificationLayout::Profiled { lte_basename } if file.basename == *lte_basename => {
-                decode_lte_caps(&file.bytes, &format!("generated {}", file.basename))?;
+            (CapabilityLayout::Profiled { .. }, GeneratedRole::Mapping) => {
+                ensure!(
+                    file.basename == MAPPING_BASENAME,
+                    "generated mapping basename `{}` must be {MAPPING_BASENAME}",
+                    file.basename
+                );
+                decode_plmn_map(&file.bytes, &label)?;
+                mappings += 1;
             }
-            VerificationLayout::Profiled { .. } => {
-                verify_generated_nr_file(file, validate_profiled_carrier_basename, "profiled")?
+            (CapabilityLayout::Profiled { lte_id, .. }, GeneratedRole::Lte { id }) => {
+                ensure!(
+                    id == lte_id && file.basename == lte_basename(id),
+                    "generated LTE role {id} and basename `{}` must match selected LTE ID {lte_id}",
+                    file.basename
+                );
+                decode_lte_caps(&file.bytes, &label)?;
+                lte_count += 1;
             }
+            _ => anyhow::bail!(
+                "generated file `{}` role {:?} is incompatible with {layout:?}",
+                file.basename,
+                file.role
+            ),
         }
+    }
+    ensure!(
+        nr_count > 0,
+        "generated file set must contain at least one NR carrier file"
+    );
+    if matches!(layout, CapabilityLayout::Profiled { .. }) {
+        ensure!(
+            mappings == 1,
+            "generated profiled file set requires exactly one mapping file (found {mappings})"
+        );
+        ensure!(
+            lte_count == 1,
+            "generated profiled file set requires exactly one selected LTE file (found {lte_count})"
+        );
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_files, generate_files, load_and_generate, load_sources, provision};
+    use super::{finalize_files, generate_files, load_sources, provision};
     use crate::{
         compiler::{
-            GeneratedFile,
+            GeneratedFile, GeneratedRole,
             decompose::decompose,
             features::{SourceNrSubBlock, SourceSubBlock},
             schema::{
@@ -776,15 +783,79 @@ mod tests {
     }
 
     #[test]
+    fn generated_roles_cannot_be_reinterpreted_from_their_basenames() {
+        let sources = validated_sources();
+        let model = phone_model(TARGET_MODEL).unwrap();
+        let originals = generate_files(&sources, model).unwrap();
+        for (index, replacement) in originals.iter().enumerate().flat_map(|(index, _)| {
+            [
+                GeneratedRole::LegacyNr,
+                GeneratedRole::ProfiledNr,
+                GeneratedRole::Mapping,
+                GeneratedRole::Lte { id: TARGET_LTE_ID },
+                GeneratedRole::Lte {
+                    id: TARGET_LTE_ID + 1,
+                },
+            ]
+            .into_iter()
+            .map(move |role| (index, role))
+        }) {
+            if originals[index].role == replacement {
+                continue;
+            }
+            let mut files = originals.clone();
+            files[index].role = replacement;
+            assert_generated_prewrite_failure(files, model);
+        }
+        assert_generated_prewrite_failure(originals, phone_model("G0DZQ").unwrap());
+        let legacy = generate_files(&sources, phone_model("G0DZQ").unwrap()).unwrap();
+        assert_generated_prewrite_failure(legacy, model);
+    }
+
+    fn assert_generated_prewrite_failure(
+        files: Vec<GeneratedFile>,
+        model: &'static crate::model::PhoneModel,
+    ) {
+        let temp = tempdir().unwrap();
+        let out = temp.path().join("module.zip");
+        fs::write(&out, b"sentinel").unwrap();
+        let result = finalize_files(files).and_then(|files| {
+            super::verify_generated_files(&files, model.layout)?;
+            super::write_module(model, files, &out, None)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(out).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn generated_verifier_rejects_missing_required_file_roles() {
+        let sources = validated_sources();
+        let files = generate_files(&sources, phone_model(TARGET_MODEL).unwrap()).unwrap();
+        for keep in [
+            |f: &GeneratedFile| f.basename != "ap_plmn_mapping.binarypb",
+            |f: &GeneratedFile| f.basename != format!("lte_{TARGET_LTE_ID}.binarypb"),
+            |f: &GeneratedFile| {
+                f.basename == "ap_plmn_mapping.binarypb" || f.basename.starts_with("lte_")
+            },
+        ] {
+            let incomplete: Vec<_> = files.iter().filter(|f| keep(f)).cloned().collect();
+            assert_generated_prewrite_failure(incomplete, phone_model(TARGET_MODEL).unwrap());
+        }
+    }
+
+    #[test]
     fn the_source_is_fully_loaded_and_validated_before_model_resolution() {
         let temp = tempdir().unwrap();
         let source = NamedTempFile::new_in(temp.path()).unwrap();
         fs::write(source.path(), "version 1\nu 1\n").unwrap();
 
-        let error = load_and_generate(source.path(), "NOT-A-MODEL").unwrap_err();
+        let out = temp.path().join("module.zip");
+        fs::write(&out, b"sentinel").unwrap();
+        let error = provision("NOT-A-MODEL", source.path(), &out, None).unwrap_err();
         let error = format!("{error:#}");
         assert!(error.contains("parsing the source document"), "{error}");
         assert!(!error.contains("unknown model"), "{error}");
+        assert_eq!(fs::read(out).unwrap(), b"sentinel");
     }
 
     #[test]
@@ -814,9 +885,12 @@ mod tests {
         let source = write_sources(temp.path());
 
         for token in ["NOT-A-MODEL", "legacy", "prime:66813533", "lte:400907661"] {
-            let error = load_and_generate(source.path(), token)
+            let out = temp.path().join("module.zip");
+            fs::write(&out, b"sentinel").unwrap();
+            let error = provision(token, source.path(), &out, None)
                 .unwrap_err()
                 .to_string();
+            assert_eq!(fs::read(out).unwrap(), b"sentinel");
             assert!(error.contains("unknown model"), "{error}");
             for code in known_model_codes() {
                 assert!(error.contains(code), "missing {code} from {error}");
@@ -833,10 +907,12 @@ mod tests {
             GeneratedFile {
                 basename: "B.binarypb".into(),
                 bytes: Vec::new(),
+                role: GeneratedRole::LegacyNr,
             },
             GeneratedFile {
                 basename: "A.binarypb".into(),
                 bytes: Vec::new(),
+                role: GeneratedRole::LegacyNr,
             },
         ])
         .unwrap();
@@ -847,19 +923,23 @@ mod tests {
                 GeneratedFile {
                     basename: "A.binarypb".into(),
                     bytes: Vec::new(),
+                    role: GeneratedRole::LegacyNr,
                 },
                 GeneratedFile {
                     basename: "A.binarypb".into(),
                     bytes: Vec::new(),
+                    role: GeneratedRole::LegacyNr,
                 },
             ],
             vec![GeneratedFile {
                 basename: "../A.binarypb".into(),
                 bytes: Vec::new(),
+                role: GeneratedRole::LegacyNr,
             }],
             vec![GeneratedFile {
                 basename: r"dir\A.binarypb".into(),
                 bytes: Vec::new(),
+                role: GeneratedRole::LegacyNr,
             }],
         ] {
             assert!(finalize_files(files).is_err());
@@ -873,6 +953,7 @@ mod tests {
             let error = finalize_files(vec![GeneratedFile {
                 basename,
                 bytes: Vec::new(),
+                role: GeneratedRole::LegacyNr,
             }])
             .unwrap_err();
             let error = format!("{error:#}");

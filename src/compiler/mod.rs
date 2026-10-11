@@ -23,6 +23,15 @@ pub use provision::{load_sources, provision, provision_from_sources};
 pub(crate) struct GeneratedFile {
     pub(crate) basename: String,
     pub(crate) bytes: Vec<u8>,
+    pub(crate) role: GeneratedRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GeneratedRole {
+    LegacyNr,
+    ProfiledNr,
+    Mapping,
+    Lte { id: u64 },
 }
 
 /// Parse a **shortest-decimal** `u64`: `Some(n)` iff `s` is exactly `n`'s canonical decimal

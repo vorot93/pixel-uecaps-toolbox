@@ -1,5 +1,5 @@
 use super::{
-    GeneratedFile,
+    GeneratedFile, GeneratedRole,
     schema::{LteDocument, LteFileSource, LteSourceCombo, ValidatedLte, ValidatedLteCombo},
     selection::{LteDomain, LteRelation, SelectionRect, Sku},
 };
@@ -302,7 +302,11 @@ pub(crate) fn generate_lte_file(
         decoded.encode_to_vec() == bytes,
         "generated {basename} was not byte-stable after decoding"
     );
-    Ok(GeneratedFile { basename, bytes })
+    Ok(GeneratedFile {
+        basename,
+        bytes,
+        role: GeneratedRole::Lte { id },
+    })
 }
 
 fn validate_target(id: u64, sku: &Sku) -> anyhow::Result<()> {

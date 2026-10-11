@@ -206,17 +206,15 @@ struct LegendEntry {
 }
 
 /// A carrier's profiled role. Signature, tier, and a non-empty profile table are validated to
-/// imply one another.
+/// imply one another. Only the derived per-profile identities are needed after validation;
+/// the original signature and tier remain in the source document for serialization.
 #[derive(Clone, Debug)]
 pub(crate) struct ProfiledRole {
-    pub(crate) signature: u64,
-    pub(crate) tier: Tier,
     pub(crate) profiles: BTreeMap<u64, ValidatedProfile>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ValidatedProfile {
-    pub(crate) multiplier: u64,
     pub(crate) number: u64,
     pub(crate) unknown: u64,
     pub(crate) fingerprint: u64,
@@ -620,7 +618,6 @@ fn validated_profiles(
         profiles.insert(
             anchor,
             ValidatedProfile {
-                multiplier: profile_source.multiplier,
                 number,
                 unknown: profile_source.unknown,
                 fingerprint: modern_fingerprint(profile.family, tier),
@@ -632,16 +629,11 @@ fn validated_profiles(
 
 fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, ValidatedCarrier>> {
     let bitmask_carriers: BTreeSet<_> = nr.bitmask_carriers.iter().map(String::as_str).collect();
-    let mut normalized_names = BTreeSet::new();
     let mut mapping_ids = BTreeMap::<u64, &str>::new();
     let mut validated = BTreeMap::new();
 
     for (carrier, source) in &nr.carriers {
         validate_carrier_name(carrier)?;
-        ensure!(
-            normalized_names.insert(carrier.trim()),
-            "duplicate carrier name `{carrier}` after normalization"
-        );
 
         let bitmask_id = checked_i32_id(source.bitmask_id, "bitmask_id", carrier)?;
         if bitmask_id.is_some() {
@@ -668,13 +660,8 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
         };
         let profiled = profiled_role
             .map(|(signature, tier)| {
-                validated_profiles(&source.profiles, carrier, signature, tier).map(|profiles| {
-                    ProfiledRole {
-                        signature,
-                        tier,
-                        profiles,
-                    }
-                })
+                validated_profiles(&source.profiles, carrier, signature, tier)
+                    .map(|profiles| ProfiledRole { profiles })
             })
             .transpose()?;
 

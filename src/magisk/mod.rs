@@ -7,18 +7,16 @@ use zip::{CompressionMethod, DateTime, ZipWriter, write::SimpleFileOptions};
 const UPDATE_BINARY: &str = include_str!("assets/update-binary");
 const UPDATER_SCRIPT: &str = "#MAGISK\n";
 
-/// The module's fixed on-device destination, without its leading `/` — the compiler is the
-/// only caller and always writes a complete `/vendor/firmware/uecapconfig` replacement, so
-/// this is a literal rather than a validated `--dest`.
-const REPLACEMENT_PREFIX: &str = "vendor/firmware/uecapconfig";
-
-/// The same path with its leading `/`, for the `module.prop` description line.
+/// The compiler always writes a complete replacement at this fixed on-device destination.
 const REPLACEMENT_DEST: &str = "/vendor/firmware/uecapconfig";
 
 const COMPRESSION_LEVEL: i64 = 9;
 
 /// One Magisk-module input: its on-device basename and bytes.
-pub(crate) type ModuleEntry = (String, Vec<u8>);
+pub(crate) struct ModuleEntry {
+    pub(crate) basename: String,
+    pub(crate) bytes: Vec<u8>,
+}
 
 /// Shared zip entry options: deflate-compressed, with the given unix mode.
 fn opts(mode: u32) -> SimpleFileOptions {
@@ -32,7 +30,7 @@ fn opts(mode: u32) -> SimpleFileOptions {
 /// Assemble a complete deterministic uecapconfig replacement module in memory. Always writes
 /// the `.replace` marker: this crate builds nothing but complete replacements — which is also
 /// why an empty input set is refused rather than packaged.
-pub(crate) fn replacement_module(inputs: &[ModuleEntry], name: &str) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn replacement_module(inputs: Vec<ModuleEntry>, name: &str) -> anyhow::Result<Vec<u8>> {
     validate_module_name(name)?;
     // An empty input set plus the `.replace` marker is a module that does nothing but *delete*
     // the device's `uecapconfig` directory — the marker tells Magisk to replace the whole
@@ -44,12 +42,12 @@ pub(crate) fn replacement_module(inputs: &[ModuleEntry], name: &str) -> anyhow::
          wipe the device's uecapconfig directory and put nothing back"
     );
     let inputs = sorted_inputs(inputs)?;
-    let basenames: Vec<String> = inputs.iter().map(|(n, _)| n.clone()).collect();
+    let basenames: Vec<&str> = inputs.iter().map(|entry| entry.basename.as_str()).collect();
 
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
 
     zip.start_file("module.prop", opts(0o644))?;
-    zip.write_all(module_prop(REPLACEMENT_DEST, name, &basenames).as_bytes())?;
+    zip.write_all(module_prop(name, &basenames).as_bytes())?;
 
     zip.start_file("META-INF/com/google/android/update-binary", opts(0o755))?;
     zip.write_all(UPDATE_BINARY.as_bytes())?;
@@ -57,23 +55,23 @@ pub(crate) fn replacement_module(inputs: &[ModuleEntry], name: &str) -> anyhow::
     zip.start_file("META-INF/com/google/android/updater-script", opts(0o644))?;
     zip.write_all(UPDATER_SCRIPT.as_bytes())?;
 
-    zip.start_file(module_path(REPLACEMENT_PREFIX, ".replace"), opts(0o644))?;
+    zip.start_file(module_path(".replace"), opts(0o644))?;
     zip.write_all(&[])?;
 
-    for (basename, data) in &inputs {
-        zip.start_file(module_path(REPLACEMENT_PREFIX, basename), opts(0o644))?;
-        zip.write_all(data)?;
+    for entry in &inputs {
+        zip.start_file(module_path(&entry.basename), opts(0o644))?;
+        zip.write_all(&entry.bytes)?;
     }
 
     Ok(zip.finish()?.into_inner())
 }
 
-fn sorted_inputs(inputs: &[ModuleEntry]) -> anyhow::Result<Vec<ModuleEntry>> {
-    let mut inputs = inputs.to_vec();
-    inputs.sort_by(|left, right| left.0.cmp(&right.0));
+fn sorted_inputs(mut inputs: Vec<ModuleEntry>) -> anyhow::Result<Vec<ModuleEntry>> {
+    inputs.sort_by(|left, right| left.basename.cmp(&right.basename));
 
     let mut previous: Option<&str> = None;
-    for (basename, _) in &inputs {
+    for entry in &inputs {
+        let basename = entry.basename.as_str();
         validate_module_basename(basename)?;
         if basename == ".replace" {
             bail!("module input basename `.replace` is the reserved replacement marker");
@@ -117,21 +115,20 @@ fn validate_module_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Map a slash-trimmed dest prefix and a file basename to its path inside the
-/// module's `system/` overlay tree.
-fn module_path(prefix: &str, basename: &str) -> String {
-    format!("system/{prefix}/{basename}")
+/// A file basename's path inside the module's `system/` overlay tree.
+fn module_path(basename: &str) -> String {
+    format!("system{REPLACEMENT_DEST}/{basename}")
 }
 
-/// Render `module.prop` for the given on-device dest, module name, and input basenames.
-fn module_prop(dest: &str, name: &str, basenames: &[String]) -> String {
+/// Render `module.prop` for the module name and input basenames.
+fn module_prop(name: &str, basenames: &[&str]) -> String {
     format!(
         "id=pixel_uecaps_override\n\
          name={name}\n\
          version=v1.0\n\
          versionCode=1\n\
          author=pixel-uecaps-toolbox\n\
-         description=Overlays {n} file(s) onto {dest}: {list}\n",
+         description=Overlays {n} file(s) onto {REPLACEMENT_DEST}: {list}\n",
         n = basenames.len(),
         list = basenames.join(", "),
     )
@@ -141,21 +138,24 @@ fn module_prop(dest: &str, name: &str, basenames: &[String]) -> String {
 mod tests {
     use super::*;
 
+    fn input(basename: &str, bytes: &[u8]) -> ModuleEntry {
+        ModuleEntry {
+            basename: basename.into(),
+            bytes: bytes.into(),
+        }
+    }
+
     #[test]
     fn module_path_joins_under_system() {
         assert_eq!(
-            module_path("vendor/firmware/uecapconfig", "x.binarypb"),
+            module_path("x.binarypb"),
             "system/vendor/firmware/uecapconfig/x.binarypb"
         );
     }
 
     #[test]
     fn module_prop_has_fields_and_name_override() {
-        let p = module_prop(
-            "/vendor/firmware/uecapconfig",
-            "My Mod",
-            &["a.binarypb".to_string(), "b.binarypb".to_string()],
-        );
+        let p = module_prop("My Mod", &["a.binarypb", "b.binarypb"]);
         assert!(p.contains("id=pixel_uecaps_override\n"));
         assert!(p.contains("name=My Mod\n"));
         assert!(p.contains("author=pixel-uecaps-toolbox\n"));
@@ -186,7 +186,7 @@ mod tests {
     /// capability configuration. Refuse it instead of shipping it.
     #[test]
     fn refuses_to_build_a_module_with_no_files() {
-        let error = replacement_module(&[], "Empty").unwrap_err().to_string();
+        let error = replacement_module(vec![], "Empty").unwrap_err().to_string();
         assert!(error.contains("no files"), "{error}");
         assert!(error.contains("wipe"), "{error}");
     }
@@ -194,10 +194,10 @@ mod tests {
     #[test]
     fn builds_expected_entries() {
         let inputs = vec![
-            ("VZW_1.binarypb".to_string(), vec![1u8, 2, 3]),
-            ("ap_plmn_mapping.binarypb".to_string(), vec![9u8]),
+            input("VZW_1.binarypb", &[1, 2, 3]),
+            input("ap_plmn_mapping.binarypb", &[9]),
         ];
-        let zip = replacement_module(&inputs, "Pixel UE-caps override").unwrap();
+        let zip = replacement_module(inputs, "Pixel UE-caps override").unwrap();
         let e = entries(&zip);
         assert!(e.contains_key("module.prop"));
         assert!(e.contains_key("META-INF/com/google/android/update-binary"));
@@ -220,10 +220,10 @@ mod tests {
     #[test]
     fn replacement_archive_has_exact_order_bytes_and_metadata() {
         let inputs = vec![
-            ("ZED.binarypb".to_string(), vec![9u8, 8]),
-            ("ALPHA.binarypb".to_string(), vec![1u8, 2, 3]),
+            input("ZED.binarypb", &[9, 8]),
+            input("ALPHA.binarypb", &[1, 2, 3]),
         ];
-        let zip = replacement_module(&inputs, "Replacement").unwrap();
+        let zip = replacement_module(inputs, "Replacement").unwrap();
         let mut archive = ZipArchive::new(Cursor::new(zip)).unwrap();
         let expected = [
             ("module.prop", 0o644, None),
@@ -280,32 +280,26 @@ mod tests {
 
     #[test]
     fn replacement_archive_is_reproducible_across_input_orders() {
-        let forward = vec![
-            ("A.binarypb".to_string(), vec![1u8]),
-            ("B.binarypb".to_string(), vec![2u8]),
-        ];
-        let reverse = vec![forward[1].clone(), forward[0].clone()];
+        let forward = vec![input("A.binarypb", &[1]), input("B.binarypb", &[2])];
+        let reverse = vec![input("B.binarypb", &[2]), input("A.binarypb", &[1])];
 
         assert_eq!(
-            replacement_module(&forward, "n").unwrap(),
-            replacement_module(&reverse, "n").unwrap()
+            replacement_module(forward, "n").unwrap(),
+            replacement_module(reverse, "n").unwrap()
         );
     }
 
     #[test]
     fn replacement_rejects_duplicate_basenames() {
-        let inputs = vec![
-            ("A.binarypb".to_string(), vec![1u8]),
-            ("A.binarypb".to_string(), vec![2u8]),
-        ];
-        let error = replacement_module(&inputs, "n").unwrap_err().to_string();
+        let inputs = vec![input("A.binarypb", &[1]), input("A.binarypb", &[2])];
+        let error = replacement_module(inputs, "n").unwrap_err().to_string();
         assert!(error.contains("duplicate"), "{error}");
     }
 
     #[test]
     fn replacement_rejects_path_separators_in_basenames() {
         for basename in ["dir/A.binarypb", r"dir\A.binarypb"] {
-            let error = replacement_module(&[(basename.into(), vec![1u8])], "n")
+            let error = replacement_module(vec![input(basename, &[1])], "n")
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("basename"), "{error}");
@@ -316,7 +310,7 @@ mod tests {
     fn replacement_rejects_control_and_unicode_line_separators_in_basenames() {
         for character in ['\0', '\n', '\r', '\u{2028}', '\u{2029}'] {
             let basename = format!("BAD{character}NAME.binarypb");
-            let error = replacement_module(&[(basename, vec![1u8])], "n")
+            let error = replacement_module(vec![input(&basename, &[1])], "n")
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("control or line-separator"), "{error:?}");
@@ -325,8 +319,8 @@ mod tests {
 
     #[test]
     fn replacement_rejects_reserved_marker_basename() {
-        let input = [(".replace".to_string(), Vec::new())];
-        let error = replacement_module(&input, "replacement")
+        let input = vec![input(".replace", &[])];
+        let error = replacement_module(input, "replacement")
             .unwrap_err()
             .to_string();
         assert!(error.contains("reserved replacement marker"), "{error}");
@@ -343,8 +337,8 @@ mod tests {
     fn name_with_newline_is_rejected() {
         // --name is interpolated as `name=<name>`; a newline injects a second
         // `id=`/`name=` line and changes module identity.
-        let inputs = vec![("x.binarypb".to_string(), vec![0u8])];
-        let err = replacement_module(&inputs, "X\nid=evil")
+        let inputs = vec![input("x.binarypb", &[0])];
+        let err = replacement_module(inputs, "X\nid=evil")
             .unwrap_err()
             .to_string();
         assert!(err.contains("control or line-separator"), "{err}");
