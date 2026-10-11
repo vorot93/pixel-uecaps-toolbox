@@ -256,13 +256,19 @@ rest".
    basename is strictly classified and path-safety-validated, and the per-directory
    presence rules are enforced (see
    [Input and output boundaries](#input-and-output-boundaries)). Processing then follows
-   sorted-basename order, so OS enumeration order can never reach the output.
+   sorted-basename order, so OS enumeration order can never reach the output. Classification
+   produces a required mapping plus typed carrier/LTE lists, enforcing missing mapping before
+   missing LTE before missing carrier. Decode merges the nonmapping work around the mapping's
+   basename so partitioning roles does not change which competing file error wins.
 2. **Strict-decode everything before assembling anything.** Every file goes through the
    `wire.rs` strict decoders — one unmodeled field number or wire type anywhere fails the
    whole decode. The legend additionally round-trips `map_to_root` → `root_to_map` (unique
    IDs/names, decodable PLMNs) and must already be in increasing `mapping-id` order. The
-   legend's and every LTE file's original bytes are set aside for the byte-identity checks
-   in steps 8–9.
+   legend's and every LTE file's original bytes are retained for the byte-identity checks
+   in steps 8–9. `DecodedLteFile::decode` is the only constructor pairing bytes with a decoded
+   LTE message. Ingest borrows that pair for verification, then moves the original bytes into
+   `OriginalInputs`; it neither re-decodes nor clones the byte buffer. `decode_documents`
+   returns only the verified canonical text; source-inspecting callers parse that text.
 3. **Extract canonical NR payloads per carrier file** (`canonical_payloads` in
    `src/compiler/nr.rs`; one routine for both layouts):
    - Before either layout is consumed or any payload is normalized, observe every field of

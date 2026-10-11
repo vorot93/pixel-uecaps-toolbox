@@ -608,15 +608,15 @@ fn validated_profiles(
                 format!("filename product overflow for carrier `{carrier}` profile {anchor}")
             })?;
         let matches = matching_anchors(number);
-        if matches.len() > 1 {
-            bail!(
+        match matches.as_slice() {
+            [matched] if matched.anchor == anchor => {}
+            [] | [_] => bail!(
+                "filename product {number} for carrier `{carrier}` has wrong profile anchor; expected {anchor}"
+            ),
+            _ => bail!(
                 "filename product {number} for carrier `{carrier}` profile {anchor} is ambiguous"
-            );
+            ),
         }
-        ensure!(
-            matches.len() == 1 && matches[0].anchor == anchor,
-            "filename product {number} for carrier `{carrier}` has wrong profile anchor; expected {anchor}"
-        );
         profiles.insert(
             anchor,
             ValidatedProfile {

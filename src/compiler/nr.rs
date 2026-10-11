@@ -509,12 +509,12 @@ fn classify_profiled_files(
     for file in files {
         let number = file.number;
         let matches = matching_anchors(number);
-        ensure!(
-            matches.len() == 1,
-            "profiled carrier `{carrier}` number {number} must match exactly one registered anchor; matched {}",
-            matches.len()
-        );
-        let profile = matches[0];
+        let [profile] = matches.as_slice() else {
+            anyhow::bail!(
+                "profiled carrier `{carrier}` number {number} must match exactly one registered anchor; matched {}",
+                matches.len()
+            );
+        };
         ensure!(
             seen_anchors.insert(profile.anchor),
             "duplicate profiled carrier `{carrier}` anchor {}",

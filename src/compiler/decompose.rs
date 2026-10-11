@@ -1,5 +1,5 @@
 use super::{
-    lte::{DecodedLteFile, generate_lte_file, ingest_lte},
+    lte::{DecodedLteFile, IngestedLte, generate_lte_file, ingest_lte},
     nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
     schema::{
         SourceDocument, ValidatedLte, ValidatedNr, ValidatedSources, legend_root, parse_sources,
@@ -14,7 +14,7 @@ use crate::{
     model::{MAPPING_BASENAME, MAPPING_STEM},
     outcome::Outcome,
     proto::PlmnMap,
-    wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
+    wire::{decode_plmn_map, decode_uecaps},
 };
 use anyhow::{Context, ensure};
 use prost::Message;
@@ -27,9 +27,21 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ProfiledInputName {
-    Carrier { carrier: String, number: u64 },
+    Carrier(CarrierInput),
     Mapping,
     Lte { id: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CarrierInput {
+    carrier: String,
+    number: u64,
+}
+
+struct ProfiledInputs {
+    mapping: ClassifiedFile<()>,
+    carriers: Vec<ClassifiedFile<CarrierInput>>,
+    lte: Vec<ClassifiedFile<u64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +55,13 @@ struct ClassifiedFile<T> {
 /// against, so a tie to the actual input folder exists rather than a re-derivation from the
 /// same source field the generator reads.
 type OriginalNrBytes = BTreeMap<String, Vec<u8>>;
+
+struct OriginalInputs {
+    mapping: Vec<u8>,
+    lte: BTreeMap<u64, Vec<u8>>,
+    legacy_nr: OriginalNrBytes,
+    profiled_nr: OriginalNrBytes,
+}
 
 /// Every bitmask-folder file, decoded into its `LegacyNrFile` capture, plus each file's
 /// original bytes keyed by basename so `verify_legacy_nr_target` can check its regenerated file
@@ -64,94 +83,100 @@ fn decode_legacy_files(
 
 /// The cross-file accumulations one pass over the profiled folder builds: every NR carrier
 /// capture, every LTE capture, the single PLMN mapping (both its parsed root and original
-/// bytes), and each LTE file's original bytes keyed by id (needed again later, by
-/// `verify_internal_targets`).
+/// bytes). LTE captures retain their own original bytes until ingest verification finishes.
 struct ProfiledDecode {
     nr: Vec<ProfiledNrFile>,
     lte: Vec<DecodedLteFile>,
     mapping: MappingRoot,
     original_mapping: Vec<u8>,
-    original_lte: BTreeMap<u64, Vec<u8>>,
-    /// Original NR bytes by basename, for `verify_profiled_nr_targets`' byte comparison.
+    /// Original NR files by basename, for `verify_profiled_nr_targets`' file-set comparison.
     original_nr: OriginalNrBytes,
 }
 
-/// One per-file-id LTE capture; errors on a duplicate id against `seen` (folded across the
-/// whole profiled-folder scan, since ids must be unique across the folder, not per call).
-fn decode_profiled_lte_file(
-    bytes: Vec<u8>,
-    basename: &str,
-    id: u64,
-    seen: &mut BTreeMap<u64, Vec<u8>>,
-) -> anyhow::Result<DecodedLteFile> {
-    let caps = decode_lte_caps(&bytes, basename)?;
-    ensure!(
-        seen.insert(id, bytes.clone()).is_none(),
-        "duplicate LTE file ID {id}"
-    );
-    Ok(DecodedLteFile {
-        id,
-        original: bytes,
-        caps,
-    })
+enum ProfiledWork {
+    Carrier(ClassifiedFile<CarrierInput>),
+    Lte(ClassifiedFile<u64>),
+}
+
+impl ProfiledWork {
+    fn basename(&self) -> &str {
+        match self {
+            Self::Carrier(file) => &file.basename,
+            Self::Lte(file) => &file.basename,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ProfiledCaptures {
+    nr: Vec<ProfiledNrFile>,
+    lte: Vec<DecodedLteFile>,
+    original_nr: OriginalNrBytes,
+    seen_lte: BTreeSet<u64>,
+}
+
+impl ProfiledCaptures {
+    fn decode(&mut self, files: Vec<ProfiledWork>) -> anyhow::Result<()> {
+        for file in files {
+            match file {
+                ProfiledWork::Carrier(file) => {
+                    let bytes = read_file(&file.path, &file.basename)?;
+                    self.nr.push(ProfiledNrFile {
+                        carrier: file.kind.carrier,
+                        number: file.kind.number,
+                        caps: decode_uecaps(&bytes, &file.basename)?,
+                    });
+                    self.original_nr.insert(file.basename, bytes);
+                }
+                ProfiledWork::Lte(file) => {
+                    let bytes = read_file(&file.path, &file.basename)?;
+                    let decoded = DecodedLteFile::decode(file.kind, bytes)?;
+                    let id = decoded.id();
+                    ensure!(self.seen_lte.insert(id), "duplicate LTE file ID {id}");
+                    self.lte.push(decoded);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Decodes every classified profiled-folder file into its role: an NR carrier capture, the
 /// single PLMN mapping (validated and order-checked here, since a stale-order profiled mapping
 /// must be rejected before it reaches `ingest_nr`), or a per-id LTE capture. Exactly one
-/// `Mapping` file is required, which the classifier upstream already guarantees.
-fn decode_profiled_files(
-    files: Vec<ClassifiedFile<ProfiledInputName>>,
-) -> anyhow::Result<ProfiledDecode> {
-    let mut nr = Vec::new();
-    let mut lte = Vec::new();
-    let mut original_lte = BTreeMap::new();
-    let mut original_nr = BTreeMap::new();
-    let mut original_mapping = None;
-    let mut mapping = None;
-    for file in files {
-        let bytes = read_file(&file.path, &file.basename)?;
-        match file.kind {
-            ProfiledInputName::Carrier { carrier, number } => {
-                nr.push(ProfiledNrFile {
-                    carrier,
-                    number,
-                    caps: decode_uecaps(&bytes, &file.basename)?,
-                });
-                original_nr.insert(file.basename, bytes);
-            }
-            ProfiledInputName::Mapping => {
-                let decoded = decode_plmn_map(&bytes, &file.basename)?;
-                let root = map_to_root(&decoded).context("decoding profiled PLMN mapping")?;
-                root_to_map(&root).context("validating profiled PLMN mapping IDs and names")?;
-                ensure_mapping_order(&decoded)?;
-                original_mapping = Some(bytes);
-                mapping = Some(root);
-            }
-            ProfiledInputName::Lte { id } => lte.push(decode_profiled_lte_file(
-                bytes,
-                &file.basename,
-                id,
-                &mut original_lte,
-            )?),
-        }
-    }
+/// mapping file is present structurally. Work on either side retains basename error order.
+fn decode_profiled_files(files: ProfiledInputs) -> anyhow::Result<ProfiledDecode> {
+    let mut work: Vec<_> = files
+        .carriers
+        .into_iter()
+        .map(ProfiledWork::Carrier)
+        .chain(files.lte.into_iter().map(ProfiledWork::Lte))
+        .collect();
+    work.sort_by(|left, right| left.basename().cmp(right.basename()));
+    let later = work
+        .split_off(work.partition_point(|file| file.basename() < files.mapping.basename.as_str()));
+    let mut captures = ProfiledCaptures::default();
+    captures.decode(work)?;
+
+    let original_mapping = read_file(&files.mapping.path, &files.mapping.basename)?;
+    let decoded = decode_plmn_map(&original_mapping, &files.mapping.basename)?;
+    let mapping = map_to_root(&decoded).context("decoding profiled PLMN mapping")?;
+    root_to_map(&mapping).context("validating profiled PLMN mapping IDs and names")?;
+    ensure_mapping_order(&decoded)?;
+
+    captures.decode(later)?;
     Ok(ProfiledDecode {
-        nr,
-        lte,
-        mapping: mapping.expect("profiled classifier requires one mapping"),
-        original_mapping: original_mapping.expect("profiled classifier requires one mapping"),
-        original_lte,
-        original_nr,
+        nr: captures.nr,
+        lte: captures.lte,
+        mapping,
+        original_mapping,
+        original_nr: captures.original_nr,
     })
 }
 
 /// Decode one complete legacy bitmask folder and one complete profiled folder into the canonical
 /// compiler source document. No output path is touched by this pure orchestration seam.
-pub(crate) fn decode_documents(
-    bitmask_dir: &Path,
-    profiled_dir: &Path,
-) -> anyhow::Result<(SourceDocument, String)> {
+pub(crate) fn decode_documents(bitmask_dir: &Path, profiled_dir: &Path) -> anyhow::Result<String> {
     let bitmask_files = classify_bitmask_dir(bitmask_dir)?;
     let profiled_files = classify_profiled_dir(profiled_dir)?;
 
@@ -161,12 +186,20 @@ pub(crate) fn decode_documents(
         lte: lte_files,
         mapping,
         original_mapping,
-        original_lte,
         original_nr: original_profiled_nr,
     } = decode_profiled_files(profiled_files)?;
 
     let nr = ingest_nr(legacy, profiled, &mapping).context("normalizing NR carrier files")?;
-    let lte = ingest_lte(lte_files).context("normalizing LTE files")?;
+    let IngestedLte {
+        source: lte,
+        originals: original_lte,
+    } = ingest_lte(lte_files).context("normalizing LTE files")?;
+    let originals = OriginalInputs {
+        mapping: original_mapping,
+        lte: original_lte,
+        legacy_nr: original_legacy_nr,
+        profiled_nr: original_profiled_nr,
+    };
 
     // Serialization is itself a validation boundary. Canonicalize the ingest once, reparse the
     // emitted source through the strict public schema, and require byte-idempotence before using
@@ -181,22 +214,10 @@ pub(crate) fn decode_documents(
         "the source document changed when reparsed and reserialized"
     );
 
-    verify_internal_targets(
-        &validated,
-        &original_mapping,
-        &original_lte,
-        &original_legacy_nr,
-        &original_profiled_nr,
-    )?;
+    verify_internal_targets(&validated, &originals)?;
     // `text` is the canonical document already validated above (reparse + reserialize
     // byte-idempotent). Return it so `decompose` need not recompute `to_kdl`.
-    Ok((
-        SourceDocument {
-            nr: validated.nr.source,
-            lte: validated.lte.source,
-        },
-        text,
-    ))
+    Ok(text)
 }
 
 /// Decompose both required folders and emit the canonical source document — atomically replacing
@@ -207,7 +228,7 @@ pub fn decompose(
     profiled_dir: &Path,
     out: Option<&Path>,
 ) -> anyhow::Result<Outcome> {
-    let (_source, text) = decode_documents(bitmask_dir, profiled_dir)?;
+    let text = decode_documents(bitmask_dir, profiled_dir)?;
     match out {
         // Through the crate's atomic writer like every other file output, so a failure part-way
         // cannot leave a truncated document in place of a previously good one, and replacing an
@@ -228,33 +249,54 @@ fn classify_bitmask_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<String>
     Ok(files)
 }
 
-fn classify_profiled_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<ProfiledInputName>>> {
+fn classify_profiled_dir(dir: &Path) -> anyhow::Result<ProfiledInputs> {
     let files = classify_directory(dir, "profiled", classify_profiled_name)?;
-    let mappings = files
-        .iter()
-        .filter(|file| matches!(file.kind, ProfiledInputName::Mapping))
-        .count();
-    let lte = files
-        .iter()
-        .filter(|file| matches!(file.kind, ProfiledInputName::Lte { .. }))
-        .count();
-    let carriers = files
-        .iter()
-        .filter(|file| matches!(file.kind, ProfiledInputName::Carrier { .. }))
-        .count();
+    let mut mappings = Vec::new();
+    let mut lte = Vec::new();
+    let mut carriers = Vec::new();
+    for ClassifiedFile {
+        basename,
+        path,
+        kind,
+    } in files
+    {
+        match kind {
+            ProfiledInputName::Mapping => mappings.push(ClassifiedFile {
+                basename,
+                path,
+                kind: (),
+            }),
+            ProfiledInputName::Lte { id } => lte.push(ClassifiedFile {
+                basename,
+                path,
+                kind: id,
+            }),
+            ProfiledInputName::Carrier(kind) => carriers.push(ClassifiedFile {
+                basename,
+                path,
+                kind,
+            }),
+        }
+    }
+    let count = mappings.len();
+    let [mapping] = <[_; 1]>::try_from(mappings).map_err(|_| {
+        anyhow::anyhow!(
+            "profiled input must contain exactly one {MAPPING_BASENAME} (found {count})"
+        )
+    })?;
     ensure!(
-        mappings == 1,
-        "profiled input must contain exactly one {MAPPING_BASENAME} (found {mappings})"
-    );
-    ensure!(
-        lte != 0,
+        !lte.is_empty(),
         "profiled input must contain at least one lte_<id>.binarypb file"
     );
     ensure!(
-        carriers != 0,
+        !carriers.is_empty(),
         "profiled input must contain at least one numbered carrier .binarypb file"
     );
-    Ok(files)
+    Ok(ProfiledInputs {
+        mapping,
+        carriers,
+        lte,
+    })
 }
 
 fn classify_directory<T>(
@@ -303,7 +345,7 @@ fn classify_directory<T>(
 fn classify_bitmask_name(basename: &str) -> anyhow::Result<String> {
     let stem = basename
         .strip_suffix(".binarypb")
-        .expect("caller filters exact binarypb extension");
+        .with_context(|| format!("bitmask basename `{basename}` must end with .binarypb"))?;
     ensure!(
         !stem.is_empty(),
         "unsupported bitmask .binarypb filename `{basename}`: carrier name must be nonempty"
@@ -332,7 +374,7 @@ fn classify_profiled_name(basename: &str) -> anyhow::Result<ProfiledInputName> {
     }
     let stem = basename
         .strip_suffix(".binarypb")
-        .expect("caller filters exact binarypb extension");
+        .with_context(|| format!("profiled basename `{basename}` must end with .binarypb"))?;
     if let Some(decimal) = stem.strip_prefix("lte_") {
         let id = parse_filename_number(decimal, basename, "LTE file ID")?;
         return Ok(ProfiledInputName::Lte { id });
@@ -345,17 +387,17 @@ fn classify_profiled_name(basename: &str) -> anyhow::Result<ProfiledInputName> {
         "unsupported profiled filename `{basename}`: carrier name must be nonempty"
     );
     let number = parse_filename_number(decimal, basename, "carrier number")?;
-    Ok(ProfiledInputName::Carrier {
+    Ok(ProfiledInputName::Carrier(CarrierInput {
         carrier: carrier.into(),
         number,
-    })
+    }))
 }
 
 /// Require a generated modern NR basename to classify as a profiled carrier rather than the
 /// reserved mapping or LTE forms.
 pub(super) fn validate_profiled_carrier_basename(basename: &str) -> anyhow::Result<()> {
     match classify_profiled_name(basename)? {
-        ProfiledInputName::Carrier { .. } => Ok(()),
+        ProfiledInputName::Carrier(_) => Ok(()),
         ProfiledInputName::Mapping => {
             anyhow::bail!("generated profiled NR basename `{basename}` is reserved for the mapping")
         }
@@ -401,9 +443,6 @@ fn ensure_mapping_order(mapping: &PlmnMap) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Self-verifies the legacy NR target: regenerating it must produce exactly the expected
-/// bitmask-carrier basenames, and every regenerated file must itself decode as a valid
-/// `.binarypb` (a generation bug that emits undecodable bytes must fail here, not ship).
 /// Self-verifies the legacy NR target: regenerating it must reproduce exactly the file set the
 /// bitmask folder held, and every regenerated file must decode.
 ///
@@ -543,18 +582,15 @@ fn verify_lte_targets(
 /// passed every check here.
 fn verify_internal_targets(
     sources: &ValidatedSources,
-    original_mapping: &[u8],
-    original_lte: &BTreeMap<u64, Vec<u8>>,
-    original_legacy_nr: &OriginalNrBytes,
-    original_profiled_nr: &OriginalNrBytes,
+    originals: &OriginalInputs,
 ) -> anyhow::Result<()> {
-    verify_legacy_nr_target(&sources.nr, original_legacy_nr)?;
-    verify_profiled_nr_targets(&sources.nr, original_profiled_nr)?;
-    verify_lte_targets(&sources.lte, original_lte)?;
+    verify_legacy_nr_target(&sources.nr, &originals.legacy_nr)?;
+    verify_profiled_nr_targets(&sources.nr, &originals.profiled_nr)?;
+    verify_lte_targets(&sources.lte, &originals.lte)?;
 
     let rebuilt_mapping = rebuild_mapping(sources)?;
     ensure!(
-        rebuilt_mapping == original_mapping,
+        rebuilt_mapping == originals.mapping,
         "PLMN mapping round-trip self-verification was not byte-identical"
     );
     Ok(())
@@ -632,7 +668,8 @@ mod tests {
         let expected = corpus.expected.clone();
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
 
-        let (source, _) = decode_documents(&bitmask, &profiled).unwrap();
+        let text = decode_documents(&bitmask, &profiled).unwrap();
+        let source = source_from_kdl(&text).unwrap();
 
         assert_eq!(source.nr.bitmask_carriers, expected.bitmask_carriers);
         for (carrier, anchors) in expected.profiles {
@@ -694,7 +731,47 @@ mod tests {
     }
 
     #[test]
+    fn profiled_decode_failures_follow_basename_order_across_roles() {
+        let mut corpus = MiniCorpus::new();
+        let early = profile_name("ALPHA", 11, SYNTHETIC_ANCHOR);
+        corpus.profiled_file_mut(&early).bytes = vec![0x80];
+        mapping_file(&mut corpus).bytes = vec![0x80];
+        let error = assert_prewrite_failure(corpus, &early);
+        assert!(!error.contains("validating ap_plmn_mapping"), "{error}");
+
+        let mut corpus = MiniCorpus::new();
+        mapping_file(&mut corpus).bytes = vec![0x80];
+        lte_file(&mut corpus, FIRST_LTE_ID).bytes = vec![0x80];
+        let error = assert_prewrite_failure(corpus, "validating ap_plmn_mapping.binarypb");
+        assert!(!error.contains("validating lte_"), "{error}");
+    }
+
+    #[test]
+    fn basename_validators_reject_bad_suffixes_without_panicking() {
+        for name in ["ALPHA", "ALPHA.binarypb.bak", "ALPHA_1.pb"] {
+            for validate in [
+                super::validate_bitmask_carrier_basename,
+                super::validate_profiled_carrier_basename,
+            ] {
+                let error = format!("{:#}", validate(name).unwrap_err());
+                assert!(
+                    error.contains(name) && error.contains(".binarypb"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn profiled_folder_requires_mapping_lte_and_numbered_carriers() {
+        let mut missing_all = MiniCorpus::new();
+        missing_all.remove_profiled(|_| true);
+        assert_prewrite_failure(missing_all, "exactly one ap_plmn_mapping.binarypb");
+
+        let mut mapping_only = MiniCorpus::new();
+        mapping_only.remove_profiled(|file| file.basename != "ap_plmn_mapping.binarypb");
+        assert_prewrite_failure(mapping_only, "at least one lte_<id>.binarypb");
+
         let mut without_mapping = MiniCorpus::new();
         without_mapping.remove_profiled(|file| file.basename == "ap_plmn_mapping.binarypb");
         assert_prewrite_failure(without_mapping, "exactly one ap_plmn_mapping.binarypb");
@@ -771,7 +848,7 @@ mod tests {
     fn nr_self_verification_is_tied_to_the_input_folder_not_re_derived() {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
-        let (_, text) = decode_documents(&bitmask, &profiled).unwrap();
+        let text = decode_documents(&bitmask, &profiled).unwrap();
         let sources = parse_sources(&text).unwrap();
 
         // A folder that held nothing: everything the generator produces is unaccounted for.

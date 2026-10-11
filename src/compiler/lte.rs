@@ -62,9 +62,34 @@ impl RawLteCombo {
 }
 
 pub(crate) struct DecodedLteFile {
-    pub(crate) id: u64,
-    pub(crate) original: Vec<u8>,
-    pub(crate) caps: LteCaps,
+    id: u64,
+    original: Vec<u8>,
+    caps: LteCaps,
+}
+
+impl DecodedLteFile {
+    pub(crate) fn decode(id: u64, original: Vec<u8>) -> anyhow::Result<Self> {
+        let caps = decode_lte_caps(&original, &lte_basename(id))?;
+        Ok(Self { id, original, caps })
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn caps(&self) -> &LteCaps {
+        &self.caps
+    }
+
+    pub(crate) fn into_original(self) -> (u64, Vec<u8>) {
+        (self.id, self.original)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct IngestedLte {
+    pub(crate) source: LteDocument,
+    pub(crate) originals: BTreeMap<u64, Vec<u8>>,
 }
 
 /// Groups `files` by id, erroring on a duplicate — the input is a flat `Vec` (arrival order
@@ -72,7 +97,7 @@ pub(crate) struct DecodedLteFile {
 fn group_files_by_id(files: Vec<DecodedLteFile>) -> anyhow::Result<BTreeMap<u64, DecodedLteFile>> {
     let mut files_by_id = BTreeMap::new();
     for file in files {
-        let id = file.id;
+        let id = file.id();
         if files_by_id.insert(id, file).is_some() {
             bail!("duplicate LTE file ID {id}");
         }
@@ -81,7 +106,7 @@ fn group_files_by_id(files: Vec<DecodedLteFile>) -> anyhow::Result<BTreeMap<u64,
 }
 
 /// The cross-file accumulations one scan over every LTE file builds: each file's persisted
-/// source metadata (string-keyed, matching the source document's file-key spelling), the
+/// source metadata keyed by numeric file ID, the
 /// applicability domain, which SKUs use each distinct payload, and the same-file adjacency
 /// edges that fix
 /// payloads' relative order across files (topologically sorted next, by the caller).
@@ -101,25 +126,20 @@ fn scan_lte_files(files_by_id: &BTreeMap<u64, DecodedLteFile>) -> anyhow::Result
     let mut scan = LteScan::default();
     for (id, file) in files_by_id {
         let basename = lte_basename(*id);
-        let decoded = decode_lte_caps(&file.original, &basename)?;
-        ensure!(
-            decoded == file.caps,
-            "decoded values for {basename} do not match its supplied LTE message"
-        );
-
+        let caps = file.caps();
         scan.file_sources.insert(
             *id,
             LteFileSource {
-                fingerprint: file.caps.fingerprint,
-                bitmask: file.caps.bitmask,
+                fingerprint: caps.fingerprint,
+                bitmask: caps.bitmask,
             },
         );
 
         let skus = Sku::for_lte_file(*id);
         scan.domain_members.extend(skus.iter().cloned());
         let mut seen = BTreeSet::new();
-        let mut sequence = Vec::with_capacity(file.caps.combos.len());
-        for (index, combo) in file.caps.combos.iter().enumerate() {
+        let mut sequence = Vec::with_capacity(caps.combos.len());
+        for (index, combo) in caps.combos.iter().enumerate() {
             ensure!(
                 !combo.components.is_empty(),
                 "LTE payload {} in {basename} has no components",
@@ -200,7 +220,7 @@ fn verify_lte_ingest(
     Ok(())
 }
 
-pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocument> {
+pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<IngestedLte> {
     ensure!(!files.is_empty(), "at least one LTE file is required");
 
     let files_by_id = group_files_by_id(files)?;
@@ -221,14 +241,14 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
             (
                 *id,
                 LteFileSource {
-                    fingerprint: file.caps.fingerprint,
-                    bitmask: file.caps.bitmask,
+                    fingerprint: file.caps().fingerprint,
+                    bitmask: file.caps().bitmask,
                 },
             )
         })
         .collect();
     let validated = ValidatedLte {
-        source: source.clone(),
+        source,
         files: parsed_files,
         domain,
         combos: validated_combos,
@@ -236,7 +256,13 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
 
     verify_lte_ingest(&files_by_id, &validated)?;
 
-    Ok(source)
+    Ok(IngestedLte {
+        source: validated.source,
+        originals: files_by_id
+            .into_values()
+            .map(DecodedLteFile::into_original)
+            .collect(),
+    })
 }
 
 pub(crate) fn generate_lte_file(
@@ -377,11 +403,7 @@ mod tests {
     }
 
     fn decoded(id: u64, caps: LteCaps) -> DecodedLteFile {
-        DecodedLteFile {
-            id,
-            original: caps.encode_to_vec(),
-            caps,
-        }
+        DecodedLteFile::decode(id, caps.encode_to_vec()).unwrap()
     }
 
     fn minimal_nr() -> NrDocument {
@@ -458,7 +480,8 @@ mod tests {
             decoded(91, caps(11, 21, vec![shared.clone()])),
             decoded(92, caps(12, 22, vec![shared])),
         ])
-        .unwrap();
+        .unwrap()
+        .source;
 
         assert_eq!(document.combos.len(), 1);
         assert_eq!(document.combos[0].selection, None);
@@ -487,7 +510,8 @@ mod tests {
             decoded(91, caps(1, 11, vec![a.clone(), b, c.clone()])),
             decoded(92, caps(2, 12, vec![a, c])),
         ])
-        .unwrap();
+        .unwrap()
+        .source;
 
         assert_eq!(bands(&document), vec![1, 2, 3]);
     }
@@ -501,7 +525,8 @@ mod tests {
             decoded(92, caps(2, 12, vec![higher, sink.clone()])),
             decoded(91, caps(1, 11, vec![lower, sink])),
         ])
-        .unwrap();
+        .unwrap()
+        .source;
 
         assert_eq!(bands(&document), vec![1, 2, 3]);
     }
@@ -513,7 +538,10 @@ mod tests {
         let second = decoded(92, caps(102, 202, sequence));
         let first_original = first.original.clone();
         let second_original = second.original.clone();
-        let document = ingest_lte(vec![first, second]).unwrap();
+        let ingested = ingest_lte(vec![first, second]).unwrap();
+        assert_eq!(ingested.originals[&91], first_original);
+        assert_eq!(ingested.originals[&92], second_original);
+        let document = ingested.source;
 
         assert_eq!(document.combos.len(), 3);
         assert!(
@@ -556,7 +584,8 @@ mod tests {
             decoded(REGISTERED_ID, caps(1, 11, vec![registered])),
             decoded(91, caps(2, 12, vec![synthetic])),
         ])
-        .unwrap();
+        .unwrap()
+        .source;
 
         let expected_registered: Vec<_> = lte_model_codes(REGISTERED_ID)
             .into_iter()
@@ -593,7 +622,7 @@ mod tests {
         let first = decoded(91, caps(101, 201, vec![shared.clone(), first_only.clone()]));
         let second = decoded(92, caps(102, 202, vec![shared, second_only]));
         let expected = first.original.clone();
-        let document = ingest_lte(vec![first, second]).unwrap();
+        let document = ingest_lte(vec![first, second]).unwrap().source;
         let generated = generate_lte_file(&validated(&document), 91, &Sku::Lte(91)).unwrap();
 
         assert_eq!(generated.basename, "lte_91.binarypb");
@@ -623,13 +652,9 @@ mod tests {
         crate::wire::decode_lte_caps(&original, "explicit-zero fixture")
             .expect("the strict scanner cannot reject an explicit zero");
 
-        let error = ingest_lte(vec![DecodedLteFile {
-            id: 91,
-            original,
-            caps,
-        }])
-        .unwrap_err()
-        .to_string();
+        let error = ingest_lte(vec![DecodedLteFile::decode(91, original).unwrap()])
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("byte-identical"), "{error}");
     }
 
