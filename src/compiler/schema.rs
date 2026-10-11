@@ -273,7 +273,7 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
     let bitmask_fingerprints = validate_fingerprint_partition(&nr)?;
     let carriers = validate_carriers(&nr)?;
     validate_mapping_projection(&carriers)?;
-    let nr_domain = build_nr_domain(&nr, &carriers);
+    let nr_domain = build_nr_domain(&nr, &carriers)?;
     let input_palette = FeaturePalette::from_rows(nr.dl_features.clone(), nr.ul_features.clone());
     let nr_combo = validate_nr_combos(&nr.combos, &nr_domain, &input_palette)?;
     let selection_index = NrSelectionIndex::build(&nr_combo);
@@ -387,7 +387,10 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn build_nr_domain(nr: &NrDocument, carriers: &BTreeMap<String, ValidatedCarrier>) -> NrDomain {
+fn build_nr_domain(
+    nr: &NrDocument,
+    carriers: &BTreeMap<String, ValidatedCarrier>,
+) -> anyhow::Result<NrDomain> {
     let mut members: BTreeSet<(CompactString, Sku)> = nr
         .bitmask_carriers
         .iter()

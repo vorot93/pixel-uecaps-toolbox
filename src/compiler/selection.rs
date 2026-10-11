@@ -67,8 +67,41 @@ pub(crate) struct SelectionRect {
 /// an id's numeric order equals its value's `Ord` — the invariant that lets the id-keyed
 /// `canonical_selection` emit rectangles in the exact string / `Sku` order (byte-identical output)
 /// while the hot membership sets compare 4-byte keys instead of 24-byte inline strings.
-pub(crate) type CarrierId = u16;
-pub(crate) type SkuId = u16;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(crate) struct CarrierId(u16);
+
+impl TryFrom<usize> for CarrierId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(index: usize) -> std::result::Result<Self, Self::Error> {
+        u16::try_from(index).map(Self)
+    }
+}
+
+impl CarrierId {
+    pub(crate) fn index(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(crate) struct SkuId(u16);
+
+impl TryFrom<usize> for SkuId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(index: usize) -> std::result::Result<Self, Self::Error> {
+        u16::try_from(index).map(Self)
+    }
+}
+
+impl SkuId {
+    pub(crate) fn index(self) -> usize {
+        usize::from(self.0)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NrDomain {
@@ -87,7 +120,7 @@ pub(crate) struct NrDomain {
 }
 
 impl NrDomain {
-    pub(crate) fn new(members: BTreeSet<(CompactString, Sku)>) -> Self {
+    pub(crate) fn new(members: BTreeSet<(CompactString, Sku)>) -> Result<Self> {
         let carrier_names: Vec<CompactString> = members
             .iter()
             .map(|(carrier, _)| carrier.clone())
@@ -100,60 +133,56 @@ impl NrDomain {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        // Strict `<`, not `<=`. At exactly `MAX + 1` (65536) the bound is satisfied but the
-        // cast below wraps: `(0..65536usize as u16)` is `(0..0)`, so `carriers` and `skus`
-        // silently become EMPTY. Every wildcard-axis rectangle then resolves to the empty set
-        // and fails with the misleading "selection rectangle N has an empty intersection with
-        // the NR domain", while `canonical_selection`'s `(carriers != domain.carriers)` test can
-        // never omit a carrier list again — emitting a non-canonical fully-explicit form, which
-        // is this crate's worst failure mode. An `assert!` rather than `ensure!` because
-        // `NrDomain::new` returns `Self`; reachability is remote (the corpus has 91 carriers).
-        assert!(
-            carrier_names.len() < CarrierId::MAX as usize + 1
-                && sku_values.len() < SkuId::MAX as usize + 1,
-            "NR domain exceeds the carrier/sku interner id space"
-        );
+        // Both exclusive range bounds must fit before any interning. A wrapping 65,536
+        // bound would silently erase a wildcard axis; this is an input error, not a panic.
+        let carrier_count = u16::try_from(carrier_names.len())
+            .context("NR domain exceeds the carrier interner limit of 65535")?;
+        let sku_count = u16::try_from(sku_values.len())
+            .context("NR domain exceeds the SKU interner limit of 65535")?;
         let member_ids: BTreeSet<(CarrierId, SkuId)> = members
             .iter()
             .map(|(carrier, sku)| {
-                let carrier = carrier_names
-                    .binary_search(carrier)
-                    .expect("carrier collected from members")
-                    as CarrierId;
-                let sku = sku_values
-                    .binary_search(sku)
-                    .expect("sku collected from members") as SkuId;
-                (carrier, sku)
+                let carrier = CarrierId::try_from(
+                    carrier_names
+                        .binary_search(carrier)
+                        .expect("carrier collected from members"),
+                )?;
+                let sku = SkuId::try_from(
+                    sku_values
+                        .binary_search(sku)
+                        .expect("sku collected from members"),
+                )?;
+                Ok((carrier, sku))
             })
-            .collect();
-        let carriers = (0..carrier_names.len() as CarrierId).collect();
-        let skus = (0..sku_values.len() as SkuId).collect();
+            .collect::<Result<_>>()?;
+        let carriers = (0..carrier_count).map(CarrierId).collect();
+        let skus = (0..sku_count).map(SkuId).collect();
         let mut rows = BTreeMap::<CarrierId, BTreeSet<SkuId>>::new();
         for &(carrier, sku) in &member_ids {
             rows.entry(carrier).or_default().insert(sku);
         }
-        Self {
+        Ok(Self {
             carrier_names,
             sku_values,
             members: member_ids,
             carriers,
             skus,
             rows,
-        }
+        })
     }
 
     fn carrier_id(&self, carrier: &str) -> Option<CarrierId> {
         self.carrier_names
             .binary_search_by(|candidate| candidate.as_str().cmp(carrier))
             .ok()
-            .map(|index| index as CarrierId)
+            .map(|index| CarrierId::try_from(index).expect("validated carrier interner bound"))
     }
 
     fn sku_id(&self, sku: &Sku) -> Option<SkuId> {
         self.sku_values
             .binary_search(sku)
             .ok()
-            .map(|index| index as SkuId)
+            .map(|index| SkuId::try_from(index).expect("validated SKU interner bound"))
     }
 
     /// Intern a `(carrier, sku)` probe (built once, then tested against many combos in
@@ -166,7 +195,7 @@ impl NrDomain {
     /// Intern a raw `(carrier, sku)` member set (every pair must already be a domain member) into
     /// an id-keyed relation. Used by ingest, which builds each payload's relation from the same
     /// values the domain was built from.
-    pub(crate) fn relation(&self, members: BTreeSet<(CompactString, Sku)>) -> NrRelation {
+    pub(crate) fn relation(&self, members: &BTreeSet<(CompactString, Sku)>) -> NrRelation {
         NrRelation(
             members
                 .iter()
@@ -201,8 +230,8 @@ impl NrDomain {
     #[cfg(test)]
     fn denorm(&self, carrier: CarrierId, sku: SkuId) -> (CompactString, Sku) {
         (
-            self.carrier_names[carrier as usize].clone(),
-            self.sku_values[sku as usize].clone(),
+            self.carrier_names[carrier.index()].clone(),
+            self.sku_values[sku.index()].clone(),
         )
     }
 }
@@ -468,12 +497,12 @@ impl CanonicalRect {
             carriers: self.carriers.map(|carriers| {
                 carriers
                     .into_iter()
-                    .map(|carrier| domain.carrier_names[carrier as usize].to_string())
+                    .map(|carrier| domain.carrier_names[carrier.index()].to_string())
                     .collect()
             }),
             skus: self.skus.map(|skus| {
                 skus.into_iter()
-                    .map(|sku| domain.sku_values[sku as usize].to_string())
+                    .map(|sku| domain.sku_values[sku.index()].to_string())
                     .collect()
             }),
         }
@@ -542,11 +571,12 @@ mod tests {
                 .map(|(carrier, sku)| ((*carrier).into(), sku.clone()))
                 .collect(),
         )
+        .unwrap()
     }
 
     fn nr_relation(domain: &NrDomain, pairs: &[(&str, Sku)]) -> NrRelation {
         domain.relation(
-            pairs
+            &pairs
                 .iter()
                 .map(|(carrier, sku)| ((*carrier).into(), sku.clone()))
                 .collect(),
@@ -624,6 +654,61 @@ mod tests {
     }
 
     #[test]
+    fn carrier_interner_rejects_overflow_without_panicking() {
+        assert!(NrDomain::new(BTreeSet::new()).is_ok());
+        for n in [65_535usize, 65_536] {
+            let members = (0..n)
+                .map(|i| (format!("C{i:05}").into(), Sku::Legacy))
+                .collect();
+            let result = NrDomain::new(members);
+            assert_eq!(result.is_ok(), n == 65_535);
+            if let Err(error) = result {
+                assert!(format!("{error:#}").contains("carrier interner limit"));
+            }
+        }
+    }
+
+    #[test]
+    fn sku_interner_rejects_overflow_without_panicking() {
+        for n in [65_535usize, 65_536] {
+            let members = (0..n)
+                .map(|i| ("ONLY".into(), Sku::Prime(i as u64)))
+                .collect();
+            let result = NrDomain::new(members);
+            assert_eq!(result.is_ok(), n == 65_535);
+            if let Err(error) = result {
+                assert!(format!("{error:#}").contains("SKU interner limit"));
+            }
+        }
+    }
+
+    #[test]
+    fn interning_and_deinterning_preserve_sorted_axes() {
+        let domain = nr_domain(&[
+            ("Z", Sku::Prime(10)),
+            ("A", Sku::Prime(2)),
+            ("Z", Sku::Legacy),
+        ]);
+        let ids: Vec<_> = domain.members.iter().copied().collect();
+        assert_eq!(
+            ids.iter()
+                .map(|(c, s)| (c.index(), s.index()))
+                .collect::<Vec<_>>(),
+            [(0, 1), (1, 0), (1, 2)]
+        );
+        assert_eq!(
+            ids.into_iter()
+                .map(|(c, s)| domain.denorm(c, s))
+                .collect::<Vec<_>>(),
+            [
+                ("A".into(), Sku::Prime(2)),
+                ("Z".into(), Sku::Legacy),
+                ("Z".into(), Sku::Prime(10))
+            ]
+        );
+    }
+
+    #[test]
     fn every_small_relation_has_one_canonical_selection() {
         let grid = grid();
         let mut cases = 0;
@@ -635,7 +720,7 @@ mod tests {
                 .filter(|(index, _)| domain_mask & (1 << index) != 0)
                 .map(|(_, pair)| pair.clone())
                 .collect();
-            let domain = NrDomain::new(domain_pairs.clone());
+            let domain = NrDomain::new(domain_pairs.clone()).unwrap();
 
             let mut relation_mask = domain_mask;
             while relation_mask != 0 {
@@ -646,7 +731,7 @@ mod tests {
                     .filter(|(index, _)| relation_mask & (1 << index) != 0)
                     .map(|(_, pair)| pair.clone())
                     .collect();
-                let relation = domain.relation(relation_pairs.clone());
+                let relation = domain.relation(&relation_pairs);
                 let canonical = relation.canonical_selection(&domain).unwrap();
                 let reparsed = NrRelation::from_selection(&domain, canonical.as_deref()).unwrap();
                 assert_eq!(

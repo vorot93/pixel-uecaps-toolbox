@@ -686,7 +686,7 @@ fn finish_nr_document(
             }
         })
         .collect();
-    let domain = NrDomain::new(domain_members);
+    let domain = NrDomain::new(domain_members)?;
     let combos = payloads
         .into_values()
         .enumerate()
@@ -696,7 +696,7 @@ fn finish_nr_document(
                 .map(|(carrier, _)| carrier.clone())
                 .unwrap_or_else(|| CompactString::new("<none>"));
             let owner_count = relation.len();
-            let relation = domain.relation(relation);
+            let relation = domain.relation(&relation);
             nr_source_combo(&payload, &relation, &domain, &palette).with_context(|| {
                 format!(
                     "building source NR combo {} selected by carrier `{first_carrier}` ({owner_count} owner pairs)",
@@ -1680,7 +1680,7 @@ mod tests {
             payload,
             relation: nr
                 .domain
-                .relation(BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
+                .relation(&BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
         }]);
 
         let generated = generate_nr_files(
@@ -1760,7 +1760,7 @@ mod tests {
             payload,
             relation: nr
                 .domain
-                .relation(BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
+                .relation(&BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
         }]);
     }
 
@@ -1881,13 +1881,13 @@ mod tests {
                 payload: feature_payload(1..=150, Direction::Dl),
                 relation: nr
                     .domain
-                    .relation(BTreeSet::from([("A".into(), Sku::Legacy)])),
+                    .relation(&BTreeSet::from([("A".into(), Sku::Legacy)])),
             },
             ValidatedNrCombo {
                 payload: feature_payload(151..=300, Direction::Dl),
                 relation: nr
                     .domain
-                    .relation(BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
+                    .relation(&BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),
             },
         ]);
         assert_eq!(

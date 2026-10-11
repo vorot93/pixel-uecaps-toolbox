@@ -159,6 +159,9 @@ overflow are rejected while parsing the node. Version and that node's field chec
 key validation precedes later nodes and cross-document validation. Canonical output keeps
 decimal-text order (`"10"` before `"2"`), with the same quoted-key syntax.
 
+The NR selection domain supports up to 65,535 distinct carriers and 65,535 distinct SKU
+values. Exceeding either limit rejects the source with a diagnostic and leaves the output intact.
+
 The three carrier IDs are independent: `bitmask-id` is legacy NR protobuf field 2;
 `profiled-id` is optional signed `int32` profiled NR protobuf field 2, including
 absence and present-zero, and may repeat across carriers; `mapping-id` is the unique,

@@ -192,6 +192,37 @@ fn nr_caps(
 }
 
 #[test]
+fn interner_overflow_is_an_ordinary_rejection_and_preserves_output() {
+    let temp = fixture();
+    let source = NamedTempFile::new_in(temp.path()).unwrap();
+    let output = temp.path().join("sentinel.zip");
+    let names: Vec<_> = (0..65_536).map(|i| format!("C{i:05}")).collect();
+    let list = names.join(" ");
+    let mut text = format!("version 1\nbc {list}\nbf 1 {{\n c {list}\n}}\n");
+    for name in names {
+        text.push_str(&format!("c {name} bi=1\n"));
+    }
+    text.push_str("f \"92\" fp=1 bm=1\n");
+    fs::write(source.path(), text).unwrap();
+    fs::write(&output, b"sentinel").unwrap();
+    let result = command()
+        .args(["provision", "GUL82"])
+        .arg(source.path())
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    let diagnostic = stderr(&result);
+    assert!(!diagnostic.contains("panicked"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("carrier interner limit"),
+        "{diagnostic}"
+    );
+    result.assert().code(REJECTED);
+    assert_eq!(fs::read(&output).unwrap(), b"sentinel");
+}
+
+#[test]
 fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     let fixture = Fixture::new();
 
