@@ -1,8 +1,5 @@
 //! Shared validations retain independent failures; no compiler normalization here.
-use super::{
-    identity::project_combinations,
-    input::{InputError, LoadedInput, Payload},
-};
+use super::{identity::project_combinations, input::InputError};
 use crate::{
     mapping::Plmn,
     model::{MAIN_ONLY_ANCHORS, Tier, fingerprint_info, matching_anchors},
@@ -94,17 +91,13 @@ pub(super) fn legend_issues(path: &Path, map: &PlmnMap) -> Vec<Issue> {
     }
     issues
 }
-pub(super) fn payload_issues(input: &LoadedInput) -> Vec<Issue> {
-    match &input.payload {
-        Payload::Carrier(caps) => project_combinations(caps)
-            .err()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|error| Issue::new(IssueKind::Reference, &input.path, error.to_string()))
-            .collect(),
-        Payload::Legend(map) => legend_issues(&input.path, map),
-        Payload::Lte(_) => Vec::new(),
-    }
+pub(super) fn carrier_reference_issues(path: &Path, caps: &UeCaps) -> Vec<Issue> {
+    project_combinations(caps)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|error| Issue::new(IssueKind::Reference, path, error.to_string()))
+        .collect()
 }
 pub(super) fn carrier_context_issues(
     path: &Path,

@@ -67,7 +67,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/outcome.rs` | The `Outcome` enum (`Clean`/`Findings`/`Rejected`) that replaced ad hoc `i32` exit codes crate-wide; `main` converts it to `ExitCode` exactly once. |
 | `src/proto.rs` | The protobuf message types, hand-written with `#[derive(prost::Message)]`; each field's `#[prost(...)]` attribute models the proto2-origin wire format directly. |
 | `src/factor.rs` | Integer helpers over `num-prime` for the trailing filename numbers: `gcd`, `is_prime`, `factorize`, `format_factors`. |
-| `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fingerprint_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
+| `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fingerprint_info`, `classify_filename`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
 | `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator and writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`). The source-specific PLMN codec lives in `src/compiler/kdl_source/plmn.rs`. |
@@ -137,6 +137,18 @@ family mismatches and exclude the file from both validated coverage and matrix c
 Tier consistency is per carrier, with Main used on ties or absent votes. Unsupported `.binarypb`
 names (including non-UTF8 names) are informational and never opened; invalid legends leave
 membership unavailable instead of manufacturing gaps from an empty map.
+
+`classify_filename(&Path)` borrows the carrier name and treats non-UTF8 names as unsupported.
+Report number parsing deliberately accepts Rust's `u64` spelling (including `+2` and `0002`);
+compiler basename validation remains shortest-decimal and strict. `load_validated` couples
+identity and `Observation<T>` in `FileEvidence`: carrier, LTE, and legend variants retain their
+own protobuf type, path, and issues even if reading fails. Only unsupported names return None.
+Carrier reference checks precede filename/fingerprint context checks, which run even without
+decoded content. Optional neighboring legends distinguish absence from dangling/unreadable
+entries via `symlink_metadata`; comparison intentionally permits unrecognized names as carrier
+payloads but rejects recognized LTE/mapping names. Relation passes borrow retained evidence:
+filename anchors determine collisions, every known fingerprint votes on tier, and only valid
+per-file observations contribute matrix candidates or coverage.
 
 Matrix cells consume the shared validated candidates, without re-opening files or re-evaluating
 anchors. Per-file failures omit candidates, while relational errors (collision, mixed tier,
@@ -1495,8 +1507,8 @@ model-code, NR-anchor, and LTE-ID association described in the
   is never evidence for a new mapping. Every code is validated against
   `pixel_bands::PIXEL_BANDS`. Region labels are cosmetic — band filtering uses the exact
   band sets, not the label. See [Registry evidence rule](#registry-evidence-rule).
-- **Scope discipline.** `inspect` decodes LTE, but `compare`/`check` do not;
-  `check` only counts `lte_*` files; the `magisk` module packages raw bytes without
+- **Scope discipline.** `inspect`, `check`, and `matrix` strictly decode supported LTE files;
+  `compare` rejects recognized LTE inputs. The `magisk` module packages raw bytes without
   decoding them.
 
 ## Glossary

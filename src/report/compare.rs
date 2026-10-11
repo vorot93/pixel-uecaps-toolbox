@@ -6,7 +6,7 @@ use super::{
     identity::{CombinationKey, ShapeKey, project_combinations, shape},
 };
 use crate::{
-    model::{Parsed, fingerprint_info, identify_profile, parse_name},
+    model::{FileKind, classify_filename, fingerprint_info, identify_profile},
     outcome::Outcome,
 };
 use std::{
@@ -31,22 +31,19 @@ fn render_variants(
     Ok(())
 }
 fn load(path: &Path) -> anyhow::Result<ComparisonInput> {
-    let name = path.file_name().and_then(|p| p.to_str()).unwrap_or("?");
-    match parse_name(name) {
-        Parsed::Mapping => anyhow::bail!(
+    let kind = classify_filename(path);
+    match kind {
+        FileKind::Mapping => anyhow::bail!(
             "{} is the PLMN legend, not a carrier capability file",
             path.display()
         ),
-        Parsed::Lte(_) => anyhow::bail!(
+        FileKind::Lte(_) => anyhow::bail!(
             "{} is an LTE fallback, not a carrier capability file",
             path.display()
         ),
         _ => (),
     }
-    let input = super::input::read_input(path, super::input::DecodeKind::Carrier)?;
-    let super::input::Payload::Carrier(caps) = input.payload else {
-        unreachable!()
-    };
+    let caps = super::input::read_carrier(path)?;
     anyhow::ensure!(
         !caps.combo_groups.is_empty(),
         "{} is a reference stub",
@@ -70,8 +67,8 @@ fn load(path: &Path) -> anyhow::Result<ComparisonInput> {
             .or_default()
             .insert(combo.key);
     }
-    let profile = match parse_name(name) {
-        Parsed::Carrier { number, .. } => identify_profile(number).map(|p| p.anchor.to_string()),
+    let profile = match kind {
+        FileKind::Carrier { number, .. } => identify_profile(number).map(|p| p.anchor.to_string()),
         _ => None,
     }
     .unwrap_or_else(|| "?".into());

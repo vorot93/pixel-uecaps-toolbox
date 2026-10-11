@@ -1,12 +1,7 @@
 //! Folder-wide consistency report rendered from shared retained evidence.
-use super::{
-    Report,
-    folder::scan_folder,
-    input::{LoadedInput, Payload},
-    validation::diagnostics,
-};
+use super::{Report, folder::scan_folder, input::FileEvidence, validation::diagnostics};
 use crate::{
-    model::{FINGERPRINTS, MAPPING_BASENAME, Parsed, Tier, tier_fingerprints, tier_profile_count},
+    model::{FINGERPRINTS, MAPPING_BASENAME, Tier, tier_fingerprints, tier_profile_count},
     outcome::Outcome,
 };
 use std::{fmt::Write, path::Path};
@@ -32,18 +27,11 @@ fn alt_tier_header() -> String {
 }
 pub fn check_folder(dir: &Path) -> anyhow::Result<Report> {
     let report = scan_folder(dir)?;
-    let legend = report
-        .files
-        .iter()
-        .find(|f| matches!(f.parsed, Parsed::Mapping));
+    let legend = report.files.iter().find_map(|f| f.evidence.legend());
     let count = match legend {
-        Some(f) if !f.errors.is_empty() => "unavailable (invalid legend)".into(),
-        Some(f) => match &f.input {
-            Some(LoadedInput {
-                payload: Payload::Legend(map),
-                ..
-            }) => map.carriers.len().to_string(),
-            _ => unreachable!(),
+        Some(observation) => match &observation.value {
+            Some(map) if observation.issues.is_empty() => map.carriers.len().to_string(),
+            _ => "unavailable (invalid legend)".into(),
         },
         None => "absent (optional)".into(),
     };
@@ -111,7 +99,7 @@ pub fn check_folder(dir: &Path) -> anyhow::Result<Report> {
         report
             .files
             .iter()
-            .filter(|f| matches!(f.parsed, Parsed::Lte(_)))
+            .filter(|f| matches!(f.evidence, FileEvidence::Lte { .. }))
             .count()
     )?;
     for path in &report.unsupported {

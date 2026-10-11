@@ -480,40 +480,39 @@ pub(crate) fn profile(anchor: u64) -> Option<&'static Profile> {
 }
 
 /// What a filename refers to.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Parsed {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FileKind<'a> {
     /// `ap_plmn_mapping.binarypb` — the PLMN→carrier legend.
     Mapping,
     /// `lte_<n>.binarypb` — LTE-only fallback, outside the profile scheme.
     Lte(u64),
     /// `<CARRIER>_<NUMBER>.binarypb`.
-    Carrier { carrier: String, number: u64 },
+    Carrier { carrier: &'a str, number: u64 },
     /// Anything else.
     Other,
 }
 
-pub(crate) fn parse_name(filename: &str) -> Parsed {
-    let base = std::path::Path::new(filename)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(filename);
+pub(crate) fn classify_filename(path: &std::path::Path) -> FileKind<'_> {
+    let Some(base) = path.file_name().and_then(|s| s.to_str()) else {
+        return FileKind::Other;
+    };
     if base == MAPPING_BASENAME {
-        return Parsed::Mapping;
+        return FileKind::Mapping;
     }
     let Some(stem) = base.strip_suffix(".binarypb") else {
-        return Parsed::Other;
+        return FileKind::Other;
     };
     let Some((prefix, num)) = stem.rsplit_once('_') else {
-        return Parsed::Other;
+        return FileKind::Other;
     };
     let Ok(number) = num.parse::<u64>() else {
-        return Parsed::Other;
+        return FileKind::Other;
     };
     match prefix {
-        "lte" => Parsed::Lte(number),
-        "" => Parsed::Other,
-        _ => Parsed::Carrier {
-            carrier: prefix.to_string(),
+        "lte" => FileKind::Lte(number),
+        "" => FileKind::Other,
+        _ => FileKind::Carrier {
+            carrier: prefix,
             number,
         },
     }
@@ -930,27 +929,52 @@ mod tests {
 
     #[test]
     fn parses_names() {
+        use std::path::Path;
         assert_eq!(
-            parse_name("VZW_193698151252893.binarypb"),
-            Parsed::Carrier {
-                carrier: "VZW".into(),
+            classify_filename(Path::new("VZW_193698151252893.binarypb")),
+            FileKind::Carrier {
+                carrier: "VZW",
                 number: 193_698_151_252_893
             }
         );
         assert_eq!(
-            parse_name("/some/dir/3_IE_1249420795691880.binarypb"),
-            Parsed::Carrier {
-                carrier: "3_IE".into(),
+            classify_filename(Path::new("/some/dir/3_IE_1249420795691880.binarypb")),
+            FileKind::Carrier {
+                carrier: "3_IE",
                 number: 1_249_420_795_691_880
             }
         );
         assert_eq!(
-            parse_name("lte_844857560.binarypb"),
-            Parsed::Lte(844_857_560)
+            classify_filename(Path::new("lte_844857560.binarypb")),
+            FileKind::Lte(844_857_560)
         );
-        assert_eq!(parse_name("ap_plmn_mapping.binarypb"), Parsed::Mapping);
-        assert_eq!(parse_name("README.md"), Parsed::Other);
-        assert_eq!(parse_name("no_number_here.binarypb"), Parsed::Other);
+        assert_eq!(
+            classify_filename(Path::new("ap_plmn_mapping.binarypb")),
+            FileKind::Mapping
+        );
+        assert_eq!(classify_filename(Path::new("README.md")), FileKind::Other);
+        assert_eq!(
+            classify_filename(Path::new("no_number_here.binarypb")),
+            FileKind::Other
+        );
+        for name in ["A_0002.binarypb", "A_+2.binarypb"] {
+            assert_eq!(
+                classify_filename(Path::new(name)),
+                FileKind::Carrier {
+                    carrier: "A",
+                    number: 2
+                }
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_filename_is_unsupported() {
+        use std::os::unix::ffi::OsStringExt;
+        let path =
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(b"bad\xff_2.binarypb".to_vec()));
+        assert_eq!(classify_filename(&path), FileKind::Other);
     }
 
     #[test]

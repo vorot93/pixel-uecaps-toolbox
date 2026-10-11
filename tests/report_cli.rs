@@ -1,6 +1,31 @@
 mod support;
 use assert_cmd::assert::OutputAssertExt;
-use pixel_uecaps_toolbox::{NR_BAND_OFFSET, proto::*};
+use pixel_uecaps_toolbox::{NR_BAND_OFFSET, outcome::Outcome, proto::*, report};
+
+#[test]
+fn direct_inspection_retains_read_and_filename_failures() {
+    let dir = support::fixture();
+    let observed =
+        report::inspect(&dir.path().join("TEST_1.binarypb"), report::Detail::Summary).unwrap();
+    assert_eq!(observed.outcome, Outcome::Rejected);
+    assert!(
+        observed.diagnostics.contains("[Read]"),
+        "{}",
+        observed.diagnostics
+    );
+    assert!(
+        observed
+            .diagnostics
+            .contains("expected one anchor, found 0"),
+        "{}",
+        observed.diagnostics
+    );
+    assert!(
+        observed
+            .body
+            .contains("Content unavailable; filename-only analysis")
+    );
+}
 use std::{ffi::OsStr, fs, process::Output};
 use support::{CLEAN, REJECTED, command, stderr, stdout};
 
@@ -150,6 +175,13 @@ fn folders_disclose_supported_unreadable_inputs_and_legend_errors() {
         },
     );
     for command in ["check", "matrix"] {
+        let observed = if command == "check" {
+            report::check_folder(dir.path())
+        } else {
+            report::matrix(dir.path())
+        }
+        .unwrap();
+        assert_eq!(observed.outcome, Outcome::Rejected);
         let out = run([OsStr::new(command), dir.path().as_os_str()]);
         let body = if command == "check" {
             stdout(&out)
@@ -157,6 +189,8 @@ fn folders_disclose_supported_unreadable_inputs_and_legend_errors() {
             stderr(&out)
         };
         assert_eq!(out.status.code(), Some(REJECTED), "{body}");
+        assert_eq!(observed.body, stdout(&out));
+        assert_eq!(observed.diagnostics, stderr(&out));
         for token in [
             "cannot read",
             "lte_400907661.binarypb",
@@ -365,6 +399,10 @@ fn matrix_retains_valid_collision_partners_in_numeric_order() {
     fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 1]).unwrap();
     for expected in ["66813533", "66813533 | 133627066"] {
         let out = matrix(dir.path());
+        let observed = report::matrix(dir.path()).unwrap();
+        assert_eq!(observed.outcome, Outcome::Rejected);
+        assert_eq!(observed.body, stdout(&out));
+        assert_eq!(observed.diagnostics, stderr(&out));
         assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
         let records = rows(&out.stdout);
         assert_eq!(records.len(), 1);
@@ -414,6 +452,10 @@ fn matrix_omits_each_invalid_candidate_and_keeps_valid_siblings() {
         };
         support::write_message(&dir.path().join(name), &bad);
         let out = matrix(dir.path());
+        let observed = report::matrix(dir.path()).unwrap();
+        assert_eq!(observed.outcome, Outcome::Rejected);
+        assert_eq!(observed.body, stdout(&out));
+        assert_eq!(observed.diagnostics, stderr(&out));
         assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
         let records = rows(&out.stdout);
         assert_eq!(records.len(), 1);
@@ -442,10 +484,25 @@ fn matrix_raw_eutra_and_distinct_carrier_tiers_are_valid() {
     let out = matrix(dir.path());
     assert_eq!(out.status.code(), Some(REJECTED));
     assert!(stderr(&out).contains("mixes tier"));
+    let observed = report::matrix(dir.path()).unwrap();
+    assert_eq!(observed.outcome, Outcome::Rejected);
+    assert_eq!(observed.body, stdout(&out));
+    assert_eq!(observed.diagnostics, stderr(&out));
     assert!(
         rows(&out.stdout)[0]
             .iter()
             .any(|v| v == "66813533 | 133627066")
+    );
+    // Invalid references exclude this candidate, but its known fingerprint still votes.
+    caps.combo_groups[0].combo[0].sub_blocks[0].band = NR_BAND_OFFSET + 78;
+    support::write_message(&dir.path().join("ALPHA_133627066.binarypb"), &caps);
+    let observed = report::matrix(dir.path()).unwrap();
+    assert_eq!(observed.outcome, Outcome::Rejected);
+    assert!(observed.diagnostics.contains("mixes tier") && observed.diagnostics.contains("DL[2]"));
+    let row = rows(observed.body.as_bytes()).remove(0);
+    assert_eq!(
+        row.iter().filter(|v| !v.is_empty()).collect::<Vec<_>>(),
+        ["ALPHA", "66813533"]
     );
 }
 #[test]
@@ -456,6 +513,10 @@ fn matrix_unsupported_only_is_header_and_information() {
     #[cfg(unix)]
     std::os::unix::fs::symlink("missing", dir.path().join("unmodeled.binarypb")).unwrap();
     let out = matrix(dir.path());
+    let observed = report::matrix(dir.path()).unwrap();
+    assert_eq!(observed.outcome, Outcome::Clean);
+    assert_eq!(observed.body, stdout(&out));
+    assert_eq!(observed.diagnostics, stderr(&out));
     assert_eq!(out.status.code(), Some(CLEAN), "{}", stderr(&out));
     assert!(rows(&out.stdout).is_empty());
     assert!(stderr(&out).contains("unsupported/not validated"));
@@ -572,6 +633,10 @@ fn check_unsupported_names_are_informational() {
         .unwrap();
     }
     let out = run([OsStr::new("check"), dir.path().as_os_str()]);
+    let observed = report::check_folder(dir.path()).unwrap();
+    assert_eq!(observed.outcome, Outcome::Clean);
+    assert_eq!(observed.body, stdout(&out));
+    assert_eq!(observed.diagnostics, stderr(&out));
     let body = stdout(&out);
     assert_eq!(out.status.code(), Some(CLEAN), "{body}");
     assert!(body.contains("unsupported/not validated"), "{body}");

@@ -1,10 +1,10 @@
 //! Deterministic evidence collection shared by folder reports.
 use super::{
-    input::{DecodeKind, LoadedInput, Payload, read_input},
-    validation::{Issue, IssueKind, carrier_context_issues, payload_issues},
+    input::{FileEvidence, load_validated},
+    validation::{Issue, IssueKind},
 };
 use crate::model::{
-    Parsed, Tier, fingerprint_info, matching_anchors, parse_name, tier_profile_count,
+    Tier, classify_filename, fingerprint_info, matching_anchors, tier_profile_count,
 };
 use anyhow::Context;
 use std::{
@@ -13,10 +13,7 @@ use std::{
 };
 
 pub(super) struct FolderFile {
-    pub path: PathBuf,
-    pub parsed: Parsed,
-    pub input: Option<LoadedInput>,
-    pub errors: Vec<Issue>,
+    pub evidence: FileEvidence,
     pub anchor: Option<u64>,
 }
 pub(super) struct Candidate {
@@ -46,7 +43,7 @@ impl FolderReport {
     pub fn errors(&self) -> impl Iterator<Item = &Issue> {
         self.files
             .iter()
-            .flat_map(|f| &f.errors)
+            .flat_map(|f| f.evidence.issues())
             .chain(&self.relational_errors)
     }
     pub fn has_errors(&self) -> bool {
@@ -76,95 +73,66 @@ pub(super) fn enumerate_binarypb(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     collect_binarypb(entries.map(|e| e.map(|e| e.path())))
         .with_context(|| format!("cannot finish enumerating {}", dir.display()))
 }
-fn load_file(path: PathBuf, parsed: Parsed, kind: DecodeKind) -> FolderFile {
-    let mut errors = Vec::new();
-    let input = match read_input(&path, kind) {
-        Ok(input) => {
-            errors.extend(payload_issues(&input));
-            Some(input)
-        }
-        Err(error) => {
-            errors.push(Issue::input(&path, error));
-            None
-        }
-    };
-    let anchor = if let Parsed::Carrier { number, .. } = &parsed {
-        let caps = input.as_ref().and_then(|i| match &i.payload {
-            Payload::Carrier(c) => Some(c),
-            _ => None,
-        });
-        errors.extend(carrier_context_issues(&path, *number, caps));
-        match matching_anchors(*number).as_slice() {
-            [p] => Some(p.anchor),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    FolderFile {
-        path,
-        parsed,
-        input,
-        errors,
-        anchor,
-    }
-}
 pub(super) fn scan_folder(dir: &Path) -> anyhow::Result<FolderReport> {
     let paths = enumerate_binarypb(dir)?;
     let mut report = FolderReport::default();
     for path in paths {
-        let parsed = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map_or(Parsed::Other, parse_name);
-        let kind = match parsed {
-            Parsed::Carrier { .. } => DecodeKind::Carrier,
-            Parsed::Lte(_) => DecodeKind::Lte,
-            Parsed::Mapping => DecodeKind::Legend,
-            Parsed::Other => {
-                report.unsupported.push(path);
-                continue;
-            }
-        };
-        report.files.push(load_file(path, parsed, kind));
-    }
-    collect_relations(&mut report);
-    Ok(report)
-}
-fn collect_relations(report: &mut FolderReport) {
-    let mut carriers: BTreeMap<&str, Vec<&FolderFile>> = BTreeMap::new();
-    let mut cells: BTreeMap<(&str, u64), Vec<PathBuf>> = BTreeMap::new();
-    for file in &report.files {
-        let Parsed::Carrier { carrier, number } = &file.parsed else {
+        let Some(evidence) = load_validated(&path, classify_filename(&path)) else {
+            report.unsupported.push(path);
             continue;
         };
-        carriers.entry(carrier).or_default().push(file);
+        let anchor = evidence.carrier().and_then(|(_, number, _)| {
+            match matching_anchors(number).as_slice() {
+                [profile] => Some(profile.anchor),
+                _ => None,
+            }
+        });
+        report.files.push(FolderFile { evidence, anchor });
+    }
+    report.relational_errors =
+        collect_candidates_and_collisions(&report.files, &mut report.candidates, &mut report.stubs);
+    report.relational_errors.extend(collect_coverage_and_tiers(
+        &report.files,
+        &report.candidates,
+        &mut report.coverage,
+    ));
+    report.legend_gaps = collect_legend_membership(&report.files);
+    Ok(report)
+}
+fn collect_candidates_and_collisions(
+    files: &[FolderFile],
+    candidates: &mut Vec<Candidate>,
+    stubs: &mut Vec<PathBuf>,
+) -> Vec<Issue> {
+    let mut errors = Vec::new();
+    let mut cells: BTreeMap<(&str, u64), Vec<PathBuf>> = BTreeMap::new();
+    for file in files {
+        let Some((carrier, number, observation)) = file.evidence.carrier() else {
+            continue;
+        };
         if let Some(anchor) = file.anchor {
             cells
                 .entry((carrier, anchor))
                 .or_default()
-                .push(file.path.clone());
-            if file.errors.is_empty() {
-                report.candidates.push(Candidate {
-                    path: file.path.clone(),
-                    carrier: carrier.clone(),
-                    number: *number,
+                .push(observation.path.clone());
+            if observation.issues.is_empty() {
+                candidates.push(Candidate {
+                    path: observation.path.clone(),
+                    carrier: carrier.into(),
+                    number,
                     anchor,
                 });
-                if let Some(LoadedInput {
-                    payload: Payload::Carrier(caps),
-                    ..
-                }) = &file.input
+                if let Some(caps) = &observation.value
                     && caps.combo_groups.is_empty()
                 {
-                    report.stubs.push(file.path.clone());
+                    stubs.push(observation.path.clone());
                 }
             }
         }
     }
     for ((carrier, anchor), paths) in cells {
         if paths.len() > 1 {
-            report.relational_errors.push(Issue {
+            errors.push(Issue {
                 kind: IssueKind::Collision,
                 message: format!(
                     "selector collision: {carrier} has {} files for anchor {anchor}",
@@ -174,16 +142,29 @@ fn collect_relations(report: &mut FolderReport) {
             });
         }
     }
-    report.candidates.sort_by(|a, b| {
+    candidates.sort_by(|a, b| {
         (&a.carrier, a.anchor, a.number, &a.path).cmp(&(&b.carrier, b.anchor, b.number, &b.path))
     });
+    errors
+}
+
+fn collect_coverage_and_tiers(
+    files: &[FolderFile],
+    candidates: &[Candidate],
+    coverage: &mut Vec<CarrierCoverage>,
+) -> Vec<Issue> {
+    let mut errors = Vec::new();
+    let mut carriers: BTreeMap<&str, Vec<&FolderFile>> = BTreeMap::new();
+    for file in files {
+        if let Some((carrier, _, _)) = file.evidence.carrier() {
+            carriers.entry(carrier).or_default().push(file);
+        }
+    }
     for (carrier, files) in &carriers {
         let (mut main, mut alt) = (0, 0);
         for file in files {
-            if let Some(LoadedInput {
-                payload: Payload::Carrier(caps),
-                ..
-            }) = &file.input
+            if let Some((_, _, observation)) = file.evidence.carrier()
+                && let Some(caps) = &observation.value
                 && let Some((_, tier)) = fingerprint_info(caps.version)
             {
                 match tier {
@@ -193,9 +174,9 @@ fn collect_relations(report: &mut FolderReport) {
             }
         }
         if main > 0 && alt > 0 {
-            report.relational_errors.push(Issue {
+            errors.push(Issue {
                 kind: IssueKind::MixedTier,
-                paths: files.iter().map(|f| f.path.clone()).collect(),
+                paths: files.iter().map(|f| f.evidence.path().to_owned()).collect(),
                 message: format!("{carrier} mixes tier fingerprints (alt={alt}, main={main})"),
             });
         }
@@ -204,43 +185,45 @@ fn collect_relations(report: &mut FolderReport) {
             (m, a) if a > m => Some(Tier::Alt),
             _ => Some(Tier::Main),
         };
-        let seen = report
-            .candidates
+        let seen = candidates
             .iter()
             .filter(|c| c.carrier == *carrier)
             .map(|c| c.anchor)
             .collect::<BTreeSet<_>>()
             .len();
-        report.coverage.push(CarrierCoverage {
+        coverage.push(CarrierCoverage {
             carrier: (*carrier).into(),
             seen,
             expected: tier_profile_count(tier.unwrap_or(Tier::Main)),
             tier,
         });
     }
-    let legend = report
-        .files
-        .iter()
-        .find(|f| matches!(f.parsed, Parsed::Mapping));
+    errors
+}
+
+fn collect_legend_membership(files: &[FolderFile]) -> Option<Vec<String>> {
+    let legend = files.iter().find_map(|f| f.evidence.legend());
     let names = match legend {
-        Some(file) if !file.errors.is_empty() => return,
-        Some(FolderFile {
-            input:
-                Some(LoadedInput {
-                    payload: Payload::Legend(map),
-                    ..
-                }),
-            ..
-        }) => map.carriers.iter().map(|c| c.name.as_str()).collect(),
+        Some(observation) if !observation.issues.is_empty() => return None,
+        Some(observation) => observation
+            .value
+            .as_ref()?
+            .carriers
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect(),
         _ => BTreeSet::new(),
     };
-    report.legend_gaps = Some(
-        carriers
-            .keys()
-            .filter(|c| !names.contains(**c))
-            .map(|c| (*c).to_owned())
+    Some(
+        files
+            .iter()
+            .filter_map(|f| f.evidence.carrier().map(|(carrier, _, _)| carrier))
+            .filter(|carrier| !names.contains(carrier))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(str::to_owned)
             .collect(),
-    );
+    )
 }
 
 #[cfg(test)]

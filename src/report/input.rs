@@ -1,6 +1,7 @@
 //! Strict, single-read inputs. A missing optional legend is not a failed requested read.
+use super::validation::{Issue, carrier_context_issues, carrier_reference_issues, legend_issues};
 use crate::{
-    model::MAPPING_BASENAME,
+    model::{FileKind, MAPPING_BASENAME},
     proto::{LteCaps, PlmnMap, UeCaps},
     wire,
 };
@@ -9,22 +10,106 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Copy)]
-pub(super) enum DecodeKind {
-    Carrier,
-    Lte,
-    Legend,
+#[derive(Debug)]
+pub(super) enum FileEvidence {
+    Carrier {
+        carrier: String,
+        number: u64,
+        observation: Observation<UeCaps>,
+    },
+    Lte {
+        id: u64,
+        observation: Observation<LteCaps>,
+    },
+    Legend(Observation<PlmnMap>),
 }
 #[derive(Debug)]
-pub(super) enum Payload {
-    Carrier(UeCaps),
-    Lte(LteCaps),
-    Legend(PlmnMap),
-}
-#[derive(Debug)]
-pub(super) struct LoadedInput {
+pub(super) struct Observation<T> {
     pub path: PathBuf,
-    pub payload: Payload,
+    pub value: Option<T>,
+    pub issues: Vec<Issue>,
+}
+
+impl<T> Observation<T> {
+    fn from_result(path: &Path, result: Result<T, InputError>) -> Self {
+        let (value, issues) = match result {
+            Ok(value) => (Some(value), Vec::new()),
+            Err(error) => (None, vec![Issue::input(path, error)]),
+        };
+        Self {
+            path: path.into(),
+            value,
+            issues,
+        }
+    }
+}
+
+impl FileEvidence {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Carrier { observation, .. } => &observation.path,
+            Self::Lte { observation, .. } => &observation.path,
+            Self::Legend(observation) => &observation.path,
+        }
+    }
+    pub fn issues(&self) -> &[Issue] {
+        match self {
+            Self::Carrier { observation, .. } => &observation.issues,
+            Self::Lte { observation, .. } => &observation.issues,
+            Self::Legend(observation) => &observation.issues,
+        }
+    }
+    pub fn carrier(&self) -> Option<(&str, u64, &Observation<UeCaps>)> {
+        match self {
+            Self::Carrier {
+                carrier,
+                number,
+                observation,
+            } => Some((carrier, *number, observation)),
+            _ => None,
+        }
+    }
+    pub fn legend(&self) -> Option<&Observation<PlmnMap>> {
+        match self {
+            Self::Legend(observation) => Some(observation),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn load_validated(path: &Path, kind: FileKind<'_>) -> Option<FileEvidence> {
+    Some(match kind {
+        FileKind::Carrier { carrier, number } => {
+            let mut observation = Observation::from_result(path, read_carrier(path));
+            if let Some(caps) = &observation.value {
+                observation
+                    .issues
+                    .extend(carrier_reference_issues(path, caps));
+            }
+            observation.issues.extend(carrier_context_issues(
+                path,
+                number,
+                observation.value.as_ref(),
+            ));
+            FileEvidence::Carrier {
+                carrier: carrier.into(),
+                number,
+                observation,
+            }
+        }
+        FileKind::Lte(id) => FileEvidence::Lte {
+            id,
+            observation: Observation::from_result(path, read_lte(path)),
+        },
+        FileKind::Mapping => {
+            let mut observation = Observation::from_result(path, read_legend(path));
+            if let Some(map) = &observation.value {
+                observation.issues.extend(legend_issues(path, map));
+            }
+            FileEvidence::Legend(observation)
+        }
+        FileKind::Other => return None,
+    })
 }
 #[derive(Debug, thiserror::Error)]
 pub(super) enum InputError {
@@ -39,30 +124,40 @@ pub(super) enum InputError {
         source: anyhow::Error,
     },
 }
-pub(super) fn read_input(path: &Path, kind: DecodeKind) -> Result<LoadedInput, InputError> {
-    let data = fs::read(path).map_err(|source| InputError::Read {
+fn read_bytes(path: &Path) -> Result<Vec<u8>, InputError> {
+    fs::read(path).map_err(|source| InputError::Read {
         path: path.into(),
         source,
-    })?;
-    let name = path.to_string_lossy();
-    let payload = match kind {
-        DecodeKind::Carrier => wire::decode_uecaps(&data, &name).map(Payload::Carrier),
-        DecodeKind::Lte => wire::decode_lte_caps(&data, &name).map(Payload::Lte),
-        DecodeKind::Legend => wire::decode_plmn_map(&data, &name).map(Payload::Legend),
-    }
-    .map_err(|source| InputError::Wire {
-        path: path.into(),
-        source,
-    })?;
-    Ok(LoadedInput {
-        path: path.into(),
-        payload,
     })
 }
-pub(super) fn read_optional_legend(dir: &Path) -> Result<Option<LoadedInput>, InputError> {
+pub(super) fn read_carrier(path: &Path) -> Result<UeCaps, InputError> {
+    wire::decode_uecaps(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
+        InputError::Wire {
+            path: path.into(),
+            source,
+        }
+    })
+}
+pub(super) fn read_lte(path: &Path) -> Result<LteCaps, InputError> {
+    wire::decode_lte_caps(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
+        InputError::Wire {
+            path: path.into(),
+            source,
+        }
+    })
+}
+pub(super) fn read_legend(path: &Path) -> Result<PlmnMap, InputError> {
+    wire::decode_plmn_map(&read_bytes(path)?, &path.to_string_lossy()).map_err(|source| {
+        InputError::Wire {
+            path: path.into(),
+            source,
+        }
+    })
+}
+pub(super) fn read_optional_legend(dir: &Path) -> Result<Option<PlmnMap>, InputError> {
     let path = dir.join(MAPPING_BASENAME);
     match fs::symlink_metadata(&path) {
-        Ok(_) => read_input(&path, DecodeKind::Legend).map(Some),
+        Ok(_) => read_legend(&path).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(InputError::Read { path, source }),
     }
@@ -85,7 +180,7 @@ mod tests {
         bytes.extend([0x78, 0x01]);
         fs::write(&path, &bytes).unwrap();
         assert!(UeCaps::decode(&bytes[..]).is_ok());
-        let error = read_input(&path, DecodeKind::Carrier).unwrap_err();
+        let error = read_carrier(&path).unwrap_err();
         assert!(matches!(error, InputError::Wire { .. }));
         assert!(error.to_string().contains("field #15"));
         assert!(error.to_string().contains("VZW_311480.binarypb"));
@@ -93,7 +188,7 @@ mod tests {
     #[test]
     fn distinguishes_an_io_failure_from_a_decode_failure() {
         let dir = tempfile::tempdir().unwrap();
-        let err = read_input(&dir.path().join("absent.binarypb"), DecodeKind::Carrier).unwrap_err();
+        let err = read_carrier(&dir.path().join("absent.binarypb")).unwrap_err();
         assert!(matches!(err, InputError::Read { .. }));
         assert!(err.to_string().contains("cannot read"));
         assert!(!err.to_string().contains("field #"));
@@ -108,10 +203,7 @@ mod tests {
             ..Default::default()
         };
         fs::write(&path, caps.encode_to_vec()).unwrap();
-        let input = read_input(&path, DecodeKind::Carrier).unwrap();
-        let Payload::Carrier(decoded) = input.payload else {
-            panic!("wrong payload")
-        };
+        let decoded = read_carrier(&path).unwrap();
         assert_eq!(decoded, caps);
     }
     #[test]
@@ -126,10 +218,7 @@ mod tests {
             }],
         };
         fs::write(&path, map.encode_to_vec()).unwrap();
-        let input = read_optional_legend(dir.path()).unwrap().unwrap();
-        let Payload::Legend(decoded) = input.payload else {
-            panic!("wrong payload")
-        };
+        let decoded = read_optional_legend(dir.path()).unwrap().unwrap();
         assert_eq!(decoded, map);
         fs::write(&path, [0x78, 0x01]).unwrap();
         let error = read_optional_legend(dir.path()).unwrap_err();
