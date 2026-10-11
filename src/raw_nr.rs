@@ -1,13 +1,56 @@
 //! Protobuf-shaped NR combo payloads shared by the compiler's ingest and generation paths.
 
 use crate::{
+    formatting::Optional,
     proto::{
         Combo as ProtoCombo, ComboHeader, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr,
         SubBlock as ProtoSubBlock,
     },
-    report::combos::{NR_BAND_OFFSET, resolve_all},
 };
-use compact_str::{CompactString, format_compact};
+use std::fmt::{self, Display, Formatter};
+
+pub const NR_BAND_OFFSET: i32 = 10_000;
+
+/// Compiler-facing first-byte resolution; zero/absent/out-of-range remains unresolved.
+pub(crate) fn feature_index(ids: Option<&[u8]>, len: usize) -> Option<usize> {
+    let k = *ids?.first()? as usize;
+    (1..=len).contains(&k).then(|| k - 1)
+}
+
+/// Compiler-facing all-or-nothing resolution. Report validation has a separate classifier.
+pub(crate) fn resolve_all<T: Copy>(ids: Option<&[u8]>, list: &[T]) -> Option<Vec<T>> {
+    let ids = ids?;
+    if ids.is_empty() {
+        return None;
+    }
+    ids.iter()
+        .map(|&b| {
+            let k = b as usize;
+            (1..=list.len()).contains(&k).then(|| list[k - 1])
+        })
+        .collect()
+}
+
+pub(crate) fn bw_class_letter(class: u8) -> Option<char> {
+    (1..=26)
+        .contains(&class)
+        .then(|| char::from(b'A' + class - 1))
+}
+
+pub(crate) fn bw_class_index(letter: char) -> Option<u8> {
+    letter.is_ascii_uppercase().then(|| letter as u8 - b'A' + 1)
+}
+
+pub(crate) struct BandLabel {
+    kind: SubBlockKind,
+    band: i32,
+}
+
+impl Display for BandLabel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.kind.prefix(), self.band)
+    }
+}
 
 /// Per-component radio kind for a raw NR combo payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,17 +83,16 @@ impl SubBlockKind {
     }
 
     /// The human band label for a plain band number of this kind: `n<band>` (NR) or `B<band>`
-    /// (E-UTRA). The single source of the `n`/`B` prefix convention for every caller that
-    /// already knows a component's kind; [`render_component`](crate::report::combos::render_component)
-    /// *infers* the kind from a raw band instead, so it is only for callers that genuinely do
-    /// not know the kind. Being statically single-kind is a reason to call *this*, not to skip
-    /// it: `report::lte` used to format `B` inline on the grounds that no NR component reaches
-    /// it, which was true and beside the point — an out-of-*range* E-UTRA band (>= the offset)
-    /// does reach it, and inference renders that as NR.
-    pub(crate) fn band_label(self, band: i32) -> CompactString {
+    /// (E-UTRA). Callers with a known kind must retain it even for out-of-range LTE bands;
+    /// only raw protobuf band values should pass through `split_raw_band`.
+    pub(crate) fn band_label(self, band: i32) -> BandLabel {
+        BandLabel { kind: self, band }
+    }
+
+    pub(crate) const fn prefix(self) -> &'static str {
         match self {
-            Self::Nr => format_compact!("n{band}"),
-            Self::Lte => format_compact!("B{band}"),
+            Self::Nr => "n",
+            Self::Lte => "B",
         }
     }
 }
@@ -424,7 +466,7 @@ impl RawNrSubBlock {
                 stored.unwrap_or(0) == derived,
                 "NR component {} stored {direction} feature index {} != derived {derived}",
                 self.band_label(),
-                stored.map_or_else(|| "absent".into(), |value| value.to_string()),
+                Optional(stored),
             );
         }
         Ok(())
@@ -440,7 +482,7 @@ impl RawNrSubBlock {
         derive_nr_ul_index(self.ul.first().map(|fs| fs.max_mimo_cb.unwrap_or(0)))
     }
 
-    fn band_label(&self) -> CompactString {
+    fn band_label(&self) -> BandLabel {
         SubBlockKind::Nr.band_label(i32::from(self.band))
     }
 }
@@ -599,7 +641,7 @@ impl RawSubBlock {
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.band() > 0, "component band must be positive");
         anyhow::ensure!(
-            i32::from(self.band()) < NR_BAND_OFFSET,
+            SubBlockKind::split_raw_band(i32::from(self.band())).0 == SubBlockKind::Lte,
             "component band must be the plain band number, not raw protobuf encoding"
         );
         self.validate_cc_count(Direction::Dl)?;
@@ -648,7 +690,7 @@ impl RawSubBlock {
                  is {}; regeneration derives per-CC presence from the class, so this data would \
                  be dropped",
                 self.band_label(),
-                class.map_or_else(|| "absent".to_string(), |c| c.to_string()),
+                Optional(class),
             ),
             (None, Some(bw_class)) => anyhow::bail!(
                 "component {} has {lower}_bw_class {bw_class} but carries no per-CC {direction} \
@@ -674,7 +716,7 @@ impl RawSubBlock {
         }
     }
 
-    pub(crate) fn band_label(&self) -> CompactString {
+    pub(crate) fn band_label(&self) -> BandLabel {
         self.kind().band_label(i32::from(self.band()))
     }
 }
@@ -897,6 +939,26 @@ impl From<&RawNrPayload> for RawNrPayloadKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_all_keeps_every_cc_or_none() {
+        assert_eq!(
+            resolve_all(Some(&[1, 3]), &[10, 20, 30]),
+            Some(vec![10, 30])
+        );
+        for ids in [None, Some(&[][..]), Some(&[0][..]), Some(&[2, 99][..])] {
+            assert_eq!(resolve_all(ids, &[10, 20, 30]), None);
+        }
+    }
+
+    #[test]
+    fn linkage_first_byte_one_based() {
+        assert_eq!(feature_index(Some(&[1]), 18), Some(0));
+        assert_eq!(feature_index(Some(&[17]), 18), Some(16));
+        for ids in [None, Some(&[][..]), Some(&[0][..]), Some(&[19][..])] {
+            assert_eq!(feature_index(ids, 18), None);
+        }
+    }
     use crate::proto::{
         ComboGroup, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps,
     };
@@ -1156,7 +1218,7 @@ mod tests {
             payload
                 .sub_blocks
                 .iter()
-                .find(|component| component.band_label() == label)
+                .find(|component| component.band_label().to_string() == label)
                 .unwrap_or_else(|| panic!("component {label} present"))
         };
 

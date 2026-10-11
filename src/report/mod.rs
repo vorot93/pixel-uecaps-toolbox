@@ -1,6 +1,6 @@
 //! Reports facade: retained inputs, observation-preserving comparison, shared folder validation.
 mod check;
-pub(crate) mod combos;
+mod combos;
 mod compare;
 mod detail;
 mod folder;

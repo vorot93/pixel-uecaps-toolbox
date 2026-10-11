@@ -4,7 +4,7 @@ use super::{
     selection::{LteDomain, LteRelation, SelectionRect, Sku},
 };
 use crate::{
-    model::lte_model_codes,
+    model::lte_basename,
     proto::{LteCaps, LteCombo, LteComponent},
     wire::decode_lte_caps,
 };
@@ -100,7 +100,7 @@ struct LteScan {
 fn scan_lte_files(files_by_id: &BTreeMap<u64, DecodedLteFile>) -> anyhow::Result<LteScan> {
     let mut scan = LteScan::default();
     for (id, file) in files_by_id {
-        let basename = format!("lte_{id}.binarypb");
+        let basename = lte_basename(*id);
         let decoded = decode_lte_caps(&file.original, &basename)?;
         ensure!(
             decoded == file.caps,
@@ -115,7 +115,7 @@ fn scan_lte_files(files_by_id: &BTreeMap<u64, DecodedLteFile>) -> anyhow::Result
             },
         );
 
-        let skus = skus_for_file(*id);
+        let skus = Sku::for_lte_file(*id);
         scan.domain_members.extend(skus.iter().cloned());
         let mut seen = BTreeSet::new();
         let mut sequence = Vec::with_capacity(file.caps.combos.len());
@@ -187,7 +187,7 @@ fn verify_lte_ingest(
     validated: &ValidatedLte,
 ) -> anyhow::Result<()> {
     for (id, file) in files_by_id {
-        for sku in skus_for_file(*id) {
+        for sku in Sku::for_lte_file(*id) {
             let generated = generate_lte_file(validated, *id, &sku)
                 .with_context(|| format!("self-verifying lte_{id}.binarypb for `{}`", sku))?;
             ensure!(
@@ -265,7 +265,7 @@ pub(crate) fn generate_lte_file(
         combos,
         bitmask: metadata.bitmask,
     };
-    let basename = format!("lte_{id}.binarypb");
+    let basename = lte_basename(id);
     let bytes = caps.encode_to_vec();
     let decoded = decode_lte_caps(&bytes, &basename)?;
     ensure!(
@@ -279,20 +279,8 @@ pub(crate) fn generate_lte_file(
     Ok(GeneratedFile { basename, bytes })
 }
 
-fn skus_for_file(id: u64) -> BTreeSet<Sku> {
-    let models = lte_model_codes(id);
-    if models.is_empty() {
-        BTreeSet::from([Sku::Lte(id)])
-    } else {
-        models
-            .into_iter()
-            .map(|code| Sku::Model(code.into()))
-            .collect()
-    }
-}
-
 fn validate_target(id: u64, sku: &Sku) -> anyhow::Result<()> {
-    let eligible = skus_for_file(id);
+    let eligible = Sku::for_lte_file(id);
     ensure!(
         eligible.contains(sku),
         "SKU token `{}` does not select LTE file ID {id}",

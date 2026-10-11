@@ -1,5 +1,6 @@
 //! Strict, single-read inputs. A missing optional legend is not a failed requested read.
 use crate::{
+    model::MAPPING_BASENAME,
     proto::{LteCaps, PlmnMap, UeCaps},
     wire,
 };
@@ -59,7 +60,7 @@ pub(super) fn read_input(path: &Path, kind: DecodeKind) -> Result<LoadedInput, I
     })
 }
 pub(super) fn read_optional_legend(dir: &Path) -> Result<Option<LoadedInput>, InputError> {
-    let path = dir.join("ap_plmn_mapping.binarypb");
+    let path = dir.join(MAPPING_BASENAME);
     match fs::symlink_metadata(&path) {
         Ok(_) => read_input(&path, DecodeKind::Legend).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

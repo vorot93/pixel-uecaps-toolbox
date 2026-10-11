@@ -12,10 +12,12 @@ use crate::{
     },
     factor::gcd,
     mapping::{MappingRoot, Plmn, map_to_root, root_to_map},
-    model::{PROFILES, Profile, fp_info, matching_anchors, profile_model_codes},
+    model::{Profile, fingerprint_info, matching_anchors, profile, profile_model_codes},
     proto::{Combo, ComboGroup, ComboHeader, SubBlock as ProtoSubBlock, UeCaps},
-    raw_nr::{Direction, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count},
-    report::combos::{NR_BAND_OFFSET, feature_index},
+    raw_nr::{
+        Direction, NR_BAND_OFFSET, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count,
+        feature_index,
+    },
 };
 use anyhow::{Context, ensure};
 use compact_str::CompactString;
@@ -86,10 +88,7 @@ fn generate_profiled_files(
     anchor: u64,
     sku: &Sku,
 ) -> anyhow::Result<Vec<GeneratedFile>> {
-    let profile = PROFILES
-        .iter()
-        .find(|profile| profile.anchor == anchor)
-        .with_context(|| format!("unknown NR profile anchor {anchor}"))?;
+    let profile = profile(anchor).with_context(|| format!("unknown NR profile anchor {anchor}"))?;
     validate_profile_target(anchor, sku)?;
 
     let mut files = Vec::new();
@@ -535,7 +534,7 @@ fn verify_fingerprint_family(
     carrier: &str,
     file: &ClassifiedProfiledFile,
 ) -> anyhow::Result<CarrierTier> {
-    let Some((fingerprint_family, tier)) = fp_info(file.caps.version) else {
+    let Some((fingerprint_family, tier)) = fingerprint_info(file.caps.version) else {
         anyhow::bail!(
             "profiled carrier `{carrier}` anchor {} has unknown fingerprint {}",
             file.profile.anchor,
@@ -584,14 +583,7 @@ fn ingest_profile(
     profile: &Profile,
     caps: &UeCaps,
 ) -> anyhow::Result<()> {
-    let skus = profile_model_codes(profile.anchor);
-    let skus: Vec<Sku> = if skus.is_empty() {
-        vec![Sku::Prime(profile.anchor)]
-    } else {
-        skus.into_iter()
-            .map(|code| Sku::Model(code.into()))
-            .collect()
-    };
+    let skus = Sku::for_nr_anchor(profile.anchor);
     for sku in &skus {
         ingest.domain_members.insert((carrier.into(), sku.clone()));
     }
@@ -803,8 +795,7 @@ fn validate_raw_bands(caps: &UeCaps, carrier: &str) -> anyhow::Result<()> {
             for (component_index, component) in combo.sub_blocks.iter().enumerate() {
                 let band = component.band;
                 ensure!(
-                    (1..NR_BAND_OFFSET).contains(&band)
-                        || ((NR_BAND_OFFSET + 1)..(2 * NR_BAND_OFFSET)).contains(&band),
+                    (1..NR_BAND_OFFSET).contains(&SubBlockKind::split_raw_band(band).1),
                     "{carrier} group {} combo {} component {} has invalid raw band {band}",
                     group_index + 1,
                     combo_index + 1,

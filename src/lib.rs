@@ -4,6 +4,7 @@
 pub(crate) mod atomic;
 pub mod compiler;
 pub(crate) mod factor;
+mod formatting;
 pub(crate) mod kdl_support;
 pub(crate) mod magisk;
 pub(crate) mod mapping;
@@ -25,7 +26,7 @@ pub mod proto;
 /// in `tests/`, which previously kept a hand-copied literal that could drift from the real
 /// constant with no compile error. **Not a stable API**, same as [`proto`].
 #[doc(hidden)]
-pub use report::combos::NR_BAND_OFFSET;
+pub use raw_nr::NR_BAND_OFFSET;
 pub(crate) mod raw_nr;
 pub mod report;
 pub(crate) mod wire;

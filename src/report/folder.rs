@@ -3,7 +3,9 @@ use super::{
     input::{DecodeKind, LoadedInput, Payload, read_input},
     validation::{Issue, IssueKind, carrier_context_issues, payload_issues},
 };
-use crate::model::{Parsed, Tier, fp_info, matching_anchors, parse_name, tier_profile_count};
+use crate::model::{
+    Parsed, Tier, fingerprint_info, matching_anchors, parse_name, tier_profile_count,
+};
 use anyhow::Context;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -182,7 +184,7 @@ fn collect_relations(report: &mut FolderReport) {
                 payload: Payload::Carrier(caps),
                 ..
             }) = &file.input
-                && let Some((_, tier)) = fp_info(caps.version)
+                && let Some((_, tier)) = fingerprint_info(caps.version)
             {
                 match tier {
                     Tier::Main => main += 1,

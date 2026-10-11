@@ -10,14 +10,15 @@ use crate::{
     atomic::write_bytes_atomic,
     magisk::{ModuleEntry, replacement_module, validate_module_basename},
     mapping::encode_root_verified,
-    model::{CapabilityLayout, PhoneModel, known_model_codes, phone_model},
+    model::{
+        CapabilityLayout, MAPPING_BASENAME, PhoneModel, known_model_codes, lte_basename,
+        phone_model,
+    },
     outcome::Outcome,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
 use anyhow::{Context, ensure};
 use std::{collections::BTreeSet, fs, path::Path, str};
-
-const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
 /// Provision one complete model-specific uecapconfig replacement module, persisted atomically.
 pub fn provision(
@@ -119,7 +120,7 @@ pub(crate) fn generate_files(
             (
                 files,
                 VerificationLayout::Profiled {
-                    lte_basename: format!("lte_{lte_id}.binarypb"),
+                    lte_basename: lte_basename(lte_id),
                 },
             )
         }
@@ -132,7 +133,7 @@ pub(crate) fn generate_files(
 
 fn generate_mapping_file(nr: &ValidatedNr) -> anyhow::Result<GeneratedFile> {
     let root = legend_root(&nr.carriers);
-    let bytes = encode_root_verified(&root, "generated ap_plmn_mapping.binarypb")?;
+    let bytes = encode_root_verified(&root, &format!("generated {MAPPING_BASENAME}"))?;
     Ok(GeneratedFile {
         basename: MAPPING_BASENAME.into(),
         bytes,

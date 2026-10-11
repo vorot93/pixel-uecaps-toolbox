@@ -5,7 +5,7 @@ use super::{
     identity::{CombinationKey, ShapeKey, project_combinations, shape},
 };
 use crate::{
-    model::{Parsed, family_short, fp_info, identify_profile, parse_name, tier_short},
+    model::{Parsed, fingerprint_info, identify_profile, parse_name},
     outcome::Outcome,
 };
 use std::{
@@ -61,8 +61,8 @@ fn load(path: &Path) -> anyhow::Result<(Index, String)> {
         _ => None,
     }
     .unwrap_or_else(|| "?".into());
-    let fingerprint = fp_info(caps.version)
-        .map(|(f, t)| format!("{}/{}", tier_short(t), family_short(f)))
+    let fingerprint = fingerprint_info(caps.version)
+        .map(|(f, t)| format!("{}/{}", t.as_str(), f.short()))
         .unwrap_or_else(|| "unknown".into());
     Ok((
         index,

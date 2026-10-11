@@ -2,13 +2,13 @@
 
 use super::{
     combos::{bw_letter, render_known_component},
-    detail::{Detail, optional},
+    detail::Detail,
 };
 use crate::{
+    formatting::Optional,
     proto::{LteCaps, LteCombo, LteComponent},
-    raw_nr::SubBlockKind,
+    raw_nr::{BandLabel, SubBlockKind},
 };
-use compact_str::CompactString;
 use std::fmt::Write;
 
 /// A Shannon class/MIMO value -> (carrier class index `A=1..F=6`, MIMO branches 2/4).
@@ -35,7 +35,7 @@ const fn lte_class(value: i32) -> (Option<i32>, i32) {
 /// one at or above `NR_BAND_OFFSET`, which is an out-of-range E-UTRA band rather than an NR one.
 /// Going through the kind-known method keeps that true everywhere here; the inferring free
 /// The raw-band `render_component` helper would render such a band as NR.
-fn eutra(band: i32) -> CompactString {
+fn eutra(band: i32) -> BandLabel {
     SubBlockKind::Lte.band_label(band)
 }
 
@@ -133,15 +133,15 @@ pub(crate) fn render_lte_combos(caps: &LteCaps, detail: Detail) -> String {
                     eutra(c.band),
                     cc_detail(c),
                     c.dl_bw_class_mimo,
-                    optional(c.ul_bw_class_mimo)
+                    Optional(c.ul_bw_class_mimo)
                 );
             }
             let _ = writeln!(
                 out,
                 "       bcs={} unknown1={} unknown2={}",
-                optional(combo.bcs),
-                optional(combo.unknown1),
-                optional(combo.unknown2)
+                Optional(combo.bcs),
+                Optional(combo.unknown1),
+                Optional(combo.unknown2)
             );
         }
     }

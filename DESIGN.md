@@ -67,7 +67,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/outcome.rs` | The `Outcome` enum (`Clean`/`Findings`/`Rejected`) that replaced ad hoc `i32` exit codes crate-wide; `main` converts it to `ExitCode` exactly once. |
 | `src/proto.rs` | The protobuf message types, hand-written with `#[derive(prost::Message)]`; each field's `#[prost(...)]` attribute models the proto2-origin wire format directly. |
 | `src/factor.rs` | Integer helpers over `num-prime` for the trailing filename numbers: `gcd`, `is_prime`, `factorize`, `format_factors`. |
-| `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fp_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
+| `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fingerprint_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
 | `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's source-document (de)serializers. |
@@ -1011,7 +1011,7 @@ be stored:
   load-bearing. Do not introduce a parallel tuple key or handwritten comparator.
 
   Separately, decompose resolves a component's whole per-CC selector-byte array
-  **all-or-nothing** (`resolve_all`, `src/report/combos.rs`): it resolves only when
+  **all-or-nothing** (`resolve_all`, `src/raw_nr.rs`): it resolves only when
   *every* byte in the array is nonzero and lies in `1..=list.len()`; if any single byte
   fails, the entire raw array stays unresolved (`[0, 2]` and `[2, 99]` both fail to
   resolve). `resolve_all` itself only reports that; the decompose boundary that consumes it
@@ -1217,7 +1217,7 @@ features are alternatives, and a flat struct let all three sit side by side:
   existed only to feed it. Both checks and both accessors are gone.
 
 - **A `SubBlock` is one band+CA-bandwidth-class entry, not one component carrier** — it contains `cc_count(kind, bw_class)` physical CCs (e.g. band 78 class C = `n78C` = 2 CCs; this is how a Pixel expresses `7C-3A`, not just `7A-3A`). `cc_count(kind, bw_class)` (`src/raw_nr.rs`) is a fail-closed lookup over the Samsung Shannon `bw_class` enumeration; NR and LTE tables (`NR_CC_COUNTS`/`LTE_CC_COUNTS`) are distinct and non-monotonic relative to each other (NR class 2/3/7 all count 2; LTE class 2/3 both count 2 — the class carries strictly more information than the CC count, which is why `bw_class` is never derived from it), and an unknown class errors rather than mis-deriving a length (the tables are corpus-validated with zero exceptions across all **3.46M sub-blocks**). `RawSubBlock::validate` fails closed (checked on both source parse and regenerated output) if a stored per-CC list's length doesn't equal `cc_count` for its `bw_class`, and separately if the sub-block's CCs would derive disagreeing `dl_feature_index`/`ul_feature_index` values (physically you cannot mix FR1+FR2 or mixed MIMO-presence within one band+class entry).
-- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/report/combos.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats the source document), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
+- **Feature-set indirection is per-CC, resolved all-or-nothing.** Per-CC capabilities are stored once in the two top-level `*_feature_per_cc_list`s; each sub-block carries one selector byte per CC (in CC order) pointing at a list entry (**1-based**: byte `k ≥ 1` → list index `k − 1`; `0`/absent/out-of-range → none). `resolve_all` (`src/raw_nr.rs`) resolves a whole direction's array **iff every byte** in it is in `1..=list.len()`; any single out-of-range byte keeps the **entire raw array** unresolved (`[2, 99]` stays raw rather than resolving byte 2 and dropping 99). A first-byte-only rule here is a real data-loss bug — corpus-verified on **13.8% of multi-CC NR DL sub-blocks (13,927 of 100,904)**, where CCs reference *different* feature records (first seen as ATT's `n48` class B → `dl_ids=[22, 23]`); NR UL multi-CC sub-blocks (46,608 of them) were **100% uniform** in the corpus, so the bug was DL-only in practice. Two alternative data models were rejected: **inline per-CC feature sets** (abandons the shared catalog and bloats the source document), and **keeping raw per-file `dl-cc-ids` for NR** (reintroduces the per-file feature lists the decompose pipeline deliberately eliminates) — the per-CC 1-based reference into the global catalog was chosen instead.
 - **`dl/ul_feature_index` (fields 4/5) is a MIMO feature index, NOT opaque, used by BOTH kinds.** LTE: the `parseLteFeatureIndex` MIMO × CC-count encoding (<https://raw.githubusercontent.com/NXij/pixel-pb/refs/heads/main/index.html>), kept explicit — carried as the single index inside a direction argument on a `B` sub-block (E-UTRA-only — an `n` node
 carries no feature index in source at all), with a UL index of 0 omitted per the omit-when-0
 rule below. NR: a value fully **derived** from the per-CC feature set (corpus-verified,
@@ -1343,7 +1343,7 @@ nibbles `0xA–0xF` render as `*` (wildcard). Exact vectors:
 
 ### Fingerprint & SKU math
 
-`version` (field 1) is the in-file capability **fingerprint**; `fp_info` maps it to
+`version` (field 1) is the in-file capability **fingerprint**; `fingerprint_info` maps it to
 `(Family, Tier)`:
 
 | Fingerprint | Family | Tier |
@@ -1455,7 +1455,7 @@ model-code, NR-anchor, and LTE-ID association described in the
 - **Legend** — `ap_plmn_mapping.binarypb`, the PLMN→carrier map (one per dump).
 - **SKU profile / anchor prime** — each SKU profile has a unique anchor prime; a carrier
   NR file belongs to it iff its `NUMBER` is divisible by that anchor.
-- **Fingerprint / version** — the field-1 value; `fp_info` maps it to `(family A|B, tier)`.
+- **Fingerprint / version** — the field-1 value; `fingerprint_info` maps it to `(family A|B, tier)`.
 - **Carrier signature** — the common factor of all of a carrier's file numbers; the SKU
   portion is `NUMBER ÷ signature`.
 - **Band combo / CA combination** — an aggregated set of component carriers (one

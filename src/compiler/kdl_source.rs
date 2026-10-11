@@ -22,7 +22,7 @@ use crate::{
         read_str_list, str_list_node,
     },
     proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
-    raw_nr::{SubBlockKind, cc_count},
+    raw_nr::{SubBlockKind, bw_class_letter, cc_count},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use kdl::{KdlDocument, KdlEntry, KdlNode};
@@ -627,7 +627,7 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
                     "`{name}` {label} has {} per-CC index/indices but bandwidth class \
                      {} implies {expected}",
                     parsed.indices.len(),
-                    (b'A' + parsed.bw_class - 1) as char
+                    bw_class_letter(parsed.bw_class).expect("parsed class is an uppercase letter")
                 );
             }
             SubBlockKind::Lte => ensure!(

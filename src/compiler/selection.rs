@@ -1,4 +1,4 @@
-use crate::model::PHONE_MODELS;
+use crate::model::{PHONE_MODELS, lte_model_codes, profile_model_codes};
 use anyhow::{Context, Result, bail, ensure};
 use compact_str::CompactString;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +13,33 @@ pub(crate) enum Sku {
     Model(CompactString),
     Prime(u64),
     Lte(u64),
+}
+
+impl Sku {
+    pub(crate) fn for_nr_anchor(anchor: u64) -> BTreeSet<Self> {
+        Self::from_models(profile_model_codes(anchor), Self::Prime(anchor))
+    }
+
+    pub(crate) fn for_lte_file(id: u64) -> BTreeSet<Self> {
+        Self::from_models(lte_model_codes(id), Self::Lte(id))
+    }
+
+    pub(crate) fn representative_for_nr_anchor(anchor: u64) -> Self {
+        Self::for_nr_anchor(anchor)
+            .pop_first()
+            .expect("SKU expansion is nonempty")
+    }
+
+    fn from_models(models: Vec<&str>, fallback: Self) -> BTreeSet<Self> {
+        if models.is_empty() {
+            BTreeSet::from([fallback])
+        } else {
+            models
+                .into_iter()
+                .map(|code| Self::Model(code.into()))
+                .collect()
+        }
+    }
 }
 
 /// The canonical source-format spelling of an SKU — what the source document carries in a

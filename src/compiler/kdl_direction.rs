@@ -26,6 +26,10 @@
 //! `kdl_source.rs` is where the trade is meant to be learned before anyone "unifies" the two
 //! codecs.
 
+use crate::{
+    formatting::Separated,
+    raw_nr::{bw_class_index, bw_class_letter},
+};
 use anyhow::{Context, Result, bail, ensure};
 
 /// A parsed DL or UL positional direction argument.
@@ -42,19 +46,16 @@ pub(crate) struct Direction {
 /// Fails closed on a class with no letter rather than emitting a value that cannot be read
 /// back — the same stance `cc_count` takes on an unobserved bandwidth class.
 pub(crate) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String> {
-    ensure!(
-        (1..=26).contains(&bw_class),
-        "bandwidth class {bw_class} has no 3GPP letter (expected 1..=26)"
-    );
-    let mut out = String::with_capacity(1 + indices.len() * 3);
-    out.push((b'A' + bw_class - 1) as char);
-    for (position, index) in indices.iter().enumerate() {
-        if position > 0 {
-            out.push(',');
+    let letter = bw_class_letter(bw_class).with_context(|| {
+        format!("bandwidth class {bw_class} has no 3GPP letter (expected 1..=26)")
+    })?;
+    Ok(format!(
+        "{letter}{}",
+        Separated {
+            values: indices,
+            separator: ","
         }
-        out.push_str(&index.to_string());
-    }
-    Ok(out)
+    ))
 }
 
 /// Parse a class plus its per-CC list. `label` names the positional direction argument
@@ -64,12 +65,8 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
     let letter = chars
         .next()
         .with_context(|| format!("{label} positional argument is empty"))?;
-    ensure!(
-        letter.is_ascii_uppercase(),
-        "{label} positional argument value `{raw}` must begin with an uppercase bandwidth-class \
-         letter"
-    );
-    let bw_class = (letter as u8) - b'A' + 1;
+    let bw_class = bw_class_index(letter).with_context(|| format!(
+        "{label} positional argument value `{raw}` must begin with an uppercase bandwidth-class letter"))?;
 
     let rest: String = chars.collect();
     if rest.is_empty() {

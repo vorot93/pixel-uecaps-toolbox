@@ -12,6 +12,13 @@
 //! `anchor` prime), so the chosen file depends on the exact Pixel SKU. Older Tensor
 //! Pixels instead use unnumbered carrier files with per-combination model bitmasks.
 
+pub(crate) const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
+pub(crate) const MAPPING_STEM: &str = "ap_plmn_mapping";
+
+pub(crate) fn lte_basename(id: u64) -> String {
+    format!("lte_{id}.binarypb")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Family {
     A,
@@ -275,6 +282,20 @@ pub struct PhoneModel {
 }
 
 impl PhoneModel {
+    const fn bitmask(code: &'static str) -> Self {
+        Self {
+            code,
+            layout: CapabilityLayout::Bitmask,
+        }
+    }
+
+    const fn profiled(code: &'static str, nr_anchor: u64, lte_id: u64) -> Self {
+        Self {
+            code,
+            layout: CapabilityLayout::Profiled { nr_anchor, lte_id },
+        }
+    }
+
     /// Whether this model uses the legacy unnumbered bitmask layout.
     pub const fn is_bitmask(self) -> bool {
         matches!(self.layout, CapabilityLayout::Bitmask)
@@ -286,269 +307,59 @@ impl PhoneModel {
 /// the profiled entries retain the exact evidence-backed anchor/LTE-id mappings the
 /// compiler resolves a `provision` target against.
 pub static PHONE_MODELS: &[PhoneModel] = &[
-    PhoneModel {
-        code: "G0DZQ",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G1AZG",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G1MNW",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G3Y12",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G576D",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G82U8",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G8HHN",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G8V0U",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G9BQD",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G9FPL",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G9S9B",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GB17L",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GB62Z",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GB7N6",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GC3VE",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GE2AE",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GE9DP",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GF5KQ",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GFE4J",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GHL1X",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GKWS6",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GLU0G",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GO3Z5",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GOB96",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GP4BC",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GPJ41",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GQML3",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GR1YH",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GTF7P",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GVU6C",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GWKK3",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GX7AS",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GXQ96",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "GZPFO",
-        layout: CapabilityLayout::Bitmask,
-    },
-    PhoneModel {
-        code: "G2YBB",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 66_813_533,
-            lte_id: 400_907_661,
-        },
-    },
-    PhoneModel {
-        code: "GUR25",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1_334_093,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GKV4X",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1_334_093,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "G6GPR",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1_334_093,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "G1B60",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1_334_093,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GR83Y",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1_176_929_627,
-            lte_id: 400_907_661,
-        },
-    },
-    PhoneModel {
-        code: "GEC77",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1847,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GWVK6",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 1847,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GGX8B",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 154_921_957,
-            lte_id: 400_907_661,
-        },
-    },
-    PhoneModel {
-        code: "GZC4K",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 224_309,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GQ57S",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 224_309,
-            lte_id: 2_160_127_815,
-        },
-    },
-    PhoneModel {
-        code: "GGH2X",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 6791,
-            lte_id: 4_210_990_300,
-        },
-    },
-    PhoneModel {
-        code: "GC15S",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 6791,
-            lte_id: 4_210_990_300,
-        },
-    },
-    PhoneModel {
-        code: "GU0NP",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 167,
-            lte_id: 2_306_930_561,
-        },
-    },
-    PhoneModel {
-        code: "GM66V",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 167,
-            lte_id: 2_306_930_561,
-        },
-    },
+    PhoneModel::bitmask("G0DZQ"),
+    PhoneModel::bitmask("G1AZG"),
+    PhoneModel::bitmask("G1MNW"),
+    PhoneModel::bitmask("G3Y12"),
+    PhoneModel::bitmask("G576D"),
+    PhoneModel::bitmask("G82U8"),
+    PhoneModel::bitmask("G8HHN"),
+    PhoneModel::bitmask("G8V0U"),
+    PhoneModel::bitmask("G9BQD"),
+    PhoneModel::bitmask("G9FPL"),
+    PhoneModel::bitmask("G9S9B"),
+    PhoneModel::bitmask("GB17L"),
+    PhoneModel::bitmask("GB62Z"),
+    PhoneModel::bitmask("GB7N6"),
+    PhoneModel::bitmask("GC3VE"),
+    PhoneModel::bitmask("GE2AE"),
+    PhoneModel::bitmask("GE9DP"),
+    PhoneModel::bitmask("GF5KQ"),
+    PhoneModel::bitmask("GFE4J"),
+    PhoneModel::bitmask("GHL1X"),
+    PhoneModel::bitmask("GKWS6"),
+    PhoneModel::bitmask("GLU0G"),
+    PhoneModel::bitmask("GO3Z5"),
+    PhoneModel::bitmask("GOB96"),
+    PhoneModel::bitmask("GP4BC"),
+    PhoneModel::bitmask("GPJ41"),
+    PhoneModel::bitmask("GQML3"),
+    PhoneModel::bitmask("GR1YH"),
+    PhoneModel::bitmask("GTF7P"),
+    PhoneModel::bitmask("GVU6C"),
+    PhoneModel::bitmask("GWKK3"),
+    PhoneModel::bitmask("GX7AS"),
+    PhoneModel::bitmask("GXQ96"),
+    PhoneModel::bitmask("GZPFO"),
+    PhoneModel::profiled("G2YBB", 66_813_533, 400_907_661),
+    PhoneModel::profiled("GUR25", 1_334_093, 2_160_127_815),
+    PhoneModel::profiled("GKV4X", 1_334_093, 2_160_127_815),
+    PhoneModel::profiled("G6GPR", 1_334_093, 2_160_127_815),
+    PhoneModel::profiled("G1B60", 1_334_093, 2_160_127_815),
+    PhoneModel::profiled("GR83Y", 1_176_929_627, 400_907_661),
+    PhoneModel::profiled("GEC77", 1847, 2_160_127_815),
+    PhoneModel::profiled("GWVK6", 1847, 2_160_127_815),
+    PhoneModel::profiled("GGX8B", 154_921_957, 400_907_661),
+    PhoneModel::profiled("GZC4K", 224_309, 2_160_127_815),
+    PhoneModel::profiled("GQ57S", 224_309, 2_160_127_815),
+    PhoneModel::profiled("GGH2X", 6791, 4_210_990_300),
+    PhoneModel::profiled("GC15S", 6791, 4_210_990_300),
+    PhoneModel::profiled("GU0NP", 167, 2_306_930_561),
+    PhoneModel::profiled("GM66V", 167, 2_306_930_561),
     // Pixel 10 Pro XL: US (mmWave) and RoW/JP (sub-6) share one NR profile (anchor 3616442437) but differ in lte_id.
-    PhoneModel {
-        code: "GUL82",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 3_616_442_437,
-            lte_id: 1_254_026_417,
-        },
-    },
-    PhoneModel {
-        code: "G45RY",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 3_616_442_437,
-            lte_id: 4_017_061_044,
-        },
-    },
-    PhoneModel {
-        code: "GYPW4",
-        layout: CapabilityLayout::Profiled {
-            nr_anchor: 3_616_442_437,
-            lte_id: 4_017_061_044,
-        },
-    },
+    PhoneModel::profiled("GUL82", 3_616_442_437, 1_254_026_417),
+    PhoneModel::profiled("G45RY", 3_616_442_437, 4_017_061_044),
+    PhoneModel::profiled("GYPW4", 3_616_442_437, 4_017_061_044),
 ];
 
 /// Look up a phone model by its CLI code after trimming and ASCII upper-casing it.
@@ -591,7 +402,7 @@ pub(crate) fn known_model_codes() -> Vec<&'static str> {
 }
 
 /// Every known in-file capability fingerprint (protobuf field 1) with its (family, tier).
-/// The single source for [`fp_info`] and for deriving per-tier fingerprint sets, so report
+/// The single source for [`fingerprint_info`] and for deriving per-tier fingerprint sets, so report
 /// strings (e.g. `check`'s headers) don't hardcode the values. Currently 4: 2 families ×
 /// 2 tiers.
 pub(crate) const FINGERPRINTS: &[(u64, Family, Tier)] = &[
@@ -602,19 +413,14 @@ pub(crate) const FINGERPRINTS: &[(u64, Family, Tier)] = &[
 ];
 
 /// In-file capability fingerprint (protobuf field 1) -> (family, tier).
-pub(crate) const fn fp_info(fp: u64) -> Option<(Family, Tier)> {
-    let mut i = 0;
-    while i < FINGERPRINTS.len() {
-        let (id, family, tier) = FINGERPRINTS[i];
-        if id == fp {
-            return Some((family, tier));
-        }
-        i += 1;
-    }
-    None
+pub(crate) fn fingerprint_info(fp: u64) -> Option<(Family, Tier)> {
+    FINGERPRINTS
+        .iter()
+        .find(|(id, _, _)| *id == fp)
+        .map(|(_, family, tier)| (*family, *tier))
 }
 
-/// The fingerprint for a `(family, tier)` pair — the forward of [`fp_info`], from the same
+/// The fingerprint for a `(family, tier)` pair — the forward of [`fingerprint_info`], from the same
 /// [`FINGERPRINTS`] table. `None` if the pair is not a known combination (all four are).
 pub(crate) fn fingerprint_for(family: Family, tier: Tier) -> Option<u64> {
     FINGERPRINTS
@@ -632,27 +438,45 @@ pub(crate) fn tier_fingerprints(tier: Tier) -> Vec<u64> {
         .collect()
 }
 
-pub(crate) const fn family_desc(f: Family) -> &'static str {
-    match f {
-        Family::A => "capability family A",
-        Family::B => "capability family B",
+impl Family {
+    pub(crate) const fn description(self) -> &'static str {
+        match self {
+            Self::A => "capability family A",
+            Self::B => "capability family B",
+        }
+    }
+
+    pub(crate) const fn short(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::B => "B",
+        }
     }
 }
 
-/// Family as a short label: `"A"` / `"B"` (the compact form; cf. `family_desc`).
-pub(crate) const fn family_short(f: Family) -> &'static str {
-    match f {
-        Family::A => "A",
-        Family::B => "B",
+impl Tier {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Alt => "alt",
+        }
     }
 }
 
-/// Tier as a short key: `"main"` / `"alt"`.
-pub(crate) const fn tier_short(t: Tier) -> &'static str {
-    match t {
-        Tier::Main => "main",
-        Tier::Alt => "alt",
+impl std::str::FromStr for Tier {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "main" => Ok(Self::Main),
+            "alt" => Ok(Self::Alt),
+            _ => anyhow::bail!("unknown tier `{value}` (expected main or alt)"),
+        }
     }
+}
+
+pub(crate) fn profile(anchor: u64) -> Option<&'static Profile> {
+    PROFILES.iter().find(|profile| profile.anchor == anchor)
 }
 
 /// What a filename refers to.
@@ -673,7 +497,7 @@ pub(crate) fn parse_name(filename: &str) -> Parsed {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(filename);
-    if base == "ap_plmn_mapping.binarypb" {
+    if base == MAPPING_BASENAME {
         return Parsed::Mapping;
     }
     let Some(stem) = base.strip_suffix(".binarypb") else {
@@ -707,7 +531,7 @@ pub(crate) fn parse_name(filename: &str) -> Parsed {
 pub(crate) fn decode_plmn(v: u64) -> Option<(String, String)> {
     let plmn = crate::mapping::Plmn::from_encoded(v).ok()?;
     let (mcc_n, mnc_n, mnc3) = plmn.nibbles();
-    let d = |x: u8| if x < 10 { (b'0' + x) as char } else { '*' };
+    let d = |x: u8| char::from_digit(u32::from(x), 10).unwrap_or('*');
     let mcc: String = mcc_n.iter().map(|&x| d(x)).collect();
     let mut mnc: String = mnc_n.iter().map(|&x| d(x)).collect();
     if mnc3 != 0xf {
@@ -954,18 +778,18 @@ mod tests {
 
     #[test]
     fn known_models_are_recorded() {
-        let with_model = PROFILES.iter().find(|p| p.anchor == 3_616_442_437).unwrap();
+        let with_model = profile(3_616_442_437).unwrap();
         assert_eq!(with_model.model, Some("Pixel 10 Pro XL"));
         // anchor 167 now carries a model, so use a genuinely model-less profile.
-        let no_model = PROFILES.iter().find(|p| p.anchor == 8969).unwrap();
+        let no_model = profile(8969).unwrap();
         assert_eq!(no_model.model, None);
     }
 
     #[test]
     fn fingerprints_map_to_tiers() {
-        assert_eq!(fp_info(874_888_686), Some((Family::A, Tier::Main)));
-        assert_eq!(fp_info(627_223_094), Some((Family::B, Tier::Alt)));
-        assert_eq!(fp_info(123), None);
+        assert_eq!(fingerprint_info(874_888_686), Some((Family::A, Tier::Main)));
+        assert_eq!(fingerprint_info(627_223_094), Some((Family::B, Tier::Alt)));
+        assert_eq!(fingerprint_info(123), None);
     }
 
     #[test]
@@ -988,12 +812,12 @@ mod tests {
     }
 
     #[test]
-    fn fingerprints_table_drives_fp_info_and_tier_sets() {
-        // FINGERPRINTS is the single source; fp_info must agree with it, and the
+    fn fingerprints_table_drives_fingerprint_info_and_tier_sets() {
+        // FINGERPRINTS is the single source; fingerprint_info must agree with it, and the
         // per-tier sets must match the values `check`'s headers render.
         assert_eq!(FINGERPRINTS.len(), 4);
         for &(id, fam, tier) in FINGERPRINTS {
-            assert_eq!(fp_info(id), Some((fam, tier)));
+            assert_eq!(fingerprint_info(id), Some((fam, tier)));
         }
         assert_eq!(
             tier_fingerprints(Tier::Main),

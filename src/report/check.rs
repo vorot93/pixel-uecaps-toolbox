@@ -5,7 +5,7 @@ use super::{
     validation::{completion, diagnostics},
 };
 use crate::{
-    model::{FINGERPRINTS, Parsed, Tier, tier_fingerprints, tier_profile_count, tier_short},
+    model::{FINGERPRINTS, MAPPING_BASENAME, Parsed, Tier, tier_fingerprints, tier_profile_count},
     outcome::Outcome,
 };
 use std::{fmt::Write, path::Path};
@@ -100,12 +100,12 @@ pub fn check_folder(dir: &Path) -> anyhow::Result<Outcome> {
             c.carrier,
             c.seen,
             c.expected,
-            c.tier.map_or("?", tier_short)
+            c.tier.map_or("?", Tier::as_str)
         )?;
     }
     writeln!(
         out,
-        "\n## non-capability files\n   ap_plmn_mapping.binarypb : {} (the legend)\n   lte_*.binarypb : {} (LTE-only fallback)",
+        "\n## non-capability files\n   {MAPPING_BASENAME} : {} (the legend)\n   lte_*.binarypb : {} (LTE-only fallback)",
         usize::from(legend.is_some()),
         report
             .files

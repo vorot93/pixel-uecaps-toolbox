@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     mapping::Plmn,
-    model::{MAIN_ONLY_ANCHORS, Tier, family_desc, fp_info, matching_anchors},
+    model::{MAIN_ONLY_ANCHORS, Tier, fingerprint_info, matching_anchors},
     outcome::Outcome,
     proto::{PlmnMap, UeCaps},
 };
@@ -133,7 +133,7 @@ pub(super) fn carrier_context_issues(
         ));
     }
     if let Some(caps) = caps {
-        match fp_info(caps.version) {
+        match fingerprint_info(caps.version) {
             None => issues.push(Issue::new(
                 IssueKind::Fingerprint,
                 path,
@@ -147,9 +147,9 @@ pub(super) fn carrier_context_issues(
                         path,
                         format!(
                             "fingerprint family {} != profile {} family {}",
-                            family_desc(family),
+                            family.description(),
                             profile.anchor,
-                            family_desc(profile.family)
+                            profile.family.description()
                         ),
                     ));
                 }

@@ -105,9 +105,9 @@ mod tests {
 
     #[test]
     fn header_uses_model_then_anchor() {
-        let with_model = PROFILES.iter().find(|p| p.anchor == 3_616_442_437).unwrap();
+        let with_model = crate::model::profile(3_616_442_437).unwrap();
         assert_eq!(header_for(with_model), "Pixel 10 Pro XL");
-        let no_model = PROFILES.iter().find(|p| p.anchor == 8969).unwrap();
+        let no_model = crate::model::profile(8969).unwrap();
         assert_eq!(header_for(no_model), "8969");
     }
 

@@ -11,7 +11,7 @@ use crate::{
     atomic::write_bytes_atomic,
     magisk::validate_module_basename,
     mapping::{MappingRoot, map_to_root, root_to_map},
-    model::{lte_model_codes, profile_model_codes},
+    model::{MAPPING_BASENAME, MAPPING_STEM},
     outcome::Outcome,
     proto::PlmnMap,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
@@ -244,7 +244,7 @@ fn classify_profiled_dir(dir: &Path) -> anyhow::Result<Vec<ClassifiedFile<Profil
         .count();
     ensure!(
         mappings == 1,
-        "profiled input must contain exactly one ap_plmn_mapping.binarypb (found {mappings})"
+        "profiled input must contain exactly one {MAPPING_BASENAME} (found {mappings})"
     );
     ensure!(
         lte != 0,
@@ -309,7 +309,7 @@ fn classify_bitmask_name(basename: &str) -> anyhow::Result<String> {
         "unsupported bitmask .binarypb filename `{basename}`: carrier name must be nonempty"
     );
     ensure!(
-        stem != "ap_plmn_mapping",
+        stem != MAPPING_STEM,
         "unsupported cross-layout file `{basename}` in bitmask input"
     );
     if let Some((_, suffix)) = stem.rsplit_once('_')
@@ -327,7 +327,7 @@ pub(super) fn validate_bitmask_carrier_basename(basename: &str) -> anyhow::Resul
 }
 
 fn classify_profiled_name(basename: &str) -> anyhow::Result<ProfiledInputName> {
-    if basename == "ap_plmn_mapping.binarypb" {
+    if basename == MAPPING_BASENAME {
         return Ok(ProfiledInputName::Mapping);
     }
     let stem = basename
@@ -477,9 +477,7 @@ fn verify_profiled_nr_targets(
         .collect::<BTreeSet<_>>();
     let mut regenerated = BTreeSet::new();
     for anchor in anchors {
-        let sku = profile_model_codes(anchor)
-            .first()
-            .map_or(Sku::Prime(anchor), |code| Sku::Model((*code).into()));
+        let sku = Sku::representative_for_nr_anchor(anchor);
         let generated = generate_nr_files(sources, NrTarget::Profile { anchor, sku })
             .with_context(|| format!("self-verifying NR profile anchor {anchor}"))?;
         for file in &generated {
@@ -511,9 +509,9 @@ fn verify_lte_targets(
     original_lte: &BTreeMap<u64, Vec<u8>>,
 ) -> anyhow::Result<()> {
     for id in lte.files.keys().copied() {
-        let sku = lte_model_codes(id)
-            .first()
-            .map_or(Sku::Lte(id), |code| Sku::Model((*code).into()));
+        let sku = Sku::for_lte_file(id)
+            .pop_first()
+            .expect("SKU expansion is nonempty");
         let generated = generate_lte_file(lte, id, &sku)
             .with_context(|| format!("self-verifying LTE file ID {id}"))?;
         let original = original_lte
@@ -568,7 +566,7 @@ fn rebuild_mapping(sources: &ValidatedSources) -> anyhow::Result<Vec<u8>> {
     let root = legend_root(&sources.nr.carriers);
     let mapping = root_to_map(&root).context("validating self-verification PLMN mapping")?;
     let bytes = mapping.encode_to_vec();
-    let decoded = decode_plmn_map(&bytes, "rebuilt ap_plmn_mapping.binarypb")?;
+    let decoded = decode_plmn_map(&bytes, &format!("rebuilt {MAPPING_BASENAME}"))?;
     ensure!(
         decoded == mapping,
         "rebuilt PLMN mapping changed values during encoding"

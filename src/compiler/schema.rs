@@ -8,7 +8,7 @@ use super::{
 use crate::{
     compiler::lte::RawLteCombo,
     mapping::{MappingEntry, MappingRoot, Plmn, map_to_root, root_to_map},
-    model::{Family, PROFILES, Tier, lte_model_codes, matching_anchors, profile_model_codes},
+    model::{Family, Tier, matching_anchors, profile},
     proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
@@ -449,16 +449,11 @@ fn build_nr_domain(nr: &NrDocument, carriers: &BTreeMap<String, ValidatedCarrier
             .iter()
             .flat_map(|profiled| profiled.profiles.keys().copied());
         for anchor in anchors {
-            let model_codes = profile_model_codes(anchor);
-            if model_codes.is_empty() {
-                members.insert((carrier.as_str().into(), Sku::Prime(anchor)));
-            } else {
-                members.extend(
-                    model_codes
-                        .into_iter()
-                        .map(|code| (carrier.as_str().into(), Sku::Model(code.into()))),
-                );
-            }
+            members.extend(
+                Sku::for_nr_anchor(anchor)
+                    .into_iter()
+                    .map(|sku| (carrier.as_str().into(), sku)),
+            );
         }
     }
     NrDomain::new(members)
@@ -523,12 +518,7 @@ fn validate_lte_files(
     for (key, source) in &lte.files {
         let id = parse_decimal_key(key, &format!("LTE file key `{key}`"))?;
         files.insert(id, source.clone());
-        let model_codes = lte_model_codes(id);
-        if model_codes.is_empty() {
-            members.insert(Sku::Lte(id));
-        } else {
-            members.extend(model_codes.into_iter().map(|code| Sku::Model(code.into())));
-        }
+        members.extend(Sku::for_lte_file(id));
     }
     Ok((files, LteDomain::new(members)))
 }
@@ -682,7 +672,7 @@ fn validated_profiles(
     for (key, profile_source) in source_profiles {
         let anchor =
             parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
-        let Some(profile) = PROFILES.iter().find(|profile| profile.anchor == anchor) else {
+        let Some(profile) = profile(anchor) else {
             bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
         };
         let number = signature
@@ -1606,7 +1596,9 @@ c "MAPPING" mi=7 {
         let sources = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         let cc = &sources.nr.combo[0].payload.sub_blocks;
         assert_eq!(
-            cc.iter().map(|cc| cc.band_label()).collect::<Vec<_>>(),
+            cc.iter()
+                .map(|cc| cc.band_label().to_string())
+                .collect::<Vec<_>>(),
             ["B1", "n78"]
         );
         assert_eq!(cc[1].dl_selector(), None);
@@ -1748,7 +1740,7 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
                 .payload
                 .sub_blocks
                 .iter()
-                .map(|cc| cc.band_label())
+                .map(|cc| cc.band_label().to_string())
                 .collect::<Vec<_>>(),
             ["B1", "n78"]
         );
@@ -1757,7 +1749,9 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
             None
         );
         assert_eq!(
-            canonical.nr.combo[1].payload.sub_blocks[0].band_label(),
+            canonical.nr.combo[1].payload.sub_blocks[0]
+                .band_label()
+                .to_string(),
             "B3"
         );
         assert_eq!(canonical.lte.combo[0].source.components[0].band, 3);

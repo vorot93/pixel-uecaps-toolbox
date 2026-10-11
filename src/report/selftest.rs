@@ -3,8 +3,8 @@
 use crate::{
     factor::factorize,
     model::{
-        CapabilityLayout, Family, LTE_CONFIGS, PHONE_MODELS, PROFILES, Tier, decode_plmn, fp_info,
-        identify_profile, known_model_codes,
+        CapabilityLayout, Family, LTE_CONFIGS, PHONE_MODELS, Tier, decode_plmn, fingerprint_info,
+        identify_profile, known_model_codes, profile,
     },
     outcome::Outcome,
 };
@@ -59,11 +59,11 @@ pub fn self_test() -> anyhow::Result<Outcome> {
     println!("fingerprint tiers:");
     check(
         "874888686 -> A/main",
-        fp_info(874_888_686) == Some((Family::A, Tier::Main)),
+        fingerprint_info(874_888_686) == Some((Family::A, Tier::Main)),
     );
     check(
         "627223094 -> B/alt",
-        fp_info(627_223_094) == Some((Family::B, Tier::Alt)),
+        fingerprint_info(627_223_094) == Some((Family::B, Tier::Alt)),
     );
 
     println!("model registry:");
@@ -84,8 +84,7 @@ pub fn self_test() -> anyhow::Result<Outcome> {
                 && match m.layout {
                     CapabilityLayout::Bitmask => true,
                     CapabilityLayout::Profiled { nr_anchor, lte_id } => {
-                        PROFILES.iter().any(|p| p.anchor == nr_anchor)
-                            && LTE_CONFIGS.iter().any(|c| c.id == lte_id)
+                        profile(nr_anchor).is_some() && LTE_CONFIGS.iter().any(|c| c.id == lte_id)
                     }
                 }
         }),

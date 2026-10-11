@@ -11,8 +11,8 @@ use super::{
 use crate::{
     factor::{factor_display, gcd},
     model::{
-        Parsed, decode_plmn, family_short, fp_info, matching_anchors, mcc_country, parse_name,
-        tier_short,
+        MAPPING_BASENAME, Parsed, decode_plmn, fingerprint_info, matching_anchors, mcc_country,
+        parse_name,
     },
     outcome::Outcome,
     proto::{Carrier, PlmnMap},
@@ -81,7 +81,7 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> anyhow::Result
 fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carrier: &str) {
     match read_optional_legend(dir) {
         Err(error) => {
-            issues.push(Issue::input(&dir.join("ap_plmn_mapping.binarypb"), error));
+            issues.push(Issue::input(&dir.join(MAPPING_BASENAME), error));
             out.push_str("Legend identity: unavailable\n");
         }
         Ok(None) => out.push_str("Legend: absent (optional)\n"),
@@ -189,8 +189,8 @@ pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Outcome> {
                 }
             }
             if let Some(caps) = caps {
-                let fp = fp_info(caps.version)
-                    .map(|(f, t)| format!("{}/{}", family_short(f), tier_short(t)))
+                let fp = fingerprint_info(caps.version)
+                    .map(|(f, t)| format!("{}/{}", f.short(), t.as_str()))
                     .unwrap_or_else(|| "UNKNOWN".into());
                 writeln!(out, "In-file fingerprint: {} ({fp})", caps.version)?;
                 if caps.combo_groups.is_empty() {
