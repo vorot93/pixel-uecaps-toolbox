@@ -181,8 +181,9 @@ fn read_directions(
     // Arity depends on the kind. NR indices are one per CC and must match `cc_count`; an
     // E-UTRA sub-block carries a single `parseLteFeatureIndex` value regardless of class. An
     // empty list is the all-zero placeholder and is checked by neither.
-    for (label, parsed) in [(Direction::Dl, Some(&dl)), (Direction::Ul, ul.as_ref())] {
-        let Some(parsed) = parsed else { continue };
+    for (label, parsed) in std::iter::once((Direction::Dl, &dl))
+        .chain(ul.as_ref().map(|parsed| (Direction::Ul, parsed)))
+    {
         if parsed.indices.is_empty() {
             continue;
         }
@@ -343,24 +344,17 @@ pub(super) fn read_nr_combo(node: &KdlNode) -> Result<NrSourceCombo> {
         .collect::<Result<Vec<_>>>()?;
     // Read NR before E-UTRA for diagnostic precedence. Validation sorts by RawSubBlockKey,
     // so source order remains byte-stable regardless of this read traversal.
-    let mut sub_blocks = Vec::new();
-    for cnode in
-        r.children_matching(|name| parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some())
-    {
-        sub_blocks.push(read_sub_block(cnode)?);
-    }
-    for cnode in
-        r.children_matching(|name| parse_sub_block_name(name, nr_combo::LTE_PREFIX).is_some())
-    {
-        sub_blocks.push(read_sub_block(cnode)?);
-    }
+    let sub_blocks = r
+        .children_matching(|name| parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some())
+        .into_iter()
+        .chain(
+            r.children_matching(|name| parse_sub_block_name(name, nr_combo::LTE_PREFIX).is_some()),
+        )
+        .map(read_sub_block)
+        .collect::<Result<Vec<_>>>()?;
     r.finish()?;
     Ok(NrSourceCombo {
-        selection: if selection.is_empty() {
-            None
-        } else {
-            Some(selection)
-        },
+        selection: (!selection.is_empty()).then_some(selection),
         header: ComboHeader {
             power_class,
             bcs_nr,
@@ -516,11 +510,7 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
         .collect::<Result<Vec<_>>>()?;
     r.finish()?;
     Ok(LteSourceCombo {
-        selection: if selection.is_empty() {
-            None
-        } else {
-            Some(selection)
-        },
+        selection: (!selection.is_empty()).then_some(selection),
         bcs,
         unknown1,
         unknown2,
