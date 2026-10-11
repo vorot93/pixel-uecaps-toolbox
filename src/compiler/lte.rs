@@ -87,7 +87,7 @@ fn group_files_by_id(files: Vec<DecodedLteFile>) -> anyhow::Result<BTreeMap<u64,
 /// payloads' relative order across files (topologically sorted next, by the caller).
 #[derive(Default)]
 struct LteScan {
-    file_sources: BTreeMap<String, LteFileSource>,
+    file_sources: BTreeMap<u64, LteFileSource>,
     domain_members: BTreeSet<Sku>,
     payload_skus: BTreeMap<RawLteCombo, BTreeSet<Sku>>,
     edges: BTreeMap<RawLteCombo, BTreeSet<RawLteCombo>>,
@@ -108,7 +108,7 @@ fn scan_lte_files(files_by_id: &BTreeMap<u64, DecodedLteFile>) -> anyhow::Result
         );
 
         scan.file_sources.insert(
-            id.to_string(),
+            *id,
             LteFileSource {
                 fingerprint: file.caps.fingerprint,
                 bitmask: file.caps.bitmask,

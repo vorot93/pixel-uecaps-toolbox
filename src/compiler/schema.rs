@@ -1,4 +1,5 @@
 use super::{
+    decimal_key_entries,
     feature_palette::FeaturePalette,
     features::NrSourceSubBlock,
     selection::{
@@ -48,7 +49,7 @@ pub(crate) struct CarrierSource {
     pub(crate) plmns: Option<Vec<Plmn>>,
     pub(crate) signature: Option<u64>,
     pub(crate) tier: Option<Tier>,
-    pub(crate) profiles: BTreeMap<String, ProfileSource>,
+    pub(crate) profiles: BTreeMap<u64, ProfileSource>,
 }
 
 #[derive(Clone, Debug)]
@@ -107,7 +108,7 @@ pub(crate) struct LteSourceCombo {
 /// The LTE half. `Default` is the empty half — see [`NrDocument`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LteDocument {
-    pub(crate) files: BTreeMap<String, LteFileSource>,
+    pub(crate) files: BTreeMap<u64, LteFileSource>,
     pub(crate) combo: Vec<LteSourceCombo>,
 }
 
@@ -472,8 +473,7 @@ fn validate_lte_files(
     ensure!(!lte.files.is_empty(), "LTE files map must be nonempty");
     let mut files = BTreeMap::new();
     let mut members = BTreeSet::new();
-    for (key, source) in &lte.files {
-        let id = parse_decimal_key(key, &format!("LTE file key `{key}`"))?;
+    for (&id, source) in decimal_key_entries(&lte.files) {
         files.insert(id, source.clone());
         members.extend(Sku::for_lte_file(id));
     }
@@ -601,15 +601,13 @@ fn validate_carrier_role(
 /// anchor it was declared under, or the profile is rejected as ambiguous/mismatched.
 /// `signature`/`tier` come from `validate_carrier_role`, which is what proved they exist.
 fn validated_profiles(
-    source_profiles: &BTreeMap<String, ProfileSource>,
+    source_profiles: &BTreeMap<u64, ProfileSource>,
     carrier: &str,
     signature: u64,
     tier: Tier,
 ) -> anyhow::Result<BTreeMap<u64, ValidatedProfile>> {
     let mut profiles = BTreeMap::new();
-    for (key, profile_source) in source_profiles {
-        let anchor =
-            parse_decimal_key(key, &format!("profile key `{key}` for carrier `{carrier}`"))?;
+    for (&anchor, profile_source) in decimal_key_entries(source_profiles) {
         let Some(profile) = profile(anchor) else {
             bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
         };
@@ -799,11 +797,6 @@ pub(crate) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
         "carrier name `{carrier}` is not canonical"
     );
     Ok(())
-}
-
-fn parse_decimal_key(value: &str, description: &str) -> anyhow::Result<u64> {
-    super::parse_shortest_u64(value)
-        .with_context(|| format!("{description} must be a shortest-decimal u64"))
 }
 
 #[cfg(test)]
@@ -1172,9 +1165,10 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         parse_sources(&source(MINIMAL_NR, &lte_with_file_key("400907661"))).unwrap();
 
         for key in ["066813533", "+66813533", " 66813533", "66813533 ", "anchor"] {
-            let error = parse_sources(&source(&profiled_nr(key), MINIMAL_LTE))
-                .unwrap_err()
-                .to_string();
+            let error = format!(
+                "{:#}",
+                parse_sources(&source(&profiled_nr(key), MINIMAL_LTE)).unwrap_err()
+            );
             assert!(error.contains("profile key"), "{key:?}: {error}");
         }
 
@@ -1185,11 +1179,24 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
             "400907661 ",
             "file",
         ] {
-            let error = parse_sources(&source(MINIMAL_NR, &lte_with_file_key(key)))
-                .unwrap_err()
-                .to_string();
+            let error = format!(
+                "{:#}",
+                parse_sources(&source(MINIMAL_NR, &lte_with_file_key(key))).unwrap_err()
+            );
             assert!(error.contains("LTE file key"), "{key:?}: {error}");
         }
+    }
+
+    #[test]
+    fn profile_validation_errors_follow_decimal_text_order() {
+        let nr = format!(
+            "{MINIMAL_NR}\nc C sg=1 t=main {{\n pf \"2\" x=2 u=0\n pf \"10\" x=10 u=0\n}}\n"
+        );
+        let error = format!(
+            "{:#}",
+            parse_sources(&source(&nr, MINIMAL_LTE)).unwrap_err()
+        );
+        assert!(error.contains("unknown profile anchor 10"), "{error}");
     }
 
     fn assert_nr_error(nr: &str, needle: &str) {

@@ -33,3 +33,10 @@ pub(crate) struct GeneratedFile {
 pub(crate) fn parse_shortest_u64(s: &str) -> Option<u64> {
     s.parse::<u64>().ok().filter(|n| n.to_string() == s)
 }
+
+/// Source traversal uses decimal-text order, even though identities are numeric.
+pub(crate) fn decimal_key_entries<T>(map: &std::collections::BTreeMap<u64, T>) -> Vec<(&u64, &T)> {
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_by_cached_key(|(id, _)| id.to_string());
+    entries
+}

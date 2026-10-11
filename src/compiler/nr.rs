@@ -637,7 +637,7 @@ fn ingest_profiled_carrier(
         ingest_profile(ingest, carrier, profile, &caps)?;
 
         profiles.insert(
-            profile.anchor.to_string(),
+            profile.anchor,
             ProfileSource {
                 multiplier,
                 unknown: caps.unknown,
@@ -982,7 +982,7 @@ mod tests {
     fn validated_nr(document: NrDocument) -> ValidatedNr {
         let lte = LteDocument {
             files: BTreeMap::from([(
-                "1".into(),
+                1,
                 LteFileSource {
                     fingerprint: 0,
                     bitmask: 0,
@@ -1446,10 +1446,10 @@ mod tests {
             carrier.plmns.as_deref(),
             Some(&["250-01".parse().unwrap(), "250-01".parse().unwrap()][..])
         );
-        assert_eq!(carrier.profiles["66813533"].multiplier, REAL_ANCHOR);
-        assert_eq!(carrier.profiles["66813533"].unknown, 11);
-        assert_eq!(carrier.profiles["8969"].multiplier, SYNTHETIC_ANCHOR);
-        assert_eq!(carrier.profiles["8969"].unknown, 22);
+        assert_eq!(carrier.profiles[&66_813_533].multiplier, REAL_ANCHOR);
+        assert_eq!(carrier.profiles[&66_813_533].unknown, 11);
+        assert_eq!(carrier.profiles[&8969].multiplier, SYNTHETIC_ANCHOR);
+        assert_eq!(carrier.profiles[&8969].unknown, 22);
 
         let mapping_only = &nr.carriers["MAP_ONLY"];
         assert_eq!(mapping_only.profiled_id, None);

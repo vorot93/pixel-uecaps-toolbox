@@ -154,6 +154,11 @@ numeric-leading — while `multiplier` and `unknown` are native KDL integers;
 `tier` derives the modern fingerprint, while field 9 remains stored as `unknown`
 because it is opaque.
 
+Profile and LTE file keys must use shortest-decimal `u64` text: signs, leading zeros and
+overflow are rejected while parsing the node. Version and that node's field checks run first;
+key validation precedes later nodes and cross-document validation. Canonical output keeps
+decimal-text order (`"10"` before `"2"`), with the same quoted-key syntax.
+
 The three carrier IDs are independent: `bitmask-id` is legacy NR protobuf field 2;
 `profiled-id` is optional signed `int32` profiled NR protobuf field 2, including
 absence and present-zero, and may repeat across carriers; `mapping-id` is the unique,

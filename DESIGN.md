@@ -212,6 +212,14 @@ KDL representability (decimal MCC/MNC or wildcard MNC) is checked by its writer,
 of mapping projection validation. Source signatures, multipliers and unknown scalars use full-width
 `u64`; both source and model use `model::Tier`.
 
+Source profile and LTE file keys are `u64`, but their four source-order traversals explicitly
+use `decimal_key_entries`: profile/file emission and profile/file validation. This preserves
+decimal-text canonical order and the first semantic error; validated numeric maps and LTE ingest
+still iterate numerically. Shortest-decimal key validation runs in the reader after that node's
+fields and `finish()`, before duplicate insertion and later mapped nodes. Document version
+validation still runs first. Consequently, malformed keys may precede later semantic errors,
+while the emitted source format is unchanged.
+
 ## Full-folder compiler
 
 The `decompose`/`provision` workflow is the **only** editing surface in this crate: every other

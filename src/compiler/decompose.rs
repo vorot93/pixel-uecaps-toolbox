@@ -639,7 +639,7 @@ mod tests {
             let actual = source.nr.carriers[&carrier]
                 .profiles
                 .keys()
-                .map(|key| key.parse::<u64>().unwrap())
+                .copied()
                 .collect::<std::collections::BTreeSet<_>>();
             assert_eq!(actual, anchors);
         }
@@ -648,11 +648,9 @@ mod tests {
         }
         assert_eq!(source.nr.combo.len(), expected.nr_payloads);
         assert_eq!(
-            source
-                .lte
-                .files
-                .keys()
-                .map(|key| key.parse::<u64>().unwrap())
+            crate::compiler::decimal_key_entries(&source.lte.files)
+                .into_iter()
+                .map(|(&id, _)| id)
                 .collect::<Vec<_>>(),
             expected.lte_ids
         );

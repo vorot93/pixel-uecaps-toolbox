@@ -289,7 +289,7 @@ mod tests {
             signature: Some(signature),
             tier: Some(Tier::Main),
             profiles: BTreeMap::from([(
-                anchor.to_string(),
+                anchor,
                 ProfileSource {
                     multiplier: anchor,
                     unknown,
@@ -359,7 +359,7 @@ mod tests {
         };
         let lte = LteDocument {
             files: BTreeMap::from([(
-                TARGET_LTE_ID.to_string(),
+                TARGET_LTE_ID,
                 LteFileSource {
                     fingerprint: 123,
                     bitmask: 456,
@@ -951,7 +951,7 @@ mod tests {
 
         let mut missing_lte = miniature_source();
         missing_lte.lte.files = BTreeMap::from([(
-            "92".into(),
+            92,
             LteFileSource {
                 fingerprint: 102,
                 bitmask: 202,

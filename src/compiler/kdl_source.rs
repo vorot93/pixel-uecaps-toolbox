@@ -3,6 +3,7 @@
 
 use crate::{
     compiler::{
+        decimal_key_entries,
         features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
         kdl_bcs::{format_bcs, parse_bcs},
         kdl_direction::{format_class_mimo, format_direction, parse_class_mimo, parse_direction},
@@ -10,6 +11,7 @@ use crate::{
             carrier, dl_catalog, doc, fingerprint, lte_combo, lte_file, nr_combo, profile,
             selection, sub_block, ul_catalog,
         },
+        parse_shortest_u64,
         schema::{
             BitmaskFingerprint, CarrierSource, LteDocument, LteFileSource, LteSourceCombo,
             NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION, SourceDocument,
@@ -329,9 +331,9 @@ fn fingerprint_node(fp: &BitmaskFingerprint) -> KdlNode {
 }
 
 /// One `f "KEY" fp=… bm=…` node — the LTE file whitelist entry.
-fn lte_file_node(key: &str, f: &LteFileSource) -> KdlNode {
+fn lte_file_node(key: u64, f: &LteFileSource) -> KdlNode {
     let mut node = KdlNode::new(doc::LTE_FILE);
-    node.push(KdlEntry::new(key));
+    node.push(KdlEntry::new(key.to_string()));
     node.push(KdlEntry::new_prop(
         lte_file::FINGERPRINT,
         f.fingerprint as i128,
@@ -352,9 +354,9 @@ fn plmn_child_nodes(plmns: &[Plmn]) -> Result<Vec<KdlNode>> {
 }
 
 /// One `profile "KEY" multiplier=… unknown=…` node.
-fn profile_node(key: &str, p: &ProfileSource) -> KdlNode {
+fn profile_node(key: u64, p: &ProfileSource) -> KdlNode {
     let mut node = KdlNode::new(carrier::PROFILE);
-    node.push(KdlEntry::new(key));
+    node.push(KdlEntry::new(key.to_string()));
     node.push(KdlEntry::new_prop(
         profile::MULTIPLIER,
         i128::from(p.multiplier),
@@ -379,7 +381,7 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
                 kids.nodes_mut().push(n);
             }
         }
-        for (key, p) in &c.profiles {
+        for (&key, p) in decimal_key_entries(&c.profiles) {
             kids.nodes_mut().push(profile_node(key, p));
         }
     }
@@ -389,8 +391,8 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
 /// Serialize one source document. Node order is canonical and load-bearing: the version marker,
 /// then the whitelist and identity nodes (`bc`, `bf`, `c`, `f`), then the two feature catalogs —
 /// which sit immediately above the combos that index into them — then every NR combo, then every
-/// LTE combo. Order *within* each group is the caller's (`BTreeMap` iteration for carriers and
-/// files, `Vec` order for the rest), so canonicality holds by construction.
+/// LTE combo. Within each group, use `BTreeMap` iteration for carriers, decimal-text order
+/// for numeric profile/file keys, and the caller's `Vec` order for the rest.
 ///
 /// Takes the halves by reference rather than a `&SourceDocument`: `ValidatedSources` stores them
 /// separately, and `decompose` calls this twice, so a wrapper parameter would mean cloning the
@@ -416,7 +418,7 @@ pub(crate) fn source_to_kdl(nr: &NrDocument, lte: &LteDocument) -> Result<String
         document.nodes_mut().push(carrier_node(name, c)?);
     }
 
-    for (key, f) in &lte.files {
+    for (&key, f) in decimal_key_entries(&lte.files) {
         document.nodes_mut().push(lte_file_node(key, f));
     }
 
@@ -453,12 +455,15 @@ fn read_fingerprint(node: &KdlNode) -> Result<BitmaskFingerprint> {
     })
 }
 
-fn read_profile(node: &KdlNode) -> Result<(String, ProfileSource)> {
+fn read_profile(node: &KdlNode, carrier: &str) -> Result<(u64, ProfileSource)> {
     let mut r = NodeReader::new(node);
     let key = r.key_str()?;
     let multiplier = r.req_int::<u64>(profile::MULTIPLIER)?;
     let unknown = r.req_int::<u64>(profile::UNKNOWN)?;
     r.finish()?;
+    let key = parse_shortest_u64(&key).with_context(|| {
+        format!("profile key `{key}` for carrier `{carrier}` must be a shortest-decimal u64")
+    })?;
     Ok((
         key,
         ProfileSource {
@@ -499,8 +504,8 @@ fn read_carrier(node: &KdlNode) -> Result<(String, CarrierSource)> {
     };
     let mut profiles = BTreeMap::new();
     for pnode in r.children(carrier::PROFILE) {
-        let (k, v) = read_profile(pnode)?;
-        if profiles.insert(k.clone(), v).is_some() {
+        let (k, v) = read_profile(pnode, &name)?;
+        if profiles.insert(k, v).is_some() {
             bail!("duplicate profile `{k}` in carrier `{name}`");
         }
     }
@@ -818,19 +823,30 @@ fn read_bitmask_carriers(node: &KdlNode, existing: Option<&[String]>) -> Result<
 ///
 /// `what` is a **word** — "carrier", "LTE file" — never a key spelling. See DESIGN.md: a key
 /// spelling is not a diagnostic.
-fn insert_unique<T>(map: &mut BTreeMap<String, T>, what: &str, (k, v): (String, T)) -> Result<()> {
-    if map.insert(k.clone(), v).is_some() {
-        bail!("duplicate {what} `{k}`");
+fn insert_unique<K: Ord + std::fmt::Display, T>(
+    map: &mut BTreeMap<K, T>,
+    what: &str,
+    (k, v): (K, T),
+) -> Result<()> {
+    match map.entry(k) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(v);
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            bail!("duplicate {what} `{}`", entry.key())
+        }
     }
     Ok(())
 }
 
-fn read_file(node: &KdlNode) -> Result<(String, LteFileSource)> {
+fn read_lte_file(node: &KdlNode) -> Result<(u64, LteFileSource)> {
     let mut r = NodeReader::new(node);
     let key = r.key_str()?;
     let fingerprint = r.req_int::<u64>(lte_file::FINGERPRINT)?;
     let bitmask = r.req_int::<u64>(lte_file::BITMASK)?;
     r.finish()?;
+    let key = parse_shortest_u64(&key)
+        .with_context(|| format!("LTE file key `{key}` must be a shortest-decimal u64"))?;
     Ok((
         key,
         LteFileSource {
@@ -937,7 +953,7 @@ pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
         } else if name == doc::CARRIER {
             insert_unique(&mut carriers, "carrier", read_carrier(node)?)?;
         } else if name == doc::LTE_FILE {
-            insert_unique(&mut files, "LTE file", read_file(node)?)?;
+            insert_unique(&mut files, "LTE file", read_lte_file(node)?)?;
         } else if name == doc::DL_FEATURE {
             dl_features.push(read_dl_feature(node)?);
         } else if name == doc::UL_FEATURE {
@@ -1078,6 +1094,91 @@ mod combinator_tests {
 }
 
 #[cfg(test)]
+mod numeric_key_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_keys_keep_decimal_text_order_at_both_writer_sites() {
+        let source = source_from_kdl("version 1\nbc\nf \"2\" fp=2 bm=2\nf \"10\" fp=10 bm=10\nc C sg=1 t=main {\n pf \"2\" x=2 u=0\n pf \"10\" x=10 u=0\n}\n").unwrap();
+        let text = source_to_kdl(&source.nr, &source.lte).unwrap();
+        for prefix in ["f", "pf"] {
+            assert!(
+                text.find(&format!("{prefix} \"10\"")).unwrap()
+                    < text.find(&format!("{prefix} \"2\"")).unwrap(),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_numeric_keys_are_rejected_by_the_reader() {
+        for key in ["02", "+2", "18446744073709551616"] {
+            for body in [
+                format!("f \"{key}\" fp=1 bm=1"),
+                format!("c C {{\n pf \"{key}\" x=1 u=1\n}}"),
+            ] {
+                let error = format!(
+                    "{:#}",
+                    source_from_kdl(&format!("version 1\nbc\n{body}\n")).unwrap_err()
+                );
+                assert!(
+                    error.contains(key) && error.contains("shortest-decimal u64"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_key_error_phase_preserves_node_checks_and_document_version() {
+        for (text, expected, absent) in [
+            (
+                "version 2\nbc\nf \"02\" fp=1 bm=1\n",
+                "version",
+                "shortest-decimal",
+            ),
+            ("version 1\nbc\nf \"02\" fp=1\n", "bm", "shortest-decimal"),
+            (
+                "version 1\nbc\nf \"02\" fp=1 bm=1 bogus=1\n",
+                "bogus",
+                "shortest-decimal",
+            ),
+            (
+                "version 1\nbc\nf \"2\" fp=1 bm=1\nf \"2\" fp=1\n",
+                "bm",
+                "duplicate LTE",
+            ),
+            (
+                "version 1\nbc\nc C {\n pf \"02\" x=1\n}\n",
+                "u",
+                "shortest-decimal",
+            ),
+            (
+                "version 1\nbc\nc C {\n pf \"02\" x=1 u=1 bogus=1\n}\n",
+                "bogus",
+                "shortest-decimal",
+            ),
+            (
+                "version 1\nbc\nc C {\n pf \"2\" x=1 u=1\n pf \"2\" x=1\n}\n",
+                "u",
+                "duplicate profile",
+            ),
+            (
+                "version 1\nbc\nf \"02\" fp=1 bm=1\nf \"3\" fp=1\n",
+                "shortest-decimal",
+                "missing",
+            ),
+        ] {
+            let error = format!("{:#}", source_from_kdl(text).unwrap_err());
+            assert!(
+                error.contains(expected) && !error.contains(absent),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod nr_tests {
     use super::*;
     use crate::compiler::{
@@ -1117,7 +1218,7 @@ mod nr_tests {
                     signature: Some(1),
                     tier: Some(Tier::Main),
                     profiles: BTreeMap::from([(
-                        "66813533".to_string(),
+                        66_813_533,
                         ProfileSource {
                             multiplier: 66_813_533,
                             unknown: 0,
@@ -1673,7 +1774,7 @@ mod lte_tests {
     pub(super) fn sample() -> LteDocument {
         LteDocument {
             files: BTreeMap::from([(
-                "3".to_string(),
+                3,
                 LteFileSource {
                     fingerprint: 715_188_856,
                     bitmask: 1,
