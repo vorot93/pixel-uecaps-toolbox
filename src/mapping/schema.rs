@@ -7,11 +7,11 @@ use anyhow::{Context, ensure};
 use prost::Message;
 use std::collections::HashSet;
 
-/// The editable mapping model: proto `PlmnMap` ↔ `Root`/`MappingEntry`, order-preserving in
+/// The editable mapping model: proto `PlmnMap` ↔ `MappingRoot`/`MappingEntry`, order-preserving in
 /// both directions. The compiler's generated legend is built from this and verified by
 /// `encode_root_verified`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Root {
+pub(crate) struct MappingRoot {
     pub(crate) mappings: Vec<MappingEntry>,
 }
 
@@ -26,7 +26,7 @@ pub(crate) struct MappingEntry {
 }
 
 /// proto → editable model (decode). Preserves entry and `plmns` order verbatim.
-pub(crate) fn map_to_root(map: &PlmnMap) -> Result<Root, Error> {
+pub(crate) fn map_to_root(map: &PlmnMap) -> Result<MappingRoot, Error> {
     let mut mappings = Vec::with_capacity(map.carriers.len());
     for c in &map.carriers {
         let plmns = c
@@ -40,12 +40,12 @@ pub(crate) fn map_to_root(map: &PlmnMap) -> Result<Root, Error> {
             plmns,
         });
     }
-    Ok(Root { mappings })
+    Ok(MappingRoot { mappings })
 }
 
 /// editable model → proto (encode). Validates unique ids/names and non-empty names;
 /// keeps entry order and duplicate PLMNs verbatim.
-pub(crate) fn root_to_map(root: &Root) -> Result<PlmnMap, Error> {
+pub(crate) fn root_to_map(root: &MappingRoot) -> Result<PlmnMap, Error> {
     let mut seen_ids: HashSet<u64> = HashSet::new();
     let mut seen_names: HashSet<&str> = HashSet::new();
     let mut carriers = Vec::with_capacity(root.mappings.len());
@@ -71,7 +71,7 @@ pub(crate) fn root_to_map(root: &Root) -> Result<PlmnMap, Error> {
 
 /// Encode an order-preserving editable mapping, then strict-decode and compare it with the
 /// intended protobuf values. The strict decoder also proves repeated PLMNs stayed unpacked.
-pub(crate) fn encode_root_verified(root: &Root, label: &str) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn encode_root_verified(root: &MappingRoot, label: &str) -> anyhow::Result<Vec<u8>> {
     let intended = root_to_map(root).context("validating generated PLMN mapping")?;
     let bytes = intended.encode_to_vec();
     let decoded = decode_plmn_map(&bytes, label)?;
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_id() {
-        let root = Root {
+        let root = MappingRoot {
             mappings: vec![
                 MappingEntry {
                     id: 1,
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_name() {
-        let root = Root {
+        let root = MappingRoot {
             mappings: vec![
                 MappingEntry {
                     id: 1,
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_name() {
-        let root = Root {
+        let root = MappingRoot {
             mappings: vec![MappingEntry {
                 id: 1,
                 name: String::new(),

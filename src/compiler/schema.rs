@@ -28,36 +28,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// diagnose.
 pub(crate) const SOURCE_FORMAT_VERSION: u32 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DecimalU64(pub(crate) u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CarrierTier {
-    Main,
-    Alt,
-}
-
-/// `CarrierTier` (the source-format spelling) and `model::Tier` are the same two-valued
-/// distinction, so the mapping is a pair of `From` impls rather than a `to_model` method here
-/// and a free `source_tier` function in another module.
-impl From<CarrierTier> for Tier {
-    fn from(tier: CarrierTier) -> Self {
-        match tier {
-            CarrierTier::Main => Self::Main,
-            CarrierTier::Alt => Self::Alt,
-        }
-    }
-}
-
-impl From<Tier> for CarrierTier {
-    fn from(tier: Tier) -> Self {
-        match tier {
-            Tier::Main => Self::Main,
-            Tier::Alt => Self::Alt,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct BitmaskFingerprint {
     pub(crate) fingerprint: u64,
@@ -66,8 +36,8 @@ pub(crate) struct BitmaskFingerprint {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProfileSource {
-    pub(crate) multiplier: DecimalU64,
-    pub(crate) unknown: DecimalU64,
+    pub(crate) multiplier: u64,
+    pub(crate) unknown: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -75,9 +45,9 @@ pub(crate) struct CarrierSource {
     pub(crate) bitmask_id: Option<i64>,
     pub(crate) profiled_id: Option<i64>,
     pub(crate) mapping_id: Option<u64>,
-    pub(crate) plmns: Option<Vec<String>>,
-    pub(crate) signature: Option<DecimalU64>,
-    pub(crate) tier: Option<CarrierTier>,
+    pub(crate) plmns: Option<Vec<Plmn>>,
+    pub(crate) signature: Option<u64>,
+    pub(crate) tier: Option<Tier>,
     pub(crate) profiles: BTreeMap<String, ProfileSource>,
 }
 
@@ -243,7 +213,7 @@ struct LegendEntry {
 #[derive(Clone, Debug)]
 pub(crate) struct ProfiledRole {
     pub(crate) signature: u64,
-    pub(crate) tier: CarrierTier,
+    pub(crate) tier: Tier,
     pub(crate) profiles: BTreeMap<u64, ValidatedProfile>,
 }
 
@@ -342,12 +312,6 @@ pub(crate) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
     validate_documents(source.clone())?.to_kdl()
 }
 
-/// A carrier's PLMNs in their canonical `mcc-mnc` spelling — what the source document stores.
-/// `Plmn` has exactly one rendering, so this is `Display`, not a re-derivation that could fail.
-fn canonical_plmn_strings(plmns: &[Plmn]) -> Vec<String> {
-    plmns.iter().map(Plmn::to_string).collect()
-}
-
 /// One NR source combo projected from a payload and its relation: the selection in canonical
 /// rectangle form, the five combo-header fields verbatim, and per-component catalog references
 /// re-derived via `source_sub_block`. The write-side inverse of `validate_nr_combos`/`resolve`.
@@ -417,13 +381,6 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
         .sort_by(|left, right| {
             (left.fingerprint, &left.carriers).cmp(&(right.fingerprint, &right.carriers))
         });
-
-    for (carrier, source) in &mut validated.nr.source.carriers {
-        let parsed = &validated.nr.carriers[carrier];
-        if let Some(legend) = &parsed.legend {
-            source.plmns = Some(canonical_plmn_strings(&legend.plmns));
-        }
-    }
 
     validated.nr.source.dl_features = validated.nr.palette.dl.clone();
     validated.nr.source.ul_features = validated.nr.palette.ul.clone();
@@ -607,7 +564,7 @@ fn validate_carrier_role(
     carrier: &str,
     source: &CarrierSource,
     bitmask_carriers: &BTreeSet<&str>,
-) -> anyhow::Result<Option<(u64, CarrierTier)>> {
+) -> anyhow::Result<Option<(u64, Tier)>> {
     let has_profiles = !source.profiles.is_empty();
     let profiled = if has_profiles {
         let signature = source
@@ -616,7 +573,7 @@ fn validate_carrier_role(
         let tier = source
             .tier
             .with_context(|| format!("profiled carrier `{carrier}` requires tier"))?;
-        Some((signature.0, tier))
+        Some((signature, tier))
     } else {
         ensure!(
             source.signature.is_none() && source.tier.is_none(),
@@ -639,25 +596,6 @@ fn validate_carrier_role(
     Ok(profiled)
 }
 
-/// Encodes a carrier's PLMN list to its packed form, or `None` when the carrier has no PLMN
-/// list at all. Each entry's parse error names the offending PLMN and carrier.
-fn parse_carrier_plmns(
-    plmns: Option<&[String]>,
-    carrier: &str,
-) -> anyhow::Result<Option<Vec<Plmn>>> {
-    plmns
-        .map(|plmns| {
-            plmns
-                .iter()
-                .map(|plmn| {
-                    plmn.parse::<Plmn>()
-                        .with_context(|| format!("invalid PLMN `{plmn}` for carrier `{carrier}`"))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()
-        })
-        .transpose()
-}
-
 /// Builds one carrier's `anchor -> ValidatedProfile` table: each profile key's filename
 /// product (`signature * multiplier`) must round-trip through `matching_anchors` to the SAME
 /// anchor it was declared under, or the profile is rejected as ambiguous/mismatched.
@@ -666,7 +604,7 @@ fn validated_profiles(
     source_profiles: &BTreeMap<String, ProfileSource>,
     carrier: &str,
     signature: u64,
-    tier: CarrierTier,
+    tier: Tier,
 ) -> anyhow::Result<BTreeMap<u64, ValidatedProfile>> {
     let mut profiles = BTreeMap::new();
     for (key, profile_source) in source_profiles {
@@ -676,7 +614,7 @@ fn validated_profiles(
             bail!("unknown profile anchor {anchor} for carrier `{carrier}`");
         };
         let number = signature
-            .checked_mul(profile_source.multiplier.0)
+            .checked_mul(profile_source.multiplier)
             .with_context(|| {
                 format!("filename product overflow for carrier `{carrier}` profile {anchor}")
             })?;
@@ -693,9 +631,9 @@ fn validated_profiles(
         profiles.insert(
             anchor,
             ValidatedProfile {
-                multiplier: profile_source.multiplier.0,
+                multiplier: profile_source.multiplier,
                 number,
-                unknown: profile_source.unknown.0,
+                unknown: profile_source.unknown,
                 fingerprint: modern_fingerprint(profile.family, tier),
             },
         );
@@ -735,10 +673,7 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
         }
 
         // `validate_carrier_role` proved mapping_id and plmns imply each other.
-        let legend = match (
-            source.mapping_id,
-            parse_carrier_plmns(source.plmns.as_deref(), carrier)?,
-        ) {
+        let legend = match (source.mapping_id, source.plmns.clone()) {
             (Some(mapping_id), Some(plmns)) => Some(LegendEntry { mapping_id, plmns }),
             _ => None,
         };
@@ -802,8 +737,8 @@ fn validate_mapping_projection(
 /// The modern (profiled) fingerprint for a `(family, tier)` pair. Thin wrapper over the one
 /// source `model::fingerprint_for` (from `model::FINGERPRINTS`), shared by the NR generation
 /// and schema-validation paths so the table lives in exactly one place.
-pub(crate) fn modern_fingerprint(family: Family, tier: CarrierTier) -> u64 {
-    crate::model::fingerprint_for(family, tier.into())
+pub(crate) fn modern_fingerprint(family: Family, tier: Tier) -> u64 {
+    crate::model::fingerprint_for(family, tier)
         .expect("every (family, tier) pair is present in model::FINGERPRINTS")
 }
 
@@ -1785,7 +1720,11 @@ c "ORDERED" mi=7 {
         assert_eq!(nr.carriers["MAP_ONLY"].plmns, Some(Vec::new()));
         assert_eq!(
             nr.carriers["ORDERED"].plmns,
-            Some(vec!["302-220".into(), "228-ff".into(), "302-220".into()])
+            Some(
+                ["302-220", "228-ff", "302-220"]
+                    .map(|s| s.parse().unwrap())
+                    .into()
+            )
         );
         assert_eq!(nr.carriers["MAP_ONLY"].profiled_id, None);
         assert_eq!(nr.carriers["MAP_ONLY"].mapping_id, Some(u64::MAX));

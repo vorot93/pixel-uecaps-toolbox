@@ -219,15 +219,16 @@ mod tests {
             decompose::decompose,
             features::{NrSourceSubBlock, SourceNrSubBlock},
             schema::{
-                BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument,
-                LteFileSource, LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource,
-                SourceDocument, ValidatedSources, parse_sources, to_kdl,
+                BitmaskFingerprint, CarrierSource, LteDocument, LteFileSource, LteSourceCombo,
+                NrDocument, NrSourceCombo, ProfileSource, SourceDocument, ValidatedSources,
+                parse_sources, to_kdl,
             },
             selection::SelectionRect,
             source_from_kdl,
             test_support::{MiniCorpus, REGISTERED_ANCHOR},
         },
-        model::{known_model_codes, phone_model},
+        mapping::Plmn,
+        model::{Tier, known_model_codes, phone_model},
         outcome::Outcome,
         proto::{LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr},
         wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
@@ -279,19 +280,19 @@ mod tests {
         signature: u64,
         anchor: u64,
         unknown: u64,
-        plmns: Option<Vec<String>>,
+        plmns: Option<Vec<Plmn>>,
     ) -> CarrierSource {
         CarrierSource {
             profiled_id: Some(profiled_id),
             mapping_id,
             plmns,
-            signature: Some(DecimalU64(signature)),
-            tier: Some(CarrierTier::Main),
+            signature: Some(signature),
+            tier: Some(Tier::Main),
             profiles: BTreeMap::from([(
                 anchor.to_string(),
                 ProfileSource {
-                    multiplier: DecimalU64(anchor),
-                    unknown: DecimalU64(unknown),
+                    multiplier: anchor,
+                    unknown,
                 },
             )]),
             ..Default::default()
@@ -316,7 +317,7 @@ mod tests {
                             11,
                             TARGET_ANCHOR,
                             71,
-                            Some(vec!["250-01".into(), "250-01".into()]),
+                            Some(vec!["250-01".parse().unwrap(), "250-01".parse().unwrap()]),
                         )
                     },
                 ),
@@ -339,7 +340,7 @@ mod tests {
                     "MAP_ONLY".into(),
                     CarrierSource {
                         mapping_id: Some(5),
-                        plmns: Some(vec!["302-220".into(), "302-220".into()]),
+                        plmns: Some(vec!["302-220".parse().unwrap(), "302-220".parse().unwrap()]),
                         ..Default::default()
                     },
                 ),

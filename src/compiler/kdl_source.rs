@@ -11,16 +11,17 @@ use crate::{
             selection, sub_block, ul_catalog,
         },
         schema::{
-            BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, LteDocument, LteFileSource,
-            LteSourceCombo, NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION,
-            SourceDocument,
+            BitmaskFingerprint, CarrierSource, LteDocument, LteFileSource, LteSourceCombo,
+            NrDocument, NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION, SourceDocument,
         },
         selection::SelectionRect,
     },
     kdl_support::{
-        NodeReader, finish_doc, opt_bool_prop, opt_int_prop, opt_str_prop, plmn_to_node, read_plmn,
-        read_str_list, str_list_node,
+        NodeReader, finish_doc, opt_bool_prop, opt_int_prop, opt_str_prop, read_str_list,
+        str_list_node,
     },
+    mapping::Plmn,
+    model::Tier,
     proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{SubBlockKind, bw_class_letter, cc_count},
 };
@@ -28,21 +29,10 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use kdl::{KdlDocument, KdlEntry, KdlNode};
 use std::collections::BTreeMap;
 
-// ---- NR document mapping ----
-fn tier_to_str(t: CarrierTier) -> &'static str {
-    match t {
-        CarrierTier::Main => "main",
-        CarrierTier::Alt => "alt",
-    }
-}
-fn str_to_tier(s: &str) -> Result<CarrierTier> {
-    match s {
-        "main" => Ok(CarrierTier::Main),
-        "alt" => Ok(CarrierTier::Alt),
-        other => bail!("unknown tier `{other}` (expected `main` or `alt`)"),
-    }
-}
+mod plmn;
+use plmn::{read_plmn, write_plmn};
 
+// ---- NR document mapping ----
 /// A sub-block's node name: its kind prefix followed by the plain band, e.g. `nr257`, `lte66`.
 ///
 /// This is the tool's own band-label convention (`SubBlockKind::band_label`) used as the node
@@ -353,11 +343,11 @@ fn lte_file_node(key: &str, f: &LteFileSource) -> KdlNode {
 /// One carrier's `plmns` children: either a bare, childless `plmns` marker for a
 /// present-but-empty list (distinguishing it from no list at all — see `read_carrier`'s
 /// inverse), or one `plmn mcc=… mnc=…` node per entry.
-fn plmn_child_nodes(plmns: &[String]) -> Result<Vec<KdlNode>> {
+fn plmn_child_nodes(plmns: &[Plmn]) -> Result<Vec<KdlNode>> {
     if plmns.is_empty() {
-        Ok(vec![str_list_node(carrier::PLMNS, plmns)])
+        Ok(vec![KdlNode::new(carrier::PLMNS)])
     } else {
-        plmns.iter().map(|p| plmn_to_node(p)).collect()
+        plmns.iter().copied().map(write_plmn).collect()
     }
 }
 
@@ -367,9 +357,9 @@ fn profile_node(key: &str, p: &ProfileSource) -> KdlNode {
     node.push(KdlEntry::new(key));
     node.push(KdlEntry::new_prop(
         profile::MULTIPLIER,
-        p.multiplier.0 as i128,
+        i128::from(p.multiplier),
     ));
-    node.push(KdlEntry::new_prop(profile::UNKNOWN, p.unknown.0 as i128));
+    node.push(KdlEntry::new_prop(profile::UNKNOWN, i128::from(p.unknown)));
     node
 }
 
@@ -380,12 +370,8 @@ fn carrier_node(name: &str, c: &CarrierSource) -> Result<KdlNode> {
     opt_int_prop(&mut node, carrier::BITMASK_ID, c.bitmask_id);
     opt_int_prop(&mut node, carrier::PROFILED_ID, c.profiled_id);
     opt_int_prop(&mut node, carrier::MAPPING_ID, c.mapping_id);
-    opt_int_prop(
-        &mut node,
-        carrier::SIGNATURE,
-        c.signature.map(|v| v.0 as i128),
-    );
-    opt_str_prop(&mut node, carrier::TIER, c.tier.map(tier_to_str));
+    opt_int_prop(&mut node, carrier::SIGNATURE, c.signature);
+    opt_str_prop(&mut node, carrier::TIER, c.tier.map(Tier::as_str));
     if c.plmns.is_some() || !c.profiles.is_empty() {
         let kids = node.ensure_children();
         if let Some(plmns) = &c.plmns {
@@ -470,8 +456,8 @@ fn read_fingerprint(node: &KdlNode) -> Result<BitmaskFingerprint> {
 fn read_profile(node: &KdlNode) -> Result<(String, ProfileSource)> {
     let mut r = NodeReader::new(node);
     let key = r.key_str()?;
-    let multiplier = DecimalU64(r.req_int::<u64>(profile::MULTIPLIER)?);
-    let unknown = DecimalU64(r.req_int::<u64>(profile::UNKNOWN)?);
+    let multiplier = r.req_int::<u64>(profile::MULTIPLIER)?;
+    let unknown = r.req_int::<u64>(profile::UNKNOWN)?;
     r.finish()?;
     Ok((
         key,
@@ -488,11 +474,8 @@ fn read_carrier(node: &KdlNode) -> Result<(String, CarrierSource)> {
     let bitmask_id = r.opt_int::<i64>(carrier::BITMASK_ID)?;
     let profiled_id = r.opt_int::<i64>(carrier::PROFILED_ID)?;
     let mapping_id = r.opt_int::<u64>(carrier::MAPPING_ID)?;
-    let signature = r.opt_int::<u64>(carrier::SIGNATURE)?.map(DecimalU64);
-    let tier = match r.opt_str(carrier::TIER)? {
-        None => None,
-        Some(s) => Some(str_to_tier(&s)?),
-    };
+    let signature = r.opt_int::<u64>(carrier::SIGNATURE)?;
+    let tier = r.opt_str(carrier::TIER)?.map(|s| s.parse()).transpose()?;
     // Non-empty PLMN lists are repeated `plmn mcc=… mnc=…` sibling nodes; a present-but-
     // empty list (`Some(vec![])`, a validated mapping-only carrier state) instead leaves a
     // bare, childless `plmns` marker so it stays distinguishable from no list at all
@@ -1099,9 +1082,7 @@ mod nr_tests {
     use super::*;
     use crate::compiler::{
         features::{NrSourceSubBlock, SourceNrSubBlock},
-        schema::{
-            BitmaskFingerprint, CarrierSource, DecimalU64, NrDocument, NrSourceCombo, ProfileSource,
-        },
+        schema::{BitmaskFingerprint, CarrierSource, NrDocument, NrSourceCombo, ProfileSource},
         selection::SelectionRect,
     };
     use std::collections::BTreeMap;
@@ -1132,14 +1113,14 @@ mod nr_tests {
                     bitmask_id: Some(1),
                     profiled_id: Some(0),
                     mapping_id: Some(u64::MAX),
-                    plmns: Some(vec!["311-480".into()]),
-                    signature: Some(DecimalU64(1)),
-                    tier: Some(CarrierTier::Main),
+                    plmns: Some(vec!["311-480".parse().unwrap()]),
+                    signature: Some(1),
+                    tier: Some(Tier::Main),
                     profiles: BTreeMap::from([(
                         "66813533".to_string(),
                         ProfileSource {
-                            multiplier: DecimalU64(66_813_533),
-                            unknown: DecimalU64(0),
+                            multiplier: 66_813_533,
+                            unknown: 0,
                         },
                     )]),
                 },
@@ -1287,8 +1268,11 @@ mod nr_tests {
     #[test]
     fn carrier_plmns_use_structured_plmn_nodes() {
         let mut doc = sample();
-        doc.carriers.get_mut("VZW").unwrap().plmns =
-            Some(vec!["311-480".into(), "310-004".into(), "228-ff".into()]);
+        doc.carriers.get_mut("VZW").unwrap().plmns = Some(
+            ["311-480", "310-04", "310-004", "228-ff", "310-04"]
+                .map(|s| s.parse().unwrap())
+                .into(),
+        );
         let text = nr_only(&doc).unwrap();
         assert!(text.contains("p mcc=311 mnc=480"), "{text}");
         assert!(text.contains("p mcc=310 mnc=4 mnc-digits=3"), "{text}");
@@ -1305,7 +1289,8 @@ mod nr_tests {
         let carrier = back.carriers.values().next().unwrap();
         assert_eq!(
             carrier.plmns.as_deref().unwrap(),
-            ["311-480", "310-004", "228-ff"]
+            ["311-480", "310-04", "310-004", "228-ff", "310-04"]
+                .map(|s| s.parse::<Plmn>().unwrap())
         );
     }
 

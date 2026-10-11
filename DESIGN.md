@@ -70,7 +70,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/model.rs` | The reverse-engineered model: `PROFILES` (16 SKU anchors), `LTE_CONFIGS` (9), and `PHONE_MODELS` (34 bitmask + 18 profiled build targets), plus layout/reverse lookups, `fingerprint_info`, `parse_name`, `decode_plmn`, and `mcc_country`. |
 | `src/atomic.rs` | Sibling-temporary-file preparation and atomic byte replacement used at compiler output boundaries. |
 | `src/raw_nr.rs` | Shared protobuf-shaped NR sub-block/payload representation, canonical identity, feature resolution, and reconstruction used across the compiler's ingest and generation paths. |
-| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator, writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`), and the shared `plmn_to_node`/`read_plmn` PLMN codec — consumed solely by the compiler's source-document (de)serializers. |
+| `src/kdl_support/mod.rs` | Crate-wide KDL toolkit: the `NodeReader` strictness combinator and writer helpers (`opt_int_prop`/`opt_str_prop`/`opt_bool_prop`/`str_list_node`/`finish_doc`). The source-specific PLMN codec lives in `src/compiler/kdl_source/plmn.rs`. |
 | `src/compiler/kdl_keys.rs` | Every KDL node name and property key, grouped by scope, consumed by both the reader and the writer; a structural test rejects two keys sharing a spelling within one scope. |
 | `src/compiler/kdl_direction.rs` | The composite positional direction value (bandwidth-class letter + per-CC index list) and the LTE combo's class+MIMO bitfield codec, which reuses the same two argument positions. |
 | `src/compiler/kdl_bcs.rs` | The BCS property value codec: a 3GPP `BIT STRING` ↔ its `b`-prefixed ascending index list. |
@@ -205,10 +205,12 @@ shape: if the validator proved two fields travel together, put them in one `Opti
 
 **A PLMN is carried as `mapping::Plmn`, not as text or a packed integer.** `Plmn` is a validated,
 `Copy`, bijective newtype (full-sweep round-trip test), so `MappingEntry.plmns` and
-`ValidatedCarrier`'s legend both hold `Vec<Plmn>`. `Display`/`FromStr` are used only at the two
-real text boundaries — the KDL source surface (`CarrierSource.plmns: Vec<String>`) and report
-rendering. Converting to text mid-pipeline is what previously forced four
-`.expect("validated PLMN remains within 24 bits")` sites on values that were already proven.
+`ValidatedCarrier`'s legend both hold `Vec<Plmn>`, and `CarrierSource.plmns` holds
+`Option<Vec<Plmn>>`. The source codec is the text boundary; it retains ordered duplicates,
+MNC width, and absent versus empty lists. Raw `Plmn` covers every 24-bit nibble pattern;
+KDL representability (decimal MCC/MNC or wildcard MNC) is checked by its writer, independently
+of mapping projection validation. Source signatures, multipliers and unknown scalars use full-width
+`u64`; both source and model use `model::Tier`.
 
 ## Full-folder compiler
 
@@ -374,8 +376,8 @@ is what makes a sub-block's DL/UL arguments readable);
 nested nodes by name and `children_matching` by predicate (sub-block node names are computed —
 see below); and `finish()` errors on any argument, property, or child node left unconsumed, and
 on any property set more than once — the structural replacement for serde's
-`deny_unknown_fields`. `src/kdl_support/` also hosts the shared `plmn_to_node`/`read_plmn` PLMN
-codec (below).
+`deny_unknown_fields`. `src/compiler/kdl_source/plmn.rs` hosts the source-specific
+`write_plmn`/`read_plmn` codec (below).
 
 **Every key spelling lives in `src/compiler/kdl_keys.rs`**, grouped by scope, consumed by both
 the reader and the writer. They used to be spelled independently at 121 sites, so a mismatched
@@ -761,7 +763,7 @@ are **numeric**: `mcc` is always zero-padded to 3 digits on read; the all-`F` wi
 omits `mnc=` entirely (rejected if `mnc=` is present and equals the wildcard); and `mnc-digits=3`
 marks the one ambiguous case — a 3-digit MNC below 100 (a leading zero, e.g. `310-004` →
 `mcc=310 mnc=4 mnc-digits=3`) — since a bare integer can't otherwise distinguish `310-04` from
-`310-004`. The codec (`plmn_to_node`/`read_plmn` in `src/kdl_support/`) reuses `mapping::Plmn`'s
+`310-004`. The codec (`write_plmn`/`read_plmn` in `src/compiler/kdl_source/plmn.rs`) reuses `mapping::Plmn`'s
 existing `Display`/`FromStr` end to end (split/rebuild the `"mcc-mnc"` string, no new PLMN parsing),
 and fails closed on any non-decimal, non-wildcard nibble. That fail-closed is safe, not fragile: the
 entire real 427-PLMN legend (`ap_plmn_mapping.binarypb`) was surveyed and is decimal-only except the

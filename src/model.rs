@@ -470,7 +470,7 @@ impl std::str::FromStr for Tier {
         match value {
             "main" => Ok(Self::Main),
             "alt" => Ok(Self::Alt),
-            _ => anyhow::bail!("unknown tier `{value}` (expected main or alt)"),
+            _ => anyhow::bail!("unknown tier `{value}` (expected `main` or `alt`)"),
         }
     }
 }

@@ -5,14 +5,14 @@ use crate::{
         feature_palette::{FeaturePalette, ObservedFeatureDomains},
         features::LocalFeaturePlan,
         schema::{
-            BitmaskFingerprint, CarrierSource, CarrierTier, DecimalU64, NrDocument, ProfileSource,
-            ValidatedNr, modern_fingerprint, nr_source_combo, validate_carrier_name,
+            BitmaskFingerprint, CarrierSource, NrDocument, ProfileSource, ValidatedNr,
+            modern_fingerprint, nr_source_combo, validate_carrier_name,
         },
         selection::{NrDomain, Sku},
     },
     factor::gcd,
-    mapping::{MappingRoot, Plmn, map_to_root, root_to_map},
-    model::{Profile, fingerprint_info, matching_anchors, profile, profile_model_codes},
+    mapping::{MappingRoot, map_to_root, root_to_map},
+    model::{Profile, Tier, fingerprint_info, matching_anchors, profile, profile_model_codes},
     proto::{Combo, ComboGroup, ComboHeader, SubBlock as ProtoSubBlock, UeCaps},
     raw_nr::{
         Direction, NR_BAND_OFFSET, RawNrPayload, RawNrPayloadKey, SubBlockKind, cc_count,
@@ -530,10 +530,7 @@ fn classify_profiled_files(
 
 /// Confirm one profiled file's fingerprint resolves to a family consistent with its matched
 /// anchor, returning the tier it resolved to.
-fn verify_fingerprint_family(
-    carrier: &str,
-    file: &ClassifiedProfiledFile,
-) -> anyhow::Result<CarrierTier> {
+fn verify_fingerprint_family(carrier: &str, file: &ClassifiedProfiledFile) -> anyhow::Result<Tier> {
     let Some((fingerprint_family, tier)) = fingerprint_info(file.caps.version) else {
         anyhow::bail!(
             "profiled carrier `{carrier}` anchor {} has unknown fingerprint {}",
@@ -548,7 +545,7 @@ fn verify_fingerprint_family(
         fingerprint_family,
         file.profile.family
     );
-    Ok(tier.into())
+    Ok(tier)
 }
 
 /// Reconstruct the multiplier that, combined with the carrier's shared filename signature,
@@ -642,15 +639,15 @@ fn ingest_profiled_carrier(
         profiles.insert(
             profile.anchor.to_string(),
             ProfileSource {
-                multiplier: DecimalU64(multiplier),
-                unknown: DecimalU64(caps.unknown),
+                multiplier,
+                unknown: caps.unknown,
             },
         );
     }
 
     let source = ingest.carriers.entry(carrier.to_string()).or_default();
     source.profiled_id = profiled_id.map(i64::from);
-    source.signature = Some(DecimalU64(signature));
+    source.signature = Some(signature);
     source.tier = carrier_tier;
     source.profiles = profiles;
     Ok(())
@@ -674,7 +671,7 @@ fn finish_nr_document(
     for entry in mapping.mappings {
         let carrier = carriers.entry(entry.name).or_default();
         carrier.mapping_id = Some(entry.id);
-        carrier.plmns = Some(entry.plmns.iter().map(Plmn::to_string).collect());
+        carrier.plmns = Some(entry.plmns);
     }
 
     bitmask_carriers.sort_unstable();
@@ -871,8 +868,8 @@ mod tests {
         compiler::{
             features::NrSourceSubBlock,
             schema::{
-                CarrierTier, DecimalU64, LteDocument, LteFileSource, SourceDocument, ValidatedNr,
-                ValidatedNrCombo, parse_sources, to_kdl,
+                LteDocument, LteFileSource, SourceDocument, ValidatedNr, ValidatedNrCombo,
+                parse_sources, to_kdl,
             },
         },
         mapping::{MappingEntry, MappingRoot},
@@ -1443,22 +1440,16 @@ mod tests {
         assert_eq!(carrier.bitmask_id, Some(1));
         assert_eq!(carrier.profiled_id, Some(7));
         assert_eq!(carrier.mapping_id, Some(7));
-        assert_eq!(carrier.signature, Some(DecimalU64(SIGNATURE)));
-        assert_eq!(carrier.tier, Some(CarrierTier::Main));
+        assert_eq!(carrier.signature, Some(SIGNATURE));
+        assert_eq!(carrier.tier, Some(Tier::Main));
         assert_eq!(
             carrier.plmns.as_deref(),
-            Some(&["250-01".into(), "250-01".into()][..])
+            Some(&["250-01".parse().unwrap(), "250-01".parse().unwrap()][..])
         );
-        assert_eq!(
-            carrier.profiles["66813533"].multiplier,
-            DecimalU64(REAL_ANCHOR)
-        );
-        assert_eq!(carrier.profiles["66813533"].unknown, DecimalU64(11));
-        assert_eq!(
-            carrier.profiles["8969"].multiplier,
-            DecimalU64(SYNTHETIC_ANCHOR)
-        );
-        assert_eq!(carrier.profiles["8969"].unknown, DecimalU64(22));
+        assert_eq!(carrier.profiles["66813533"].multiplier, REAL_ANCHOR);
+        assert_eq!(carrier.profiles["66813533"].unknown, 11);
+        assert_eq!(carrier.profiles["8969"].multiplier, SYNTHETIC_ANCHOR);
+        assert_eq!(carrier.profiles["8969"].unknown, 22);
 
         let mapping_only = &nr.carriers["MAP_ONLY"];
         assert_eq!(mapping_only.profiled_id, None);

@@ -1,7 +1,6 @@
 //! Crate-level KDL toolkit: strict `NodeReader` combinator + writer helpers,
 //! shared by the compiler's (de)serializers.
 
-use crate::compiler::kdl_keys::{carrier, plmn as plmn_keys};
 use anyhow::{Result, anyhow, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use std::collections::BTreeSet;
@@ -311,78 +310,6 @@ pub(crate) fn read_str_list(node: &KdlNode) -> Result<Vec<String>> {
     Ok(list)
 }
 
-// ---- plmn node codec ----
-use crate::mapping::Plmn;
-
-/// Parse a decimal-only MCC/MNC field into its integer value; `None` if it
-/// contains any non-decimal digit (e.g. the `ff` wildcard or a hex nibble).
-fn decimal_field(s: &str) -> Option<u32> {
-    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
-        s.parse().ok()
-    } else {
-        None
-    }
-}
-
-/// Build a `plmn mcc=… mnc=…` node from a canonical `Plmn` string (`"mcc-mnc"`).
-/// Wildcard MNC (`ff`) omits `mnc=`; a leading-zero 3-digit MNC adds `mnc-digits=3`.
-pub(crate) fn plmn_to_node(plmn: &str) -> Result<KdlNode> {
-    let (mcc, mnc) = plmn
-        .split_once('-')
-        .ok_or_else(|| anyhow!("PLMN `{plmn}` is not `mcc-mnc`"))?;
-    let mcc_val =
-        decimal_field(mcc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MCC"))?;
-    let mut node = KdlNode::new(carrier::PLMN);
-    node.push(KdlEntry::new_prop(plmn_keys::MCC, i128::from(mcc_val)));
-    if !mnc.eq_ignore_ascii_case("ff") {
-        let mnc_val =
-            decimal_field(mnc).ok_or_else(|| anyhow!("PLMN `{plmn}` has a non-decimal MNC"))?;
-        node.push(KdlEntry::new_prop(plmn_keys::MNC, i128::from(mnc_val)));
-        if mnc.len() == 3 && mnc_val < 100 {
-            node.push(KdlEntry::new_prop(plmn_keys::MNC_DIGITS, 3i128));
-        }
-    }
-    Ok(node)
-}
-
-/// The zero-padding width for one present MNC value: an explicit `mnc-digits=3` in the
-/// source pins 3 (the only legal override — it exists solely to preserve a leading-zero
-/// 3-digit MNC that would otherwise print as 2 digits); otherwise infer from magnitude
-/// (`>= 100` needs 3 digits, else 2).
-fn mnc_width(v: u32, mnc_digits: Option<u32>) -> Result<usize> {
-    match mnc_digits {
-        None => Ok(if v >= 100 { 3 } else { 2 }),
-        Some(3) => Ok(3),
-        Some(other) => bail!("`plmn` `mnc-digits` must be 3, got {other}"),
-    }
-}
-
-/// Read a `plmn` node back to its canonical `Plmn` string, validating via `Plmn::from_str`.
-pub(crate) fn read_plmn(node: &KdlNode) -> Result<String> {
-    let mut r = NodeReader::new(node);
-    let mcc: u32 = r.req_int(plmn_keys::MCC)?;
-    let mnc: Option<u32> = r.opt_int(plmn_keys::MNC)?;
-    let mnc_digits: Option<u32> = r.opt_int(plmn_keys::MNC_DIGITS)?;
-    r.finish()?;
-    let mcc_s = format!("{mcc:03}");
-    let mnc_s = match mnc {
-        None => {
-            if mnc_digits.is_some() {
-                bail!("`plmn` has `mnc-digits` without `mnc`");
-            }
-            "ff".to_string()
-        }
-        Some(v) => {
-            let width = mnc_width(v, mnc_digits)?;
-            format!("{v:0width$}")
-        }
-    };
-    let s = format!("{mcc_s}-{mnc_s}");
-    s.parse::<Plmn>()
-        .map_err(|e| anyhow!("`plmn` reconstructs to invalid PLMN `{s}`: {e}"))?;
-    Ok(s)
-}
-
 #[cfg(test)]
 mod reader_tests {
 
@@ -407,52 +334,5 @@ mod reader_tests {
             doc2.to_string(),
             "autoformat idempotent with a leading positional arg"
         );
-    }
-}
-
-#[cfg(test)]
-mod plmn_tests {
-    use super::*;
-
-    fn round_trip(plmn: &str) -> String {
-        let node = plmn_to_node(plmn).expect("to_node");
-        read_plmn(&node).expect("from_node")
-    }
-
-    #[test]
-    fn plmn_forms_round_trip() {
-        for p in [
-            "311-480", "310-260", "202-01", "310-04", "310-004", "334-030", "228-ff",
-        ] {
-            assert_eq!(round_trip(p), p, "round-trip {p}");
-        }
-    }
-
-    #[test]
-    fn wildcard_omits_mnc() {
-        let node = plmn_to_node("228-ff").unwrap();
-        assert!(node.get("mnc").is_none(), "wildcard must omit mnc=");
-        assert_eq!(node.get("mcc").unwrap().as_integer(), Some(228));
-    }
-
-    #[test]
-    fn leading_zero_three_digit_gets_marker() {
-        let node = plmn_to_node("310-004").unwrap();
-        assert_eq!(node.get("mnc").unwrap().as_integer(), Some(4));
-        assert_eq!(node.get("mnc-digits").unwrap().as_integer(), Some(3));
-    }
-
-    #[test]
-    fn two_digit_and_big_three_digit_omit_marker() {
-        assert!(plmn_to_node("310-04").unwrap().get("mnc-digits").is_none());
-        assert!(plmn_to_node("302-220").unwrap().get("mnc-digits").is_none());
-    }
-
-    #[test]
-    fn mnc_digits_without_mnc_is_rejected() {
-        let mut n = KdlNode::new("plmn");
-        n.push(KdlEntry::new_prop("mcc", 310i128));
-        n.push(KdlEntry::new_prop("mnc-digits", 3i128));
-        assert!(read_plmn(&n).is_err());
     }
 }

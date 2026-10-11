@@ -6,5 +6,5 @@ mod schema;
 pub use error::Error;
 pub use plmn::Plmn;
 pub(crate) use schema::{
-    MappingEntry, Root as MappingRoot, encode_root_verified, map_to_root, root_to_map,
+    MappingEntry, MappingRoot, encode_root_verified, map_to_root, root_to_map,
 };

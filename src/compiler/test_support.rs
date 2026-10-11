@@ -1,6 +1,9 @@
-use crate::proto::{
-    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap, SubBlock,
-    UeCaps,
+use crate::{
+    mapping::Plmn,
+    proto::{
+        Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
+        SubBlock, UeCaps,
+    },
 };
 use prost::Message;
 use std::{
@@ -91,7 +94,7 @@ pub(crate) struct MiniCorpus {
 pub(crate) struct ExpectedMiniCorpus {
     pub(crate) bitmask_carriers: Vec<String>,
     pub(crate) profiles: BTreeMap<String, BTreeSet<u64>>,
-    pub(crate) plmns: BTreeMap<String, Vec<String>>,
+    pub(crate) plmns: BTreeMap<String, Vec<Plmn>>,
     pub(crate) lte_ids: Vec<u64>,
     pub(crate) nr_payloads: usize,
     pub(crate) lte_payloads: usize,
@@ -161,7 +164,10 @@ impl MiniCorpus {
                     ),
                 ]),
                 plmns: BTreeMap::from([
-                    ("ALPHA".into(), vec!["250-01".into(), "250-01".into()]),
+                    (
+                        "ALPHA".into(),
+                        vec!["250-01".parse().unwrap(), "250-01".parse().unwrap()],
+                    ),
                     ("BETA".into(), Vec::new()),
                 ]),
                 lte_ids: vec![FIRST_LTE_ID, SECOND_LTE_ID],
