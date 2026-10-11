@@ -147,7 +147,7 @@ pub(super) fn verify_generated_file(
         "generated NR identity self-check failed for {basename}"
     );
     // Verify wire bitmasks directly; building report projections for this integer check
-    // incurs millions of allocations (measured rationale in CONTRIBUTING).
+    // incurs millions of allocations (measured rationale in AGENTS.md).
     ensure!(
         decoded
             .combo_groups

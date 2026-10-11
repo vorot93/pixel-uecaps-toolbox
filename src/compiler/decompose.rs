@@ -414,7 +414,7 @@ fn parse_filename_number(decimal: &str, basename: &str, field: &str) -> anyhow::
     // Two arms, because "does not fit u64" is only true of one of them. The single arm this
     // replaces fired for *any* unparseable text, so `lte_bad.binarypb` reported the ID `bad`
     // as not fitting u64 and `CARRIER_.binarypb` said the same of the empty string. That
-    // wording is the stated reason CONTRIBUTING gives for keeping this two-step form over an
+    // wording is the stated reason AGENTS.md gives for keeping this two-step form over an
     // `Option` primitive — "a distinct, tested `does not fit u64` vs `must be shortest decimal`
     // message" — so it has to actually be distinct.
     ensure!(

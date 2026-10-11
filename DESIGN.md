@@ -4,7 +4,7 @@ The architecture and reverse-engineered-format reference for this codebase: the 
 model, the observed `.binarypb` wire formats, the SKU/fingerprint math, the full-folder
 compiler pipeline, and the invariants that keep edits faithful. For how to *use* the tool
 see the [README](README.md); for how to build, test, and work on it see
-[CONTRIBUTING](CONTRIBUTING.md).
+[AGENTS.md](AGENTS.md).
 
 > The `.binarypb` format is **observed, not documented** by Google. Format evidence is
 > based on reverse engineering and real Pixel dumps, except for explicitly labeled
@@ -36,7 +36,7 @@ work; `src/main.rs` is a thin `clap` CLI over them.
 compare}` — plus exactly what they need to be callable and testable from outside the crate:
 the `outcome::Outcome` / `report::{Common, Detail, Report, OutputTarget}` types and `report::publish`,
 the `compiler::{load_sources, provision_from_sources}` parse-once pair and the opaque
-`compiler::ValidatedSources` handle (the corpus test's parse-once optimization; see CONTRIBUTING §
+`compiler::ValidatedSources` handle (the corpus test's parse-once optimization; see AGENTS.md §
 Performance), `model::PHONE_MODELS` (+
 `CapabilityLayout`/`PhoneModel`) for enumerating registered targets, and `proto` for building
 test fixtures. Compiler submodules are private; their shared items stay within `crate::compiler`.
@@ -179,7 +179,7 @@ out-of-range band that would look like NR in a mixed-kind payload.
 
 Every read path goes through that scanner, including the audit commands. `check`, `inspect`, `matrix`, `compare` and the legend loader once decoded with bare prost on the grounds that they are read-only, which left the commands whose entire purpose is finding anomalies accepting exactly the corruption the scanner exists to reject — an audit more permissive than the writer reports bad input as clean. `check` turns a rejected file into a finding and keeps scanning the folder; `inspect` names the reason for the one file it was asked about.
 
-**Per-CC presence and `bw_class` imply each other.** Regeneration does not preserve proto field 6/7 presence — `resolve` re-derives it from the class via `placeholder_ids` — so a component whose per-CC data and class disagree cannot round-trip in either direction: data under a `0`/absent class is dropped, and a class with no data has an all-zero selector invented for it. `RawSubBlock::validate` enforces the biconditional, which makes both losses unrepresentable rather than merely detectable. This is not a new rule but the one generation always produced; only proto ingest disagreed. See CONTRIBUTING's corpus-evidence table for the counts that verify it holds on all 3.46M real sub-blocks.
+**Per-CC presence and `bw_class` imply each other.** Regeneration does not preserve proto field 6/7 presence — `resolve` re-derives it from the class via `placeholder_ids` — so a component whose per-CC data and class disagree cannot round-trip in either direction: data under a `0`/absent class is dropped, and a class with no data has an all-zero selector invented for it. `RawSubBlock::validate` enforces the biconditional, which makes both losses unrepresentable rather than merely detectable. This is not a new rule but the one generation always produced; only proto ingest disagreed. See AGENTS.md's corpus-evidence table for the counts that verify it holds on all 3.46M real sub-blocks.
 - **LTE fallback and PLMN legend: genuine bit-for-bit round-trip.** LTE's four `optional` fields (`ul_bw_class_mimo`, `bcs`, `unknown1`, `unknown2`) and NR's `optional` scalars preserve *explicit zeros* — `Some(0)` re-encodes as a present field instead of being canonicalized away (plain proto3 would drop them, yielding a ~4 KB-smaller LTE file). The legend's `Carrier.plmns` is `packed = "false"` (unpacked repeated), which is **required** for bit-for-bit identity; `decompose`'s self-verification (rebuilding the legend from source and comparing it byte-for-byte against the original) proves the round-trip holds (tested). Reads use `.unwrap_or(0)`; writes set `Some(value)`.
 
 **Every re-encoding write path fails closed on unmodeled input.** A plain `prost` decode
@@ -389,7 +389,7 @@ rest".
    computed is re-derived from the text form and must agree (`validate_documents` therefore
    runs twice per decompose — canonicalize the ingest, then reparse as the validation
    boundary; see the perf note in
-   [CONTRIBUTING](CONTRIBUTING.md#performance-readability-first-then-re-optimize)).
+   [AGENTS.md](AGENTS.md#performance-readability-first-then-re-optimize)).
 9. **Regenerate every internal target and compare** (`verify_internal_targets`): the
    legacy target must produce exactly the whitelist's file set; every stored anchor must
    produce exactly its carriers' numbered file set (through a registered model code, else
@@ -942,7 +942,7 @@ Emitting corpus tests require `UECAPS_CORPUS_OUTPUT_ROOT` at the existing primar
 They run serially (`--test-threads=1`), retaining one temporary source at a time and
 repeating decomposition at that same path. ZIPs have separate temporary guards in the
 same root; per-model provisioning remains parallel and parse-once. Guards remove only
-their test-owned files. See CONTRIBUTING for the complete three-variable invocation.
+their test-owned files. See AGENTS.md for the complete three-variable invocation.
 
 ### Input and output boundaries
 

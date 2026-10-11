@@ -667,7 +667,7 @@ reference, no capability payload); the real alt-tier data lives in `EU_COMMON1`.
 ## Contributing
 
 Contributions welcome. The build/test workflow, conventions, and gotchas live in
-[CONTRIBUTING.md](CONTRIBUTING.md); the architecture, reverse-engineered `.binarypb`
+[AGENTS.md](AGENTS.md); the architecture, reverse-engineered `.binarypb`
 formats, and implementation invariants live in [DESIGN.md](DESIGN.md).
 
 ## License
