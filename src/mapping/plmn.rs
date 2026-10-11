@@ -60,20 +60,25 @@ impl FromStr for Plmn {
         if mnc.len() == 3 && mnc[2].eq_ignore_ascii_case(&b'f') {
             return Err(bad());
         }
-        let lc = |b: u8| (b as char).to_ascii_lowercase();
-        let n3 = if mnc.len() == 3 { lc(mnc[2]) } else { 'f' };
+        let nibble = |b: u8| {
+            u32::from(if b.is_ascii_digit() {
+                b - b'0'
+            } else {
+                b.to_ascii_lowercase() - b'a' + 10
+            })
+        };
+        let n3 = if mnc.len() == 3 { nibble(mnc[2]) } else { 15 };
         // wire nibble layout: M2 M1 N3 M3 N2 N1
-        let h: String = [
-            lc(mcc[1]),
-            lc(mcc[0]),
+        let value = [
+            nibble(mcc[1]),
+            nibble(mcc[0]),
             n3,
-            lc(mcc[2]),
-            lc(mnc[1]),
-            lc(mnc[0]),
+            nibble(mcc[2]),
+            nibble(mnc[1]),
+            nibble(mnc[0]),
         ]
         .into_iter()
-        .collect();
-        let value = u32::from_str_radix(&h, 16).map_err(|_| bad())?;
+        .fold(0, |packed, n| (packed << 4) | n);
         Ok(Self(value))
     }
 }
