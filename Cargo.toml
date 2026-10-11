@@ -23,4 +23,5 @@ tempfile = "3"
 kdl = { version = "6", default-features = false, features = ["span"] }
 
 [dev-dependencies]
+assert_cmd = "2.2.2"
 rayon = "1"

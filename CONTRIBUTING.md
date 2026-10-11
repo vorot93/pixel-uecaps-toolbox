@@ -76,6 +76,13 @@ Also run `cargo run -- self-test` (subcommand is `self-test`): data-independent 
 `pixel-bands` is compile-time data, so real codes like `GUL82` work with no external
 files.
 
+CLI integration targets share `tests/support/mod.rs`. Fixtures use `tempfile::tempdir()`
+and honor the caller's `TMPDIR`; create a persistent writable runtime directory before
+running tests. Helpers do not derive a fixture root from `HOME`. Use `std::process::Command`
+with `assert_cmd::assert::OutputAssertExt` for process assertions, including redirected
+stdout/stderr: `assert_cmd::Command`'s capture would override those redirections. Assert
+messages on their actual stream rather than combining stdout and stderr.
+
 **No test names the source document.** Its path comes from `tempfile::NamedTempFile::new_in(…)`;
 `uecaps.kdl` is a docs convention and nothing more, so a fixture repeating it reads as a
 requirement that does not exist. The cost: `NamedTempFile` always creates the file, so the four

@@ -1,8 +1,70 @@
-#[path = "support/report.rs"]
 mod support;
-use pixel_uecaps_toolbox::proto::*;
-use std::{ffi::OsStr, fs};
-use support::{carrier, compare_pair, text};
+use assert_cmd::assert::OutputAssertExt;
+use pixel_uecaps_toolbox::{NR_BAND_OFFSET, proto::*};
+use std::{ffi::OsStr, fs, process::Output};
+use support::{CLEAN, REJECTED, command, stderr, stdout};
+
+fn run<I, S>(args: I) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    command().args(args).output().unwrap()
+}
+
+fn carrier() -> UeCaps {
+    UeCaps {
+        version: 862_505_271,
+        combo_groups: vec![ComboGroup {
+            combo_header: Some(ComboHeader::default()),
+            combo: vec![Combo {
+                sub_blocks: vec![SubBlock {
+                    band: NR_BAND_OFFSET + 78,
+                    dl_bw_class: Some(3),
+                    ul_bw_class: Some(3),
+                    dl_feature_index: Some(1),
+                    ul_feature_index: Some(1),
+                    dl_feature_per_cc_ids: Some(vec![1, 1]),
+                    ul_feature_per_cc_ids: Some(vec![1, 1]),
+                    ..Default::default()
+                }],
+                bitmask: Some(0),
+            }],
+        }],
+        dl_feature_per_cc_list: [100, 50]
+            .map(|bw| ShannonFeatureSetDlPerCcNr {
+                max_scs: Some(1),
+                max_bw: Some(bw),
+                ..Default::default()
+            })
+            .to_vec(),
+        ul_feature_per_cc_list: [100, 50]
+            .map(|bw| ShannonFeatureSetUlPerCcNr {
+                max_scs: Some(1),
+                max_bw: Some(bw),
+                ..Default::default()
+            })
+            .to_vec(),
+        ..Default::default()
+    }
+}
+
+fn compare_pair(a: &UeCaps, b: &UeCaps, full: bool) -> Output {
+    let dir = support::fixture();
+    let a_path = dir.path().join("a.binarypb");
+    let b_path = dir.path().join("b.binarypb");
+    support::write_message(&a_path, a);
+    support::write_message(&b_path, b);
+    let mut args = vec![
+        OsStr::new("compare"),
+        a_path.as_os_str(),
+        b_path.as_os_str(),
+    ];
+    if full {
+        args.push(OsStr::new("--full"));
+    }
+    run(args)
+}
 
 #[test]
 fn every_modeled_feature_and_header_field_is_compared_and_rendered() {
@@ -88,9 +150,13 @@ fn folders_disclose_supported_unreadable_inputs_and_legend_errors() {
         },
     );
     for command in ["check", "matrix"] {
-        let out = support::run([OsStr::new(command), dir.path().as_os_str()]);
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(2), "{body}");
+        let out = run([OsStr::new(command), dir.path().as_os_str()]);
+        let body = if command == "check" {
+            stdout(&out)
+        } else {
+            stderr(&out)
+        };
+        assert_eq!(out.status.code(), Some(REJECTED), "{body}");
         for token in [
             "cannot read",
             "lte_400907661.binarypb",
@@ -114,8 +180,8 @@ fn full_comparison_explains_different_shapes_with_identical_labels() {
     let mut b = a.clone();
     b.combo_groups[0].combo[0].sub_blocks[0].ul_bw_class = Some(0);
     let out = compare_pair(&a, &b, true);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(0));
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(CLEAN));
     for token in [
         "1 only in A",
         "1 only in B",
@@ -132,8 +198,8 @@ fn repeated_components_retain_multiplicity() {
     let component = b.combo_groups[0].combo[0].sub_blocks[0].clone();
     b.combo_groups[0].combo[0].sub_blocks.push(component);
     let out = compare_pair(&a, &b, true);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(0));
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(CLEAN));
     assert!(
         body.contains("1 only in A") && body.contains("1 only in B"),
         "{body}"
@@ -144,7 +210,7 @@ fn repeated_components_retain_multiplicity() {
 #[test]
 fn failed_error_stream_returns_two_instead_of_panicking() {
     let dir = support::fixture();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_pixel-uecaps-toolbox"))
+    let out = command()
         .args([
             OsStr::new("inspect"),
             dir.path().join("missing.binarypb").as_os_str(),
@@ -157,7 +223,7 @@ fn failed_error_stream_returns_two_instead_of_panicking() {
         )
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2));
+    out.assert().code(REJECTED);
 }
 #[cfg(target_os = "linux")]
 #[test]
@@ -171,7 +237,7 @@ fn report_stdout_failures_return_two() {
         vec![OsStr::new("matrix"), dir.path().as_os_str()],
         vec![OsStr::new("compare"), path.as_os_str(), path.as_os_str()],
     ] {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_pixel-uecaps-toolbox"))
+        let out = command()
             .args(args)
             .stdout(
                 fs::OpenOptions::new()
@@ -181,8 +247,8 @@ fn report_stdout_failures_return_two() {
             )
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-        assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"));
+        assert!(!stderr(&out).contains("panicked"));
+        out.assert().code(REJECTED);
     }
 }
 #[test]
@@ -201,13 +267,9 @@ fn report_commands_share_zero_two_contract() {
             vec![OsStr::new("matrix"), dir.path().as_os_str()],
             vec![OsStr::new("compare"), path.as_os_str(), path.as_os_str()],
         ] {
-            let out = support::run(args);
-            assert_eq!(
-                out.status.code(),
-                Some(if invalid { 2 } else { 0 }),
-                "{}",
-                text(&out)
-            );
+            run(args)
+                .assert()
+                .code(if invalid { REJECTED } else { CLEAN });
         }
     }
 }
@@ -232,9 +294,9 @@ fn comparison_flags_do_not_change_identity_or_status() {
         ] {
             let mut args = vec![OsStr::new("compare"), a.as_os_str(), b.as_os_str()];
             args.extend(flags.iter().map(OsStr::new));
-            let out = support::run(args);
-            let body = text(&out);
-            assert_eq!(out.status.code(), Some(0), "{body}");
+            let out = run(args);
+            let body = stdout(&out);
+            assert_eq!(out.status.code(), Some(CLEAN), "{body}");
             assert!(
                 body.contains(if equal {
                     "no differences"
@@ -255,12 +317,12 @@ fn matrix_diagnostics_and_csv_are_repeatable_with_mixed_inputs() {
     fs::create_dir(dir.path().join("unsupported.binarypb")).unwrap();
     let a = matrix(dir.path());
     let b = matrix(dir.path());
-    assert_eq!(a.status.code(), Some(2));
-    assert_eq!(b.status.code(), Some(2));
+    assert_eq!(a.status.code(), Some(REJECTED));
+    assert_eq!(b.status.code(), Some(REJECTED));
     assert_eq!(a.stdout, b.stdout);
     assert_eq!(a.stderr, b.stderr);
     assert_eq!(rows(&a.stdout).len(), 1);
-    let err = String::from_utf8_lossy(&a.stderr);
+    let err = stderr(&a);
     assert!(
         err.contains("unsupported/not validated") && err.contains("field #15"),
         "{err}"
@@ -268,7 +330,7 @@ fn matrix_diagnostics_and_csv_are_repeatable_with_mixed_inputs() {
 }
 
 fn matrix(dir: &std::path::Path) -> std::process::Output {
-    support::run([OsStr::new("matrix"), dir.as_os_str()])
+    run([OsStr::new("matrix"), dir.as_os_str()])
 }
 fn rows(bytes: &[u8]) -> Vec<csv::StringRecord> {
     let mut reader = csv::Reader::from_reader(bytes);
@@ -284,8 +346,7 @@ fn matrix_retains_valid_collision_partners_in_numeric_order() {
     fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 1]).unwrap();
     for expected in ["66813533", "66813533 | 133627066"] {
         let out = matrix(dir.path());
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(2), "{body}");
+        assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
         let records = rows(&out.stdout);
         assert_eq!(records.len(), 1);
         assert_eq!(&records[0][0], "ALPHA");
@@ -296,7 +357,7 @@ fn matrix_retains_valid_collision_partners_in_numeric_order() {
                 .collect::<Vec<_>>(),
             ["ALPHA", expected]
         );
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = stderr(&out);
         for token in [
             "ALPHA_133627066.binarypb",
             "ALPHA_66813533.binarypb",
@@ -305,7 +366,7 @@ fn matrix_retains_valid_collision_partners_in_numeric_order() {
         ] {
             assert!(err.contains(token), "{err}");
         }
-        assert!(!String::from_utf8_lossy(&out.stdout).contains("error:"));
+        assert!(!stdout(&out).contains("error:"));
         support::write_message(&partner, &carrier());
     }
 }
@@ -334,11 +395,11 @@ fn matrix_omits_each_invalid_candidate_and_keeps_valid_siblings() {
         };
         support::write_message(&dir.path().join(name), &bad);
         let out = matrix(dir.path());
-        assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+        assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
         let records = rows(&out.stdout);
         assert_eq!(records.len(), 1);
         assert_eq!(&records[0][0], "VALID");
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = stderr(&out);
         assert!(err.contains(name) && err.contains(reason), "{err}");
     }
 }
@@ -352,7 +413,7 @@ fn matrix_raw_eutra_and_distinct_carrier_tiers_are_valid() {
     caps.version = 627_223_094;
     support::write_message(&dir.path().join("BETA_66813533.binarypb"), &caps);
     let out = matrix(dir.path());
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert_eq!(out.status.code(), Some(CLEAN), "{}", stderr(&out));
     assert_eq!(rows(&out.stdout).len(), 2);
     fs::rename(
         dir.path().join("BETA_66813533.binarypb"),
@@ -360,8 +421,8 @@ fn matrix_raw_eutra_and_distinct_carrier_tiers_are_valid() {
     )
     .unwrap();
     let out = matrix(dir.path());
-    assert_eq!(out.status.code(), Some(2));
-    assert!(text(&out).contains("mixes tier"));
+    assert_eq!(out.status.code(), Some(REJECTED));
+    assert!(stderr(&out).contains("mixes tier"));
     assert!(
         rows(&out.stdout)[0]
             .iter()
@@ -376,10 +437,10 @@ fn matrix_unsupported_only_is_header_and_information() {
     #[cfg(unix)]
     std::os::unix::fs::symlink("missing", dir.path().join("unmodeled.binarypb")).unwrap();
     let out = matrix(dir.path());
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert_eq!(out.status.code(), Some(CLEAN), "{}", stderr(&out));
     assert!(rows(&out.stdout).is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("unsupported/not validated"));
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("unsupported"));
+    assert!(stderr(&out).contains("unsupported/not validated"));
+    assert!(!stdout(&out).contains("unsupported"));
 }
 #[test]
 fn matrix_publishes_partial_file_but_preserves_destination_on_scan_failure() {
@@ -389,7 +450,7 @@ fn matrix_publishes_partial_file_but_preserves_destination_on_scan_failure() {
     let dest = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
     fs::write(dest.path(), b"sentinel").unwrap();
     let publish = |input: &std::path::Path, output: &std::path::Path| {
-        support::run([
+        run([
             OsStr::new("matrix"),
             input.as_os_str(),
             OsStr::new("-o"),
@@ -397,20 +458,20 @@ fn matrix_publishes_partial_file_but_preserves_destination_on_scan_failure() {
         ])
     };
     let out = publish(dir.path(), dest.path());
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
+    assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
     assert!(out.stdout.is_empty());
     assert_eq!(rows(&fs::read(dest.path()).unwrap()).len(), 1);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("lte_400907661.binarypb"));
+    assert!(stderr(&out).contains("lte_400907661.binarypb"));
     fs::write(dest.path(), b"sentinel").unwrap();
     assert_eq!(
         publish(&dir.path().join("absent"), dest.path())
             .status
             .code(),
-        Some(2)
+        Some(REJECTED)
     );
     assert_eq!(fs::read(dest.path()).unwrap(), b"sentinel");
     let absent = dir.path().join("absent/out.csv");
-    assert_eq!(publish(dir.path(), &absent).status.code(), Some(2));
+    publish(dir.path(), &absent).assert().code(REJECTED);
     assert!(!absent.exists());
 }
 
@@ -421,9 +482,9 @@ fn check_decodes_lte_and_reports_selector_collisions() {
         support::write_message(&dir.path().join(name), &carrier());
     }
     fs::write(dir.path().join("lte_400907661.binarypb"), [0x78, 0x01]).unwrap();
-    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(2), "{body}");
+    let out = run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(REJECTED), "{body}");
     for token in [
         "lte_400907661.binarypb",
         "15",
@@ -456,9 +517,9 @@ fn check_accumulates_independent_errors_and_excludes_invalid_coverage() {
             }],
         },
     );
-    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(2), "{body}");
+    let out = run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(REJECTED), "{body}");
     for token in [
         "anchor",
         "167",
@@ -491,9 +552,9 @@ fn check_unsupported_names_are_informational() {
         )
         .unwrap();
     }
-    let out = support::run([OsStr::new("check"), dir.path().as_os_str()]);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(0), "{body}");
+    let out = run([OsStr::new("check"), dir.path().as_os_str()]);
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(CLEAN), "{body}");
     assert!(body.contains("unsupported/not validated"), "{body}");
     assert!(body.contains("mystery.binarypb") && body.contains(".binarypb"));
     #[cfg(unix)]
@@ -501,7 +562,7 @@ fn check_unsupported_names_are_informational() {
 }
 
 fn inspect(path: &std::path::Path) -> std::process::Output {
-    support::run([
+    run([
         OsStr::new("inspect"),
         path.as_os_str(),
         OsStr::new("--full"),
@@ -514,9 +575,9 @@ fn main_only_profiles_are_rejected_in_alt_inspection_coverage_and_matrix() {
         let dir = support::fixture();
         let path = dir.path().join(format!("ALPHA_{anchor}.binarypb"));
         for (fingerprint, status, coverage) in [
-            (707_802_847, 2, "0/14 profiles"),
-            (627_223_094, 2, "0/14 profiles"),
-            (874_888_686, 0, "1/16 profiles"),
+            (707_802_847, REJECTED, "0/14 profiles"),
+            (627_223_094, REJECTED, "0/14 profiles"),
+            (874_888_686, CLEAN, "1/16 profiles"),
         ] {
             support::write_message(
                 &path,
@@ -530,18 +591,17 @@ fn main_only_profiles_are_rejected_in_alt_inspection_coverage_and_matrix() {
                 inspected.status.code(),
                 Some(status),
                 "{}",
-                text(&inspected)
+                stderr(&inspected)
             );
-            let checked = support::run([OsStr::new("check"), dir.path().as_os_str()]);
-            assert_eq!(checked.status.code(), Some(status), "{}", text(&checked));
-            assert!(text(&checked).contains(coverage), "{}", text(&checked));
+            let checked = run([OsStr::new("check"), dir.path().as_os_str()]);
+            assert_eq!(checked.status.code(), Some(status), "{}", stdout(&checked));
+            assert!(stdout(&checked).contains(coverage), "{}", stdout(&checked));
             let matrix = matrix(dir.path());
-            assert_eq!(matrix.status.code(), Some(status), "{}", text(&matrix));
+            assert_eq!(matrix.status.code(), Some(status), "{}", stderr(&matrix));
             let records = rows(&matrix.stdout);
-            if status == 2 {
+            if status == REJECTED {
                 assert!(records.is_empty());
-                for output in [&inspected, &checked, &matrix] {
-                    let body = text(output);
+                for body in [stderr(&inspected), stdout(&checked), stderr(&matrix)] {
                     for token in [anchor.to_string(), "Main-only".into(), "Alt".into()] {
                         assert!(body.contains(&token), "{body}");
                     }
@@ -588,8 +648,8 @@ fn lte_full_inspection_renders_dl_and_ul_mimo() {
         caps.combos[0].components[0].ul_bw_class_mimo = Some(ul);
         support::write_message(&path, &caps);
         let out = inspect(&path);
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(0), "{body}");
+        let body = stdout(&out);
+        assert_eq!(out.status.code(), Some(CLEAN), "{body}");
         assert!(body.contains(expected), "{expected}: {body}");
     }
 }
@@ -618,8 +678,8 @@ fn lte_full_inspection_preserves_each_optional_fields_presence_and_value() {
     let baseline = lte_caps();
     support::write_message(&path, &baseline);
     let out = inspect(&path);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(0), "{body}");
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(CLEAN), "{body}");
     for field in ["ul_bw_class_mimo=0", "bcs=0", "unknown1=0", "unknown2=0"] {
         assert!(body.contains(field), "{field}: {body}");
     }
@@ -628,8 +688,8 @@ fn lte_full_inspection_preserves_each_optional_fields_presence_and_value() {
         mutate(&mut changed);
         support::write_message(&path, &changed);
         let changed = inspect(&path);
-        let body = text(&changed);
-        assert_eq!(changed.status.code(), Some(0), "{body}");
+        let body = stdout(&changed);
+        assert_eq!(changed.status.code(), Some(CLEAN), "{body}");
         assert!(body.contains(expected), "{expected}: {body}");
         assert_ne!(out.stdout, changed.stdout, "{expected}");
     }
@@ -646,12 +706,12 @@ fn inspect_corruption_and_missing_files_fail() {
         let path = dir.path().join(name);
         fs::write(&path, [0x78, 0x01]).unwrap();
         let out = inspect(&path);
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(2), "{body}");
+        let body = stderr(&out);
+        assert_eq!(out.status.code(), Some(REJECTED), "{body}");
         assert!(body.contains("15"), "{body}");
         assert!(!body.contains("file not present"));
         fs::remove_file(&path).unwrap();
-        assert_eq!(inspect(&path).status.code(), Some(2));
+        inspect(&path).assert().code(REJECTED);
     }
 }
 
@@ -662,8 +722,8 @@ fn inspect_invalid_anchor_cardinality_returns_two() {
         let path = dir.path().join(name);
         support::write_message(&path, &carrier());
         let out = inspect(&path);
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(2), "{body}");
+        let body = stderr(&out);
+        assert_eq!(out.status.code(), Some(REJECTED), "{body}");
         assert!(body.contains("anchor"));
         if name.contains("558949") {
             assert!(body.contains("167") && body.contains("3347"));
@@ -699,13 +759,14 @@ fn legend_errors_accumulate_before_lookup() {
     support::write_message(&legend, &map);
     for file in [&path, &legend] {
         let out = inspect(file);
-        let body = text(&out);
-        assert_eq!(out.status.code(), Some(2), "{body}");
+        let body = stderr(&out);
+        assert_eq!(out.status.code(), Some(REJECTED), "{body}");
         for token in ["empty", "duplicate", "index", "16777216", "ALPHA"] {
             assert!(body.contains(token), "{token}: {body}");
         }
     }
-    let body = text(&inspect(&path));
+    let out = inspect(&path);
+    let body = stdout(&out);
     assert!(body.contains("DL[2]"), "{body}");
 }
 
@@ -714,11 +775,11 @@ fn valid_empty_and_optional_legends_are_distinct_from_missing_requested() {
     let dir = support::fixture();
     let path = dir.path().join("ALPHA_66813533.binarypb");
     support::write_message(&path, &carrier());
-    assert_eq!(inspect(&path).status.code(), Some(0));
+    inspect(&path).assert().code(CLEAN);
     let legend = dir.path().join("ap_plmn_mapping.binarypb");
-    assert_eq!(inspect(&legend).status.code(), Some(2));
+    inspect(&legend).assert().code(REJECTED);
     support::write_message(&legend, &PlmnMap::default());
-    assert_eq!(inspect(&legend).status.code(), Some(0));
+    inspect(&legend).assert().code(CLEAN);
     support::write_message(
         &legend,
         &PlmnMap {
@@ -729,7 +790,7 @@ fn valid_empty_and_optional_legends_are_distinct_from_missing_requested() {
             }],
         },
     );
-    assert_eq!(inspect(&path).status.code(), Some(0));
+    inspect(&path).assert().code(CLEAN);
 }
 
 #[cfg(unix)]
@@ -740,16 +801,16 @@ fn dangling_optional_legend_is_an_error() {
     support::write_message(&path, &carrier());
     std::os::unix::fs::symlink("missing", dir.path().join("ap_plmn_mapping.binarypb")).unwrap();
     let out = inspect(&path);
-    assert_eq!(out.status.code(), Some(2), "{}", text(&out));
-    assert!(text(&out).contains("cannot read"));
+    assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
+    assert!(stderr(&out).contains("cannot read"));
 }
 
 fn changed(a: &UeCaps, b: &UeCaps) -> String {
     let out = compare_pair(a, b, true);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(0), "{body}");
+    let body = stdout(&out);
+    assert_eq!(out.status.code(), Some(CLEAN), "{body}");
     assert!(body.contains("1 caps-changed"), "{body}");
-    body
+    body.to_owned()
 }
 
 #[test]
@@ -767,8 +828,8 @@ fn later_dl_and_ul_changes_are_visible_and_successful() {
         assert!(full.contains(if dl { "DL[2]" } else { "UL[2]" }), "{full}");
         assert!(full.contains("100") && full.contains("50"));
         let summary = compare_pair(&a, &b, false);
-        assert_eq!(summary.status.code(), Some(0));
-        assert!(text(&summary).contains("1 caps-changed"));
+        assert_eq!(summary.status.code(), Some(CLEAN));
+        assert!(stdout(&summary).contains("1 caps-changed"));
     }
 }
 
@@ -845,8 +906,8 @@ fn invalid_nr_references_report_all_source_coordinates() {
     b.combo_groups[0].combo[0].sub_blocks[1].dl_feature_per_cc_ids = Some(vec![254, 255]);
     b.combo_groups[0].combo[0].sub_blocks[1].ul_feature_per_cc_ids = Some(vec![0, 1]);
     let out = compare_pair(&a, &b, true);
-    let body = text(&out);
-    assert_eq!(out.status.code(), Some(2), "{body}");
+    let body = stderr(&out);
+    assert_eq!(out.status.code(), Some(REJECTED), "{body}");
     for token in [
         "g1",
         "c1",
@@ -879,8 +940,8 @@ fn catalog_numbering_group_packing_and_component_order_do_not_change_sets() {
     b.combo_groups.push(b.combo_groups[0].clone());
     b.dl_feature_per_cc_list.push(Default::default());
     let out = compare_pair(&a, &b, true);
-    assert_eq!(out.status.code(), Some(0));
-    assert!(text(&out).contains("no differences"));
+    assert_eq!(out.status.code(), Some(CLEAN));
+    assert!(stdout(&out).contains("no differences"));
     let mut ordered = carrier();
     ordered.combo_groups[0].combo[0].sub_blocks[0].dl_feature_per_cc_ids = Some(vec![1, 2]);
     let mut reverse = ordered.clone();
@@ -893,14 +954,14 @@ fn empty_groups_compare_but_true_stubs_do_not() {
     let mut empty = carrier();
     empty.combo_groups[0].combo.clear();
     let out = compare_pair(&empty, &empty, true);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
-    assert!(text(&out).contains("0 common · no differences"));
+    assert_eq!(out.status.code(), Some(CLEAN), "{}", stderr(&out));
+    assert!(stdout(&out).contains("0 common · no differences"));
     let out = compare_pair(&empty, &carrier(), true);
-    assert_eq!(out.status.code(), Some(0));
-    assert!(text(&out).contains("1 only in B"));
+    assert_eq!(out.status.code(), Some(CLEAN));
+    assert!(stdout(&out).contains("1 only in B"));
     let mut stub = empty.clone();
     stub.combo_groups.clear();
-    assert_eq!(compare_pair(&stub, &empty, true).status.code(), Some(2));
+    compare_pair(&stub, &empty, true).assert().code(REJECTED);
 }
 
 #[test]

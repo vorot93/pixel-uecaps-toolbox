@@ -1,3 +1,5 @@
+mod support;
+use assert_cmd::assert::OutputAssertExt;
 use pixel_uecaps_toolbox::proto::{
     Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
     ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock, UeCaps,
@@ -6,9 +8,10 @@ use prost::Message;
 use std::{
     fs,
     io::{Cursor, Read},
-    path::{Path, PathBuf},
-    process::{Command, Output},
+    path::PathBuf,
+    process::Output,
 };
+use support::{CLEAN, REJECTED, command, fixture, stderr, stdout, write_message};
 use tempfile::{NamedTempFile, TempDir};
 use zip::ZipArchive;
 
@@ -26,7 +29,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = fixture();
         let bitmask = temp.path().join("bitmask");
         let profiled = temp.path().join("profiled");
         let source = NamedTempFile::new_in(temp.path()).unwrap();
@@ -143,14 +146,6 @@ impl Fixture {
     }
 }
 
-fn command() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_pixel-uecaps-toolbox"))
-}
-
-fn write_message(path: &Path, message: &impl Message) {
-    fs::write(path, message.encode_to_vec()).unwrap();
-}
-
 fn nr_caps(
     fingerprint: u64,
     id: Option<i32>,
@@ -196,16 +191,12 @@ fn nr_caps(
     }
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
 #[test]
 fn decompose_then_provision_runs_the_real_compiler_pipeline() {
     let fixture = Fixture::new();
 
     let decoded = fixture.decompose();
-    assert!(decoded.status.success(), "{}", stderr(&decoded));
+    decoded.assert().code(CLEAN);
     let source = fs::read_to_string(fixture.source.path()).unwrap();
     assert!(source.contains("mi=7"), "{source}");
     assert!(!source.contains("pi="), "{source}");
@@ -269,10 +260,10 @@ fn provision_unknown_model_is_a_hard_error_that_lists_registered_models() {
     assert!(decoded.status.success(), "{}", stderr(&decoded));
 
     let provisioned = fixture.provision("NOT-A-MODEL");
-    assert_eq!(provisioned.status.code(), Some(2));
     let stderr = stderr(&provisioned);
     assert!(stderr.contains("unknown model"), "{stderr}");
     assert!(stderr.contains(MODEL), "{stderr}");
+    provisioned.assert().code(REJECTED);
     assert!(!fixture.module.exists());
 }
 
@@ -288,6 +279,6 @@ fn decompose_without_an_output_path_writes_the_document_to_stdout() {
 
     let to_stdout = fixture.decompose_to_stdout();
     assert!(to_stdout.status.success(), "{}", stderr(&to_stdout));
-    assert_eq!(to_stdout.stdout, written);
+    assert_eq!(stdout(&to_stdout).as_bytes(), written);
     assert!(to_stdout.stderr.is_empty(), "{}", stderr(&to_stdout));
 }
