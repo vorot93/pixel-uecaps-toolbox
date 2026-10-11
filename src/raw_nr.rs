@@ -1864,3 +1864,191 @@ mod tests {
         assert!(cc_count(SubBlockKind::Nr, 0).is_err()); // 0 = disabled, handled by callers, not here
     }
 }
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    use crate::{
+        compiler::nr::test_support::{cc, full_header, raw_payloads},
+        proto::{Combo, ComboGroup, SubBlock, UeCaps},
+    };
+    #[test]
+    fn raw_conversion_flattens_group_packing_and_sorts_components_by_full_key() {
+        let caps = UeCaps {
+            combo_groups: vec![
+                ComboGroup {
+                    combo_header: full_header(),
+                    combo: vec![Combo {
+                        sub_blocks: vec![cc(10_078, 9), cc(10_078, 2)],
+                        bitmask: Some(7),
+                    }],
+                },
+                ComboGroup {
+                    combo_header: full_header(),
+                    combo: vec![Combo {
+                        sub_blocks: vec![cc(10_041, 1)],
+                        bitmask: None,
+                    }],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let payloads = raw_payloads(&caps);
+
+        assert_eq!(payloads.len(), 2, "group packing must flatten away");
+        assert_eq!(payloads[0].header.power_class, Some(0));
+        assert_eq!(
+            payloads[0]
+                .sub_blocks
+                .iter()
+                .map(RawSubBlock::srs_tx_switch)
+                .collect::<Vec<_>>(),
+            vec![Some(2), Some(9)],
+            "all raw component fields participate in canonical ordering"
+        );
+    }
+
+    #[test]
+    fn raw_conversion_preserves_optional_zero_values_and_suppresses_resolved_selectors() {
+        let caps = UeCaps {
+            combo_groups: vec![ComboGroup {
+                combo_header: Some(ComboHeader {
+                    bcs_nr: Some(0),
+                    bcs_intra_endc: Some(0),
+                    bcs_eutra: Some(0),
+                    power_class: Some(0),
+                    intra_band_en_dc_support: Some(0),
+                }),
+                combo: vec![Combo {
+                    sub_blocks: vec![SubBlock {
+                        band: 10_078,
+                        // Both classes are 1, not 0: per-CC presence and `bw_class` imply each
+                        // other, so a direction carrying a selector must have a real class.
+                        // The resolution behaviour under test is unaffected — it depends on the
+                        // selector bytes, not on which class they sit under.
+                        dl_bw_class: Some(1),
+                        ul_bw_class: Some(1),
+                        dl_feature_index: Some(1),
+                        // A single in-range byte, so all-or-nothing resolution still
+                        // resolves (the out-of-range multi-byte case is covered by
+                        // `raw_conversion_preserves_every_selector_only_presence_shape`
+                        // and `resolve_all_keeps_every_cc_or_none`).
+                        dl_feature_per_cc_ids: Some(vec![1]),
+                        // The all-zero placeholder: resolves to nothing, so it survives
+                        // verbatim rather than being superseded like DL's.
+                        ul_feature_per_cc_ids: Some(vec![0]),
+                        srstxswitch: Some(0),
+                        ..Default::default()
+                    }],
+                    bitmask: Some(0),
+                }],
+            }],
+            dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr {
+                max_scs: Some(0),
+                max_mimo: Some(0),
+                max_bw: Some(0),
+                max_mod_order: Some(0),
+                bw_90mhz_supported: Some(false),
+            }],
+            ..Default::default()
+        };
+
+        let payload = raw_payloads(&caps).pop().unwrap();
+        assert_eq!(payload.header.bcs_nr, Some(0));
+        assert_eq!(payload.header.power_class, Some(0));
+        let component = &payload.sub_blocks[0];
+        // The explicit-zero *class* case moved to `ul_bw_class_zero_is_preserved_as_explicit`
+        // below: NR DL is never class 0 in any real file, and a class-0 direction may not carry
+        // a selector, so the old `dl_bw_class: Some(0)` + DL selector fixture was a shape the
+        // corpus does not contain. The remaining explicit zeros here are all realistic.
+        assert_eq!(component.srs_tx_switch(), Some(0));
+        assert_eq!(component.dl_features().len(), 1);
+        assert_eq!(component.dl_features()[0].max_scs, Some(0));
+        assert_eq!(component.dl_features()[0].bw_90mhz_supported, Some(false));
+        assert_eq!(
+            component.selector(Direction::Dl),
+            None,
+            "resolved raw values must suppress the source selector"
+        );
+        assert_eq!(component.selector(Direction::Ul), Some([0].as_slice()));
+    }
+
+    /// The realistic explicit-zero class: UL disabled. `ul_bw_class = 0` occurs 687 438 times
+    /// in the corpus and always with field 7 absent, so this is the shape that must survive
+    /// ingest as `Some(0)` rather than being normalized to `None`.
+    #[test]
+    fn ul_bw_class_zero_is_preserved_as_explicit() {
+        let caps = UeCaps {
+            combo_groups: vec![ComboGroup {
+                combo_header: full_header(),
+                combo: vec![Combo {
+                    sub_blocks: vec![SubBlock {
+                        band: 10_078,
+                        dl_bw_class: Some(1),
+                        dl_feature_per_cc_ids: Some(vec![0]),
+                        ul_bw_class: Some(0),
+                        ..Default::default()
+                    }],
+                    bitmask: Some(0),
+                }],
+            }],
+            ..Default::default()
+        };
+
+        let payload = raw_payloads(&caps).pop().unwrap();
+        let component = &payload.sub_blocks[0];
+
+        assert_eq!(component.bw_class(Direction::Ul), Some(0));
+        assert_eq!(component.selector(Direction::Ul), None);
+    }
+
+    // The former `raw_conversion_preserves_every_selector_only_presence_shape` lived here. It
+    // fed arbitrary selectors (`[1, 9]`, `[2]`) and a mismatched NR `dl_feature_index` through
+    // the report-DTO ingest path, which applied neither the unresolvable-selector nor the
+    // index-derivation guard. That path is gone, and the guards it bypassed are covered
+    // directly by `raw_nr`'s `from_proto_rejects_non_placeholder_unresolvable_selector`,
+    // `from_proto_accepts_the_all_zero_placeholder_selector`,
+    // `from_proto_rejects_nr_feature_index_mismatch`, and
+    // `from_proto_accepts_a_matching_nr_feature_index`.
+
+    #[test]
+    fn compiler_conversion_preserves_a_referenced_default_feature_record() {
+        let caps = UeCaps {
+            combo_groups: vec![ComboGroup {
+                combo_header: full_header(),
+                combo: vec![Combo {
+                    sub_blocks: vec![SubBlock {
+                        band: 10_078,
+                        // A DL selector requires a DL class to sit under — the biconditional
+                        // `validate` now enforces, and the shape every real file has.
+                        dl_bw_class: Some(1),
+                        ul_bw_class: Some(0),
+                        dl_feature_index: Some(1),
+                        // A single in-range byte: all-or-nothing resolution needs every
+                        // byte in range to resolve, unlike the old first-byte rule.
+                        dl_feature_per_cc_ids: Some(vec![1]),
+                        ..Default::default()
+                    }],
+                    bitmask: Some(0),
+                }],
+            }],
+            dl_feature_per_cc_list: vec![ShannonFeatureSetDlPerCcNr::default()],
+            ..Default::default()
+        };
+        let payload = raw_payloads(&caps).pop().unwrap();
+        let component = &payload.sub_blocks[0];
+        assert_eq!(
+            component.dl_features().first().copied(),
+            Some(ShannonFeatureSetDlPerCcNr::default())
+        );
+        assert_eq!(component.selector(Direction::Dl), None);
+        assert_ne!(
+            RawSubBlockKey::from(component),
+            RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
+                band: 78,
+                ..Default::default()
+            }))
+        );
+    }
+}

@@ -82,7 +82,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/compiler/features.rs` | Fallible source-palette references and compact referenced-only per-file `LocalFeaturePlan` projection. |
 | `src/compiler/schema.rs` | Strict version-1 source-document DTOs (`SourceDocument`, wrapping the `NrDocument`/`LteDocument` halves), shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
 | `src/compiler/kdl_source.rs` | Hand-written source-document (de)serialization (`source_to_kdl`/`source_from_kdl`) over the shared `kdl_support` toolkit. |
-| `src/compiler/nr.rs` | Bitmask/profiled NR ingestion, carrier metadata derivation, raw payload normalization, model-targeted generation, and canonical self-verification. |
+| `src/compiler/nr/{ingest,generate,verify}.rs` | Bitmask/profiled NR ingestion and metadata, model-targeted generation, and canonical self-verification behind a shared type facade. |
 | `src/compiler/lte.rs` | Ordered LTE payload identity, applicability, global DAG/topological ordering, byte-identical regeneration, and self-verification. |
 | `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and the single file-or-stdout source write. |
 | `src/compiler/provision.rs` | Real-model resolution, complete file-set assembly, protobuf self-check, replacement-module construction, and atomic ZIP output. |
@@ -312,7 +312,7 @@ rest".
    `OriginalInputs`; it neither re-decodes nor clones the byte buffer. `decode_documents`
    returns only the verified canonical text; source-inspecting callers parse that text.
 3. **Extract canonical NR payloads per carrier file** (`canonical_payloads` in
-   `src/compiler/nr.rs`; one routine for both layouts):
+   `src/compiler/nr/ingest.rs`; one routine for both layouts):
    - Before either layout is consumed or any payload is normalized, observe every field of
      every raw top-level DL/UL feature row from both layouts in `ObservedFeatureDomains`.
      This includes unreferenced rows and files whose `combo_groups` are empty reference
@@ -1173,7 +1173,7 @@ legend (including mapping-only and empty-PLMN entries), and exactly its register
 file.
 
 Every generated file is self-verified before packaging: `verify_generated_file`
-(`src/compiler/nr.rs`) re-decodes each NR file's just-encoded bytes and compares them
+(`src/compiler/nr/verify.rs`) re-decodes each NR file's just-encoded bytes and compares them
 field-by-field against the in-memory model that produced them (identity fields, bitmask,
 both feature lists, and full per-file catalog coverage), and `provision`'s own
 `verify_generated_files` (`src/compiler/provision.rs`) then re-decodes every generated
@@ -1346,7 +1346,7 @@ field. `RawSubBlock::dl_feature_index()` returns the derivation for NR and the s
   `raw_nr::RawNrPayload::from_proto_combo` — asserts (`anyhow::ensure!`) that these fields
   are actually `Some` on the decoded proto, failing closed instead of silently normalizing an
   unobserved `None` shape to `0`; both fns are therefore fallible and only called from the
-  compiler's strict `canonical_payloads` path (`compiler/nr.rs`), never from report projection:
+  compiler's strict `canonical_payloads` path (`compiler/nr/ingest.rs`), never from report projection:
   reports validate wire/reference integrity but preserve optional observations instead of applying
   compiler representability constraints. Because the four header fields are always `Some` once a payload is built either
   way, `RawNrPayload::header()` always returns `Some(ComboHeader{..})` (the `Option` return
