@@ -12,5 +12,7 @@ pub(crate) use source::{
     NrSourceCombo, ProfileSource, SOURCE_FORMAT_VERSION, SourceDocument,
 };
 pub(crate) use validate::{legend_root, parse_sources, validate_carrier_name, validate_documents};
+#[cfg(test)]
+pub(crate) use validated::ValidatedNrCombo;
 pub use validated::ValidatedSources;
-pub(crate) use validated::{ValidatedLte, ValidatedLteCombo, ValidatedNr, ValidatedNrCombo};
+pub(crate) use validated::{ValidatedLte, ValidatedLteCombo, ValidatedNr};

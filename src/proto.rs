@@ -6,7 +6,7 @@
 //! `packed = "false"` keeps a repeated scalar unpacked. Modeling that proto2-origin wire
 //! format by hand is why these types are written out rather than generated from a `.proto`.
 
-/// Full per-carrier UE-capability schema for <CARRIER>_<NUMBER>.binarypb, merged
+/// Full per-carrier UE-capability schema for `<CARRIER>_<NUMBER>.binarypb`, merged
 /// from the reverse-engineered definition. Fields 1 (version/fingerprint) and 9
 /// (unknown/reference) are typed uint64 — the tool reads and prints them as plain
 /// numbers, so the wider type avoids any truncation while staying value-identical.

@@ -102,8 +102,8 @@ mod tests {
     use super::*;
     use crate::{
         compiler::{
+            read_sources,
             schema::{parse_sources, test_support::*},
-            source_from_kdl,
         },
         raw_nr::Direction,
     };
@@ -117,7 +117,7 @@ mod tests {
             "{}\nl {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nl {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
             lte_with_complete_domain()
         );
-        let text = to_kdl(&source_from_kdl(&source(&nr_text, &lte_text)).unwrap()).unwrap();
+        let text = to_kdl(&read_sources(&source(&nr_text, &lte_text)).unwrap()).unwrap();
 
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
 
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(canonical.lte.combos[0].source.components[0].band, 3);
         assert_eq!(canonical.lte.combos[1].source.components[0].band, 7);
 
-        assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
+        assert_eq!(to_kdl(&read_sources(&text).unwrap()).unwrap(), text);
     }
 
     #[test]
@@ -166,8 +166,8 @@ c "ORDERED" mi=7 {
         )
         .replace("bc \"LEGACY\"", "bc \"ABSENT\" \"LEGACY\"")
         .replace("c \"LEGACY\"", "c \"ABSENT\" \"LEGACY\"");
-        let text = to_kdl(&source_from_kdl(&source(&nr_text, MINIMAL_LTE)).unwrap()).unwrap();
-        let nr = source_from_kdl(&text).unwrap().nr;
+        let text = to_kdl(&read_sources(&source(&nr_text, MINIMAL_LTE)).unwrap()).unwrap();
+        let nr = read_sources(&text).unwrap().nr;
         assert_eq!(nr.carriers["ABSENT"].plmns, None);
         assert_eq!(nr.carriers["MAP_ONLY"].plmns, Some(Vec::new()));
         assert_eq!(

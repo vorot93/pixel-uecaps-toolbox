@@ -53,7 +53,7 @@ pub(crate) struct NrSourceCombo {
 /// two-document format had to reject at runtime — and by the time anything downstream sees a
 /// `SourceDocument` that version is always [`SOURCE_FORMAT_VERSION`]: the reader
 /// (`kdl_source::checked_version`) refuses any other value before returning, and the writer
-/// (`kdl_source::source_to_kdl`) stamps the constant unconditionally. Storing it would only carry
+/// (`kdl_source::write_sources`) stamps the constant unconditionally. Storing it would only carry
 /// a number both ends already know, so it was carried write-only until it was dropped.
 #[derive(Clone, Debug)]
 pub(crate) struct SourceDocument {
@@ -62,7 +62,7 @@ pub(crate) struct SourceDocument {
 }
 
 /// The NR half. `Default` is the empty half, which the tests that exercise only the LTE half
-/// pass to [`source_to_kdl`](crate::compiler::source_to_kdl) — the writer always emits `bc`, so an empty
+/// pass to [`write_sources`](crate::compiler::write_sources) — the writer always emits `bc`, so an empty
 /// half still produces a parseable document.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NrDocument {

@@ -615,8 +615,8 @@ mod tests {
     use super::{decode_documents, decompose};
     use crate::{
         compiler::{
+            read_sources,
             schema::{parse_sources, to_kdl},
-            source_from_kdl,
             test_support::{
                 FIRST_LTE_ID, MiniCorpus, SECOND_LTE_ID, SYNTHETIC_ANCHOR, decode_lte,
                 decode_mapping, decode_nr, inject_unknown_nr_cc_field,
@@ -669,7 +669,7 @@ mod tests {
         let (bitmask, profiled) = corpus.write_to(temp.path(), false);
 
         let text = decode_documents(&bitmask, &profiled).unwrap();
-        let source = source_from_kdl(&text).unwrap();
+        let source = read_sources(&text).unwrap();
 
         assert_eq!(source.nr.bitmask_carriers, expected.bitmask_carriers);
         for (carrier, anchors) in expected.profiles {
@@ -927,7 +927,7 @@ mod tests {
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
         // Through the *validating* `to_kdl`, not `ValidatedSources::to_kdl`: the assertion is
         // that a second validate + canonicalize pass over the written document is a fixed point.
-        assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
+        assert_eq!(to_kdl(&read_sources(&text).unwrap()).unwrap(), text);
     }
 
     #[test]

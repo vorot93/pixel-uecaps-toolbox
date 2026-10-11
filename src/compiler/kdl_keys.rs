@@ -5,11 +5,11 @@
 //! drift hazard: a mismatched pair only fails if a test happens to exercise that key.
 //!
 //! **Grouped by scope, and the grouping is load-bearing.** Two keys may share a spelling only if
-//! they are never siblings. [`tests::collisions_are_only_across_scopes`] enforces that, so a key
+//! they are never siblings. `tests::collisions_are_only_across_scopes` enforces that, so a key
 //! added to the wrong group fails the suite instead of silently shadowing one.
 
 /// Document level. Every name here is a sibling of every other: both radio kinds' nodes live in
-/// one document, so this is one scope, and [`tests::collisions_are_only_across_scopes`] is what
+/// one document, so this is one scope, and `tests::collisions_are_only_across_scopes` is what
 /// keeps it that way.
 pub(crate) mod doc {
     /// Deliberately NOT abbreviated. A version mismatch must be diagnosable, and it cannot be if

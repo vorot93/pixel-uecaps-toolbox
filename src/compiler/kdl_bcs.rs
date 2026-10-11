@@ -21,7 +21,7 @@
 //!
 //! It also reads deceptively: `b0` looks like "zero" but is set {0} = 2147483648, the *largest*
 //! single-bit value here, because index 0 is the most significant bit. Zero is `""`. See
-//! [`tests::the_empty_set_and_set_zero_stay_distinct`].
+//! `tests::the_empty_set_and_set_zero_stay_distinct`.
 
 use crate::formatting::Separated;
 use anyhow::{Context, Result, ensure};

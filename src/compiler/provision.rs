@@ -225,13 +225,13 @@ mod tests {
             GeneratedFile, GeneratedRole,
             decompose::decompose,
             features::{SourceNrSubBlock, SourceSubBlock},
+            read_sources,
             schema::{
                 BitmaskFingerprint, CarrierSource, LteDocument, LteFileSource, LteSourceCombo,
                 NrDocument, NrSourceCombo, ProfileSource, SourceDocument, ValidatedSources,
                 parse_sources, to_kdl,
             },
             selection::SelectionRect,
-            source_from_kdl,
             test_support::{MiniCorpus, REGISTERED_ANCHOR},
         },
         mapping::Plmn,
@@ -539,7 +539,7 @@ mod tests {
             fs::read_to_string(second_source.path()).unwrap()
         );
         assert_eq!(
-            to_kdl(&source_from_kdl(&first_text).unwrap()).unwrap(),
+            to_kdl(&read_sources(&first_text).unwrap()).unwrap(),
             first_text
         );
 

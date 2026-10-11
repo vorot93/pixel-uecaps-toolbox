@@ -29,7 +29,7 @@ pub(crate) struct ValidatedNrCombo {
 
 /// Inverted index from an interned `(carrier_id, sku_id)` target to the `combo` indices whose
 /// relation contains it, built once per [`ValidatedNr`]. It replaces `selected_payloads`' former
-/// per-target linear scan over every combo (each an O(log n) [`NrRelation::contains`] probe) with
+/// per-target linear scan over every combo (each an O(log n) relation membership probe) with
 /// one O(1) lookup — the dominant `decompose`/`provision` cost, since generation runs `selected_payloads`
 /// once per carrier per target. Indices are stored ascending, so a lookup yields payloads in the
 /// exact order the old `combo.iter().filter(..)` produced them, keeping generated output
@@ -154,6 +154,6 @@ impl ValidatedSources {
     /// third `validate_documents` pass while its byte-idempotence assertion still proves the
     /// emitted document is a fixed point.
     pub(crate) fn to_kdl(&self) -> anyhow::Result<String> {
-        crate::compiler::source_to_kdl(&self.nr.source, &self.lte.source)
+        crate::compiler::write_sources(&self.nr.source, &self.lte.source)
     }
 }

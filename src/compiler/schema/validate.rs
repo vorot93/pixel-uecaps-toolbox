@@ -24,7 +24,7 @@ use anyhow::{Context, bail, ensure};
 use compact_str::CompactString;
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn parse_sources(text: &str) -> anyhow::Result<ValidatedSources> {
-    let source = crate::compiler::source_from_kdl(text).context("parsing the source document")?;
+    let source = crate::compiler::read_sources(text).context("parsing the source document")?;
     validate_documents(source)
 }
 
@@ -461,9 +461,9 @@ pub(crate) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
 mod tests {
     use crate::{
         compiler::{
+            read_sources,
             schema::{LteSourceCombo, parse_sources, test_support::*, to_kdl},
             selection::Sku,
-            source_from_kdl,
         },
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
         raw_nr::Direction,
@@ -668,7 +668,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         }
 
         let old = format!("{MINIMAL_NR}\nn {{\n    n78 dl-max-scs=3\n}}\n");
-        assert!(source_from_kdl(&source(&old, MINIMAL_LTE)).is_err());
+        assert!(read_sources(&source(&old, MINIMAL_LTE)).is_err());
     }
 
     #[test]
@@ -704,7 +704,7 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         assert!(parse_sources(&missing).is_err());
 
         // `{:#}`, not bare `to_string()`: since the version check moved into the reader
-        // (`kdl_source::checked_version`), this error comes from inside `source_from_kdl`, which
+        // (`kdl_source::checked_version`), this error comes from inside `read_sources`, which
         // `parse_sources` wraps in a "parsing the source document" context. Plain `Display` would
         // show only that outer layer; see
         // `a_stale_vocabulary_reports_the_version_not_the_unknown_property` below for the same
@@ -1001,7 +1001,7 @@ c "MAPPING" mi=7 {
 
         // A syntactically well-formed `plmn` node whose mcc/mnc reconstruct into a string
         // `Plmn::from_str` rejects (mnc has more than 3 digits) now fails inside
-        // `source_from_kdl` itself (`read_plmn` re-validates), not in the later semantic
+        // `read_sources` itself (`read_plmn` re-validates), not in the later semantic
         // carrier validation, so unwrap the full chain rather than using
         // `assert_nr_error`'s plain (unwrapped) `Display`.
         let error = format!(
@@ -1101,7 +1101,7 @@ c "MAPPING" mi=7 {
         ] {
             let nr = format!("{MINIMAL_NR}\nn {{\n{combo_body}}}\n");
             // `{:#}` for the whole chain: the third case is rejected while still inside
-            // `source_from_kdl` (wrapped in "parsing the source document"), while the first two
+            // `read_sources` (wrapped in "parsing the source document"), while the first two
             // are rejected by
             // `validate_documents`, downstream and unwrapped. The alternate format finds the
             // substring either way, matching `assert_nr_error` elsewhere in this module.
@@ -1177,7 +1177,7 @@ c "MAPPING" mi=7 {
     /// error instead of a quiet re-encode.
     #[test]
     fn lte_components_reject_a_disabled_dl_and_an_absent_ul_class() {
-        let base = source_from_kdl(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
+        let base = read_sources(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
 
         let bad_combo = |component: LteComponent| LteSourceCombo {
             selection: None,

@@ -240,7 +240,7 @@ impl<'a> NodeReader<'a> {
     }
 
     /// Error on any positional arg, property, or child node not consumed above, and on any
-    /// property repeated that is not read through [`repeated_int`](Self::repeated_int).
+    /// repeated property. Source properties are singular, including those claimed by a reader.
     ///
     /// The duplicate check is what makes the reader honest about hand edits. `node.get(key)`
     /// returns the *last* matching entry, and each `opt_*` reader then marks the key consumed,
@@ -334,5 +334,115 @@ mod reader_tests {
             doc2.to_string(),
             "autoformat idempotent with a leading positional arg"
         );
+    }
+}
+
+/// `NodeReader` combinator behaviour in isolation. The node names in these fixtures (`cr`, …)
+/// are illustrative scaffolding for the combinators, not source-format vocabulary — nothing here
+/// tracks the document's node names, so a grep for an old spelling that lands in this module has
+/// found a parser fixture, not a missed rename.
+#[cfg(test)]
+mod combinator_tests {
+    use super::*;
+
+    fn node(text: &str) -> kdl::KdlNode {
+        let doc: KdlDocument = text.parse().unwrap();
+        doc.nodes().first().unwrap().clone()
+    }
+
+    #[test]
+    fn reads_key_props_and_children_then_finishes() {
+        let n = node("cr VZW bi=1 t=main {\n    ps \"311-480\"\n}\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert_eq!(r.opt_int::<i64>("bi").unwrap(), Some(1));
+        assert_eq!(r.opt_str("t").unwrap().as_deref(), Some("main"));
+        let plmns = r.opt_child("ps").unwrap().unwrap();
+        assert_eq!(read_str_list(plmns).unwrap(), vec!["311-480".to_string()]);
+        r.finish().unwrap();
+    }
+
+    #[test]
+    fn finish_rejects_unknown_property() {
+        let n = node("cr VZW bogus=9\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert!(r.finish().is_err());
+    }
+
+    /// The source document is the only editing surface in the tool, and a duplicated property
+    /// was silently last-wins: `node.get(key)` returns the last entry and `props_used` then
+    /// marks the key consumed, so `finish()` could not object either. A hand edit that
+    /// duplicated a line lost a value with no diagnostic.
+    #[test]
+    fn finish_rejects_a_duplicate_property() {
+        let n = node("node 78 dl-bw-class=1 dl-bw-class=2\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_int::<u16>().unwrap(), 78);
+        assert_eq!(r.opt_int::<u8>("dl-bw-class").unwrap(), Some(2));
+
+        let error = r.finish().unwrap_err().to_string();
+
+        assert!(error.contains("dl-bw-class"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
+    }
+
+    /// The shadowed entry is never type-checked either, so a duplicate could smuggle an
+    /// outright type error past the reader.
+    #[test]
+    fn finish_rejects_a_duplicate_property_whose_shadowed_value_is_ill_typed() {
+        let n = node("p mcc=\"oops\" mcc=310\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.opt_int::<u16>("mcc").unwrap(), Some(310));
+
+        assert!(r.finish().is_err());
+    }
+
+    /// Dynamic child names (a sub-block is spelled `nr257`, not `nr` + a positional) cannot be looked up by
+    /// name, so `NodeReader` needs a predicate — and `finish()` must treat what the predicate
+    /// consumed as known, or every sub-block would read as an unknown child.
+    #[test]
+    fn children_matching_consumes_by_predicate() {
+        let n = node("c {\n    n257 x=1\n    n41 x=2\n    B66 x=3\n}\n");
+        let mut r = NodeReader::new(&n);
+
+        let nr = r.children_matching("n<band>", |name| {
+            name.strip_prefix('n').is_some_and(|band| !band.is_empty())
+        });
+        assert_eq!(nr.len(), 2);
+        let lte = r.children_matching("B<band>", |name| {
+            name.strip_prefix('B').is_some_and(|band| !band.is_empty())
+        });
+        assert_eq!(lte.len(), 1);
+
+        r.finish().expect("predicate-consumed children are known");
+    }
+
+    /// A child no predicate claimed is still rejected — the strictness must survive the move
+    /// from name-set membership to pattern matching.
+    #[test]
+    fn finish_still_rejects_a_child_no_predicate_claimed() {
+        let n = node("c {\n    n257 x=1\n    mystery 1\n}\n");
+        let mut r = NodeReader::new(&n);
+        let _ = r.children_matching("n<band>", |name| name.starts_with('n'));
+
+        let error = r.finish().unwrap_err().to_string();
+
+        assert!(error.contains("mystery"), "{error}");
+    }
+
+    #[test]
+    fn finish_rejects_unknown_child() {
+        let n = node("cr VZW {\n    mystery 1\n}\n");
+        let mut r = NodeReader::new(&n);
+        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert!(r.finish().is_err());
+    }
+
+    #[test]
+    fn opt_int_range_checks() {
+        let n = node("x v=-1\n");
+        let mut r = NodeReader::new(&n);
+        assert!(r.opt_int::<u64>("v").is_err());
     }
 }

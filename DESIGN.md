@@ -81,7 +81,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/compiler/feature_palette.rs` | Raw feature-field domain observation, checked Cartesian closure, and complete canonical source `FeaturePalette`. |
 | `src/compiler/features.rs` | Fallible source-palette references and compact referenced-only per-file `LocalFeaturePlan` projection. |
 | `src/compiler/schema/{source,validated,validate,canonicalize}.rs` | Editable DTOs, validated models and selection index, cross-reference validation, and canonical source projections behind a narrow facade. |
-| `src/compiler/kdl_source.rs` | Hand-written source-document (de)serialization (`source_to_kdl`/`source_from_kdl`) over the shared `kdl_support` toolkit. |
+| `src/compiler/kdl_source/{read,write,plmn}.rs` | Strict source reading (`read_sources`), canonical writing (`write_sources`), and PLMN representation over the shared `kdl_support` toolkit. |
 | `src/compiler/nr/{ingest,generate,verify}.rs` | Bitmask/profiled NR ingestion and metadata, model-targeted generation, and canonical self-verification behind a shared type facade. |
 | `src/compiler/lte.rs` | Ordered LTE payload identity, applicability, global DAG/topological ordering, byte-identical regeneration, and self-verification. |
 | `src/compiler/decompose.rs` | Strict two-directory classification and ingestion, mapping integration, complete source self-check, and the single file-or-stdout source write. |
@@ -433,8 +433,8 @@ their paths from `tempfile` precisely so that no fixture can imply otherwise.
 discussion under [The short vocabulary](#the-short-vocabulary) for the cost that carries.
 
 The source document is one KDL v2 document (the `kdl` crate), (de)serialized by hand-written
-mapping in `src/compiler/kdl_source.rs` — **not** `serde`. It has one
-`_to_kdl`/`_from_kdl` pair (`source_to_kdl`/`source_from_kdl`, re-exported
+mapping in `src/compiler/kdl_source/` — **not** `serde`. It has one
+`write_sources`/`read_sources` pair (re-exported
 `pub(crate)` from `compiler/mod.rs`), built over a small set of `NodeReader` combinators in the
 crate-wide `src/kdl_support/` module (named `kdl_support`, **not** `kdl`, because a crate-root
 module named `kdl` collides with the external `kdl` crate): `key_str`/`key_int` read the leading
@@ -782,7 +782,7 @@ it; now it is the node one to three lines up, which is strictly more local. With
 keys gone there is no Rust constant left to record the
 distinction either; the two codec pairs in `kdl_direction.rs`
 (`format_direction`/`parse_direction` versus `format_class_mimo`/`parse_class_mimo`) and the
-`identical_sub_block_text_means_different_things_under_n_and_l` test in `kdl_source.rs` are
+`identical_sub_block_text_means_different_things_under_n_and_l` test in `kdl_source/tests.rs` are
 where it is written down.
 
 **Do not re-attempt the `kdl`-crate `serde` route** (`kdl`'s own `serde` feature, intentionally
@@ -840,7 +840,7 @@ entire real 427-PLMN legend (`ap_plmn_mapping.binarypb`) was surveyed and is dec
 `310-012`, `316-010`, `334-030`, …) and the other 297 two-digit + 116 three-digit-≥100 MNCs a bare
 `mnc=N`. The source document still keeps its own separate `plmns` node name, but only as a
 **bare, childless marker** distinguishing a present-but-empty PLMN list (a validated mapping-only
-carrier) from no PLMN concept at all (`None`) — see `kdl_source.rs`'s `read_carrier`; a `plmns` node
+carrier) from no PLMN concept at all (`None`) — see `kdl_source/read.rs`'s `read_carrier`; a `plmns` node
 carrying stale list-style arguments is rejected, not silently dropped.
 
 **`bcs-intra-endc` derivation.** In an `n` combo header, `bi` (`bcs-intra-endc`) is
@@ -848,7 +848,7 @@ the BCS bit string for intra-band EN-DC and is present iff `intra-band-en-dc-sup
 absent value re-derives to `Some(0)` when `intra-band-en-dc-support == 1`, else `None`; the ~20
 exceptional zeros (`intra_band != 1`) are written as the empty bit string `bi=""` and every nonzero
 as an index list, and the unrepresentable `None` + `intra_band == 1` state fails closed (`bail!`,
-0 corpus cases). One shared `derive_bcs_intra_endc(intra)` helper (`kdl_source.rs`) is the single
+0 corpus cases). One shared `derive_bcs_intra_endc(intra)` helper (`kdl_source/mod.rs`) is the single
 source of truth both the writer (omit-when-equal) and reader (re-derive) call, so the two sides
 cannot silently disagree. This mirrors the crate's other omit-when-derivable work (LTE placeholder
 ids, NR feature-index).
@@ -977,7 +977,7 @@ their test-owned files. See CONTRIBUTING for the complete three-variable invocat
   `prime:<anchor>`, or `lte:<id>`. Generation, protobuf re-decoding, complete file-set
   verification, and ZIP assembly finish in memory before the ZIP is atomically replaced.
 
-Every source DTO is validated by `kdl_source.rs`'s `NodeReader::finish()`, which rejects any
+Every source DTO is validated through `kdl_support::NodeReader::finish()`, which rejects any
 unconsumed argument, property, or child node (the structural replacement for
 `#[serde(deny_unknown_fields)]`), and requires the current `SOURCE_FORMAT_VERSION`. A *repeated property* on a node is
 **rejected**, unconditionally: `node.get` returns the last value, so last-wins would silently
@@ -1097,7 +1097,7 @@ be stored:
 - **LTE placeholder per-CC ids are omitted, not stored — and not modeled.** An LTE
   sub-block's per-CC selector bytes are always the all-zero placeholder in the corpus (LTE
   has no per-CC feature catalog entry), fully redundant with `bw_class`/`cc_count`. The
-  compiler emitter (`cc_to_node`, `src/compiler/kdl_source.rs`) never surfaces per-CC
+  compiler emitter (`write_sub_block`, `src/compiler/kdl_source/write.rs`) never surfaces per-CC
   selector bytes at all (the raw `dl-cc-id=`/`ul-cc-id=` fallback was removed), and the
   reader does not reconstruct them either: **the source model carries no selector-byte
   field.** `SourceSubBlock` (`src/compiler/features.rs`) holds only catalog *references*,

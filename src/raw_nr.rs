@@ -115,7 +115,7 @@ pub(crate) enum Direction {
 
 impl Direction {
     /// The lowercase spelling used in *field* names (`dl_feature`, `ul_bw_class`). The
-    /// uppercase prose spelling (`DL`/`UL`) is the [`Display`](std::fmt::Display) impl.
+    /// uppercase prose spelling (`DL`/`UL`) is the [`Display`] impl.
     pub(crate) const fn lowercase(self) -> &'static str {
         match self {
             Self::Dl => "dl",
@@ -568,7 +568,7 @@ impl RawSubBlock {
     /// [`resolve_or_placeholder`] keeps an unresolved selector only as the all-zero
     /// placeholder, hard-erroring on anything else — then confirm the file's stored
     /// `dl`/`ul_feature_index` agrees with what NR derives from those feature sets, since
-    /// NR keeps no source index (see [`dl_feature_index`](Self::dl_feature_index)).
+    /// NR keeps no source index (see [`feature_index`](Self::feature_index)).
     fn nr_from_proto_sub_block(
         component: &ProtoSubBlock,
         band: u16,
