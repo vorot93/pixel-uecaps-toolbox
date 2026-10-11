@@ -120,7 +120,7 @@ pub(in crate::compiler) struct NrDomain {
 }
 
 impl NrDomain {
-    pub(in crate::compiler) fn new(members: BTreeSet<(CompactString, Sku)>) -> Result<Self> {
+    pub(in crate::compiler) fn new(members: &BTreeSet<(CompactString, Sku)>) -> Result<Self> {
         let carrier_names: Vec<CompactString> = members
             .iter()
             .map(|(carrier, _)| carrier.clone())
@@ -576,7 +576,7 @@ mod tests {
 
     fn nr_domain(pairs: &[(&str, Sku)]) -> NrDomain {
         NrDomain::new(
-            pairs
+            &pairs
                 .iter()
                 .map(|(carrier, sku)| ((*carrier).into(), sku.clone()))
                 .collect(),
@@ -665,12 +665,12 @@ mod tests {
 
     #[test]
     fn carrier_interner_rejects_overflow_without_panicking() {
-        assert!(NrDomain::new(BTreeSet::new()).is_ok());
+        assert!(NrDomain::new(&BTreeSet::new()).is_ok());
         for n in [65_535usize, 65_536] {
             let members = (0..n)
                 .map(|i| (format!("C{i:05}").into(), Sku::Legacy))
                 .collect();
-            let result = NrDomain::new(members);
+            let result = NrDomain::new(&members);
             assert_eq!(result.is_ok(), n == 65_535);
             if let Err(error) = result {
                 assert!(format!("{error:#}").contains("carrier interner limit"));
@@ -684,7 +684,7 @@ mod tests {
             let members = (0..n)
                 .map(|i| ("ONLY".into(), Sku::Prime(i as u64)))
                 .collect();
-            let result = NrDomain::new(members);
+            let result = NrDomain::new(&members);
             assert_eq!(result.is_ok(), n == 65_535);
             if let Err(error) = result {
                 assert!(format!("{error:#}").contains("SKU interner limit"));
@@ -730,7 +730,7 @@ mod tests {
                 .filter(|(index, _)| domain_mask & (1 << index) != 0)
                 .map(|(_, pair)| pair.clone())
                 .collect();
-            let domain = NrDomain::new(domain_pairs.clone()).unwrap();
+            let domain = NrDomain::new(&domain_pairs).unwrap();
 
             let mut relation_mask = domain_mask;
             while relation_mask != 0 {

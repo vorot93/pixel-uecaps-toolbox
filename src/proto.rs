@@ -235,7 +235,7 @@ mod tests {
         let caps = UeCaps::decode(&[0x08, 0xAC, 0x02, 0x48, 0x07][..]).unwrap();
         assert_eq!(caps.version, 300);
         assert_eq!(caps.unknown, 7);
-        assert!(caps.combo_groups.is_empty()); // stub
+        assert!(caps.combo_groups.is_empty(), "{:?}", caps.combo_groups); // stub
     }
 
     // A Carrier with index=0 and empty name encodes to ONLY its PLMNs.

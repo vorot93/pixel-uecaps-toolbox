@@ -44,6 +44,7 @@ pub(crate) fn bw_class_index(letter: char) -> Option<u8> {
     letter.is_ascii_uppercase().then(|| letter as u8 - b'A' + 1)
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct BandLabel {
     kind: SubBlockKind,
     band: i32,
@@ -1222,13 +1223,13 @@ mod tests {
 
         // n41: the all-zero placeholder resolves to nothing, so the bytes survive verbatim.
         let n41 = by_band("n41");
-        assert!(n41.dl_features().is_empty());
+        assert!(n41.dl_features().is_empty(), "{:?}", n41.dl_features());
         assert_eq!(n41.selector(Direction::Dl), Some(&[0][..]));
 
         // B3: an E-UTRA component references no per-CC catalog at all.
         let b3 = by_band("B3");
         assert_eq!(b3.kind(), SubBlockKind::Lte);
-        assert!(b3.dl_features().is_empty());
+        assert!(b3.dl_features().is_empty(), "{:?}", b3.dl_features());
         assert_eq!(b3.bw_class(Direction::Dl), Some(4));
     }
 
@@ -1880,14 +1881,14 @@ mod conversion_tests {
         let caps = UeCaps {
             combo_groups: vec![
                 ComboGroup {
-                    combo_header: full_header(),
+                    combo_header: Some(full_header()),
                     combo: vec![Combo {
                         sub_blocks: vec![cc(10_078, 9), cc(10_078, 2)],
                         bitmask: Some(7),
                     }],
                 },
                 ComboGroup {
-                    combo_header: full_header(),
+                    combo_header: Some(full_header()),
                     combo: vec![Combo {
                         sub_blocks: vec![cc(10_041, 1)],
                         bitmask: None,
@@ -1984,7 +1985,7 @@ mod conversion_tests {
     fn ul_bw_class_zero_is_preserved_as_explicit() {
         let caps = UeCaps {
             combo_groups: vec![ComboGroup {
-                combo_header: full_header(),
+                combo_header: Some(full_header()),
                 combo: vec![Combo {
                     sub_blocks: vec![SubBlock {
                         band: 10_078,
@@ -2019,7 +2020,7 @@ mod conversion_tests {
     fn compiler_conversion_preserves_a_referenced_default_feature_record() {
         let caps = UeCaps {
             combo_groups: vec![ComboGroup {
-                combo_header: full_header(),
+                combo_header: Some(full_header()),
                 combo: vec![Combo {
                     sub_blocks: vec![SubBlock {
                         band: 10_078,

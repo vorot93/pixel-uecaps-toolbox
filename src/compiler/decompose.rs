@@ -639,7 +639,7 @@ mod tests {
         format!("{carrier}_{}.binarypb", signature * anchor)
     }
 
-    fn assert_prewrite_failure(corpus: MiniCorpus, expected: &str) -> String {
+    fn assert_prewrite_failure(corpus: &MiniCorpus, expected: &str) -> String {
         let temp = tempdir().unwrap();
         let (bitmask, profiled) = corpus.write_to(
             temp.path(),
@@ -736,7 +736,7 @@ mod tests {
         ] {
             let mut corpus = MiniCorpus::new();
             corpus.bitmask[0].basename = invalid.into();
-            let error = assert_prewrite_failure(corpus, "bitmask");
+            let error = assert_prewrite_failure(&corpus, "bitmask");
             assert!(error.contains(invalid), "{error}");
         }
     }
@@ -747,13 +747,13 @@ mod tests {
         let early = profile_name("ALPHA", 11, SYNTHETIC_ANCHOR);
         corpus.profiled_file_mut(&early).bytes = vec![0x80];
         mapping_file(&mut corpus).bytes = vec![0x80];
-        let error = assert_prewrite_failure(corpus, &early);
+        let error = assert_prewrite_failure(&corpus, &early);
         assert!(!error.contains("validating ap_plmn_mapping"), "{error}");
 
         let mut corpus = MiniCorpus::new();
         mapping_file(&mut corpus).bytes = vec![0x80];
         lte_file(&mut corpus, FIRST_LTE_ID).bytes = vec![0x80];
-        let error = assert_prewrite_failure(corpus, "validating ap_plmn_mapping.binarypb");
+        let error = assert_prewrite_failure(&corpus, "validating ap_plmn_mapping.binarypb");
         assert!(!error.contains("validating lte_"), "{error}");
     }
 
@@ -777,25 +777,25 @@ mod tests {
     fn profiled_folder_requires_mapping_lte_and_numbered_carriers() {
         let mut missing_all = MiniCorpus::new();
         missing_all.remove_profiled(|_| true);
-        assert_prewrite_failure(missing_all, "exactly one ap_plmn_mapping.binarypb");
+        assert_prewrite_failure(&missing_all, "exactly one ap_plmn_mapping.binarypb");
 
         let mut mapping_only = MiniCorpus::new();
         mapping_only.remove_profiled(|file| file.basename != "ap_plmn_mapping.binarypb");
-        assert_prewrite_failure(mapping_only, "at least one lte_<id>.binarypb");
+        assert_prewrite_failure(&mapping_only, "at least one lte_<id>.binarypb");
 
         let mut without_mapping = MiniCorpus::new();
         without_mapping.remove_profiled(|file| file.basename == "ap_plmn_mapping.binarypb");
-        assert_prewrite_failure(without_mapping, "exactly one ap_plmn_mapping.binarypb");
+        assert_prewrite_failure(&without_mapping, "exactly one ap_plmn_mapping.binarypb");
 
         let mut without_lte = MiniCorpus::new();
         without_lte.remove_profiled(|file| file.basename.starts_with("lte_"));
-        assert_prewrite_failure(without_lte, "at least one lte_<id>.binarypb");
+        assert_prewrite_failure(&without_lte, "at least one lte_<id>.binarypb");
 
         let mut without_carriers = MiniCorpus::new();
         without_carriers.remove_profiled(|file| {
             file.basename != "ap_plmn_mapping.binarypb" && !file.basename.starts_with("lte_")
         });
-        assert_prewrite_failure(without_carriers, "at least one numbered carrier");
+        assert_prewrite_failure(&without_carriers, "at least one numbered carrier");
     }
 
     #[test]
@@ -803,7 +803,7 @@ mod tests {
         for invalid in ["LEGACY.binarypb", "lte_bad.binarypb", "CARRIER_.binarypb"] {
             let mut corpus = MiniCorpus::new();
             corpus.profiled[0].basename = invalid.into();
-            let error = assert_prewrite_failure(corpus, "profiled");
+            let error = assert_prewrite_failure(&corpus, "profiled");
             assert!(error.contains(invalid), "{error}");
         }
     }
@@ -964,7 +964,7 @@ mod tests {
         mapping.carriers.reverse();
         replace(file, &mapping);
 
-        assert_prewrite_failure(corpus, "in increasing mapping_id order");
+        assert_prewrite_failure(&corpus, "in increasing mapping_id order");
     }
 
     #[test]
@@ -974,11 +974,11 @@ mod tests {
             .bitmask_file_mut("ALPHA.binarypb")
             .bytes
             .extend_from_slice(&[0x98, 0x06, 0x01]);
-        assert_prewrite_failure(corpus, "field #99 is not modeled");
+        assert_prewrite_failure(&corpus, "field #99 is not modeled");
 
         let mut nested = MiniCorpus::new();
         inject_unknown_nr_cc_field(nested.bitmask_file_mut("ALPHA.binarypb"));
-        let error = assert_prewrite_failure(nested, "field #15 is not modeled");
+        let error = assert_prewrite_failure(&nested, "field #15 is not modeled");
         assert!(error.contains("SubBlock"), "{error}");
     }
 
@@ -996,7 +996,7 @@ mod tests {
         });
         replace(file, &caps);
 
-        assert_prewrite_failure(corpus, "empty combo group");
+        assert_prewrite_failure(&corpus, "empty combo group");
     }
 
     #[test]
@@ -1032,13 +1032,13 @@ mod tests {
         ] {
             let mut bitmask = MiniCorpus::new();
             bitmask.bitmask[0].basename = format!("{carrier}.binarypb");
-            assert_prewrite_failure(bitmask, expected);
+            assert_prewrite_failure(&bitmask, expected);
 
             let mut profiled = MiniCorpus::new();
             profiled
                 .profiled_file_mut(&profile_name("ALPHA", 11, SYNTHETIC_ANCHOR))
                 .basename = format!("{carrier}_{}.binarypb", 11 * SYNTHETIC_ANCHOR);
-            assert_prewrite_failure(profiled, expected);
+            assert_prewrite_failure(&profiled, expected);
         }
     }
 
@@ -1047,7 +1047,7 @@ mod tests {
         let mut corpus = MiniCorpus::new();
         make_lte_encoding_noncanonical(lte_file(&mut corpus, FIRST_LTE_ID));
 
-        assert_prewrite_failure(corpus, "was not byte-identical");
+        assert_prewrite_failure(&corpus, "was not byte-identical");
     }
 
     #[test]
@@ -1057,21 +1057,21 @@ mod tests {
         let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[0].plmns.push(0x0100_0000);
         replace(file, &mapping);
-        assert_prewrite_failure(malformed, "PLMN");
+        assert_prewrite_failure(&malformed, "PLMN");
 
         let mut duplicate_id = MiniCorpus::new();
         let file = mapping_file(&mut duplicate_id);
         let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[1].index = mapping.carriers[0].index;
         replace(file, &mapping);
-        assert_prewrite_failure(duplicate_id, "duplicate carrier id");
+        assert_prewrite_failure(&duplicate_id, "duplicate carrier id");
 
         let mut duplicate_name = MiniCorpus::new();
         let file = mapping_file(&mut duplicate_name);
         let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[1].name = mapping.carriers[0].name.clone();
         replace(file, &mapping);
-        assert_prewrite_failure(duplicate_name, "duplicate mapping name");
+        assert_prewrite_failure(&duplicate_name, "duplicate mapping name");
     }
 
     #[test]
@@ -1082,14 +1082,14 @@ mod tests {
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.id = Some(9);
         replace(file, &caps);
-        assert_prewrite_failure(ids, "inconsistent field 2 IDs");
+        assert_prewrite_failure(&ids, "inconsistent field 2 IDs");
 
         let mut tiers = MiniCorpus::new();
         let file = tiers.profiled_file_mut(&name);
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.version = 707_802_847;
         replace(file, &caps);
-        assert_prewrite_failure(tiers, "inconsistent fingerprint tiers");
+        assert_prewrite_failure(&tiers, "inconsistent fingerprint tiers");
     }
 
     #[test]
@@ -1098,13 +1098,13 @@ mod tests {
         unknown
             .profiled_file_mut(&profile_name("ALPHA", 11, SYNTHETIC_ANCHOR))
             .basename = "ALPHA_19.binarypb".into();
-        assert_prewrite_failure(unknown, "matched 0");
+        assert_prewrite_failure(&unknown, "matched 0");
 
         let mut ambiguous = MiniCorpus::new();
         ambiguous
             .profiled_file_mut(&profile_name("ALPHA", 11, SYNTHETIC_ANCHOR))
             .basename = "ALPHA_308449.binarypb".into();
-        assert_prewrite_failure(ambiguous, "matched 2");
+        assert_prewrite_failure(&ambiguous, "matched 2");
     }
 
     #[test]
@@ -1115,21 +1115,21 @@ mod tests {
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups[0].combo[0].bitmask = Some(1);
         replace(file, &caps);
-        assert_prewrite_failure(modern_bitmask, "unsupported nonzero bitmask");
+        assert_prewrite_failure(&modern_bitmask, "unsupported nonzero bitmask");
 
         let mut legacy_unknown = MiniCorpus::new();
         let file = legacy_unknown.bitmask_file_mut("ALPHA.binarypb");
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.unknown = 1;
         replace(file, &caps);
-        assert_prewrite_failure(legacy_unknown, "unsupported field 9 value");
+        assert_prewrite_failure(&legacy_unknown, "unsupported field 9 value");
 
         let mut unknown_fingerprint = MiniCorpus::new();
         let file = unknown_fingerprint.profiled_file_mut(&name);
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.version = 123;
         replace(file, &caps);
-        assert_prewrite_failure(unknown_fingerprint, "unknown fingerprint");
+        assert_prewrite_failure(&unknown_fingerprint, "unknown fingerprint");
     }
 
     #[test]
@@ -1138,7 +1138,7 @@ mod tests {
         corpus
             .profiled_file_mut(&profile_name("ALPHA", 11, SYNTHETIC_ANCHOR))
             .basename = "ALPHA_18446744073709551616.binarypb".into();
-        assert_prewrite_failure(corpus, "does not fit u64");
+        assert_prewrite_failure(&corpus, "does not fit u64");
     }
 
     #[test]
@@ -1148,7 +1148,7 @@ mod tests {
         let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups.push(caps.combo_groups[0].clone());
         replace(file, &caps);
-        assert_prewrite_failure(corpus, "duplicate canonical NR payload");
+        assert_prewrite_failure(&corpus, "duplicate canonical NR payload");
     }
 
     #[test]
@@ -1158,7 +1158,7 @@ mod tests {
         let mut caps = decode::<crate::proto::LteCaps>(file);
         caps.combos.push(caps.combos[0].clone());
         replace(file, &caps);
-        assert_prewrite_failure(duplicate, "duplicate LTE payload");
+        assert_prewrite_failure(&duplicate, "duplicate LTE payload");
 
         let mut cycle = MiniCorpus::new();
         let first = decode::<crate::proto::LteCaps>(lte_file(&mut cycle, FIRST_LTE_ID));
@@ -1166,7 +1166,7 @@ mod tests {
         let mut second = decode::<crate::proto::LteCaps>(file);
         second.combos = vec![first.combos[1].clone(), first.combos[0].clone()];
         replace(file, &second);
-        assert_prewrite_failure(cycle, "cycle");
+        assert_prewrite_failure(&cycle, "cycle");
     }
 
     #[test]

@@ -713,7 +713,11 @@ mod tests {
             expected.sort_unstable();
             assert_eq!(profile_model_codes(profile.anchor), expected);
         }
-        assert!(profile_model_codes(u64::MAX).is_empty());
+        assert!(
+            profile_model_codes(u64::MAX).is_empty(),
+            "{:?}",
+            profile_model_codes(u64::MAX)
+        );
 
         for config in LTE_CONFIGS {
             let mut expected: Vec<_> = PROFILED_MAPPINGS
@@ -724,7 +728,11 @@ mod tests {
             expected.sort_unstable();
             assert_eq!(lte_model_codes(config.id), expected);
         }
-        assert!(lte_model_codes(u64::MAX).is_empty());
+        assert!(
+            lte_model_codes(u64::MAX).is_empty(),
+            "{:?}",
+            lte_model_codes(u64::MAX)
+        );
     }
 
     #[test]

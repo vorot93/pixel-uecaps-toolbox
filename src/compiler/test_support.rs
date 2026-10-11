@@ -374,7 +374,7 @@ fn nr_caps(
         version: fingerprint,
         id,
         combo_groups: vec![ComboGroup {
-            combo_header: crate::raw_nr::test_support::full_header(),
+            combo_header: Some(crate::raw_nr::test_support::full_header()),
             combo: vec![Combo {
                 sub_blocks: vec![SubBlock {
                     band,

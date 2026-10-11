@@ -200,7 +200,8 @@ fn interner_overflow_is_an_ordinary_rejection_and_preserves_output() {
     let list = names.join(" ");
     let mut text = format!("version 1\nbc {list}\nbf 1 {{\n c {list}\n}}\n");
     for name in names {
-        text.push_str(&format!("c {name} bi=1\n"));
+        use std::fmt::Write;
+        writeln!(text, "c {name} bi=1").unwrap();
     }
     text.push_str("f \"92\" fp=1 bm=1\n");
     fs::write(source.path(), text).unwrap();

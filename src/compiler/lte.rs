@@ -209,11 +209,10 @@ fn verify_lte_ingest(
     for (id, file) in files_by_id {
         for sku in Sku::for_lte_file(*id) {
             let generated = generate_lte_file(validated, *id, &sku)
-                .with_context(|| format!("self-verifying lte_{id}.binarypb for `{}`", sku))?;
+                .with_context(|| format!("self-verifying lte_{id}.binarypb for `{sku}`"))?;
             ensure!(
                 generated.bytes == file.original,
-                "LTE decode self-verification for lte_{id}.binarypb and `{}` was not byte-identical",
-                sku
+                "LTE decode self-verification for lte_{id}.binarypb and `{sku}` was not byte-identical"
             );
         }
     }
@@ -273,8 +272,7 @@ pub(in crate::compiler) fn generate_lte_file(
     validate_target(id, sku)?;
     ensure!(
         lte.domain.iter().any(|eligible| eligible == sku),
-        "SKU token `{}` is absent from the LTE source domain",
-        sku
+        "SKU token `{sku}` is absent from the LTE source domain"
     );
     let metadata = lte
         .files
@@ -313,8 +311,7 @@ fn validate_target(id: u64, sku: &Sku) -> anyhow::Result<()> {
     let eligible = Sku::for_lte_file(id);
     ensure!(
         eligible.contains(sku),
-        "SKU token `{}` does not select LTE file ID {id}",
-        sku
+        "SKU token `{sku}` does not select LTE file ID {id}"
     );
     Ok(())
 }
@@ -406,7 +403,7 @@ mod tests {
         }
     }
 
-    fn decoded(id: u64, caps: LteCaps) -> DecodedLteFile {
+    fn decoded(id: u64, caps: &LteCaps) -> DecodedLteFile {
         DecodedLteFile::decode(id, caps.encode_to_vec()).unwrap()
     }
 
@@ -481,8 +478,8 @@ mod tests {
     fn exact_payloads_deduplicate_across_files() {
         let shared = combo(&[1, 3]);
         let document = ingest_lte(vec![
-            decoded(91, caps(11, 21, vec![shared.clone()])),
-            decoded(92, caps(12, 22, vec![shared])),
+            decoded(91, &caps(11, 21, vec![shared.clone()])),
+            decoded(92, &caps(12, 22, vec![shared])),
         ])
         .unwrap()
         .source;
@@ -496,7 +493,7 @@ mod tests {
         let repeated = combo(&[1]);
         let error = ingest_lte(vec![decoded(
             91,
-            caps(1, 2, vec![repeated.clone(), repeated]),
+            &caps(1, 2, vec![repeated.clone(), repeated]),
         )])
         .unwrap_err()
         .to_string();
@@ -511,8 +508,8 @@ mod tests {
         let b = combo(&[2]);
         let c = combo(&[3]);
         let document = ingest_lte(vec![
-            decoded(91, caps(1, 11, vec![a.clone(), b, c.clone()])),
-            decoded(92, caps(2, 12, vec![a, c])),
+            decoded(91, &caps(1, 11, vec![a.clone(), b, c.clone()])),
+            decoded(92, &caps(2, 12, vec![a, c])),
         ])
         .unwrap()
         .source;
@@ -526,8 +523,8 @@ mod tests {
         let higher = combo(&[2]);
         let sink = combo(&[3]);
         let document = ingest_lte(vec![
-            decoded(92, caps(2, 12, vec![higher, sink.clone()])),
-            decoded(91, caps(1, 11, vec![lower, sink])),
+            decoded(92, &caps(2, 12, vec![higher, sink.clone()])),
+            decoded(91, &caps(1, 11, vec![lower, sink])),
         ])
         .unwrap()
         .source;
@@ -538,8 +535,8 @@ mod tests {
     #[test]
     fn mustang_style_identical_sequences_keep_distinct_metadata() {
         let sequence = vec![combo(&[1]), combo(&[2]), combo(&[3])];
-        let first = decoded(91, caps(101, 201, sequence.clone()));
-        let second = decoded(92, caps(102, 202, sequence));
+        let first = decoded(91, &caps(101, 201, sequence.clone()));
+        let second = decoded(92, &caps(102, 202, sequence));
         let first_original = first.original.clone();
         let second_original = second.original.clone();
         let ingested = ingest_lte(vec![first, second]).unwrap();
@@ -570,8 +567,8 @@ mod tests {
         let a = combo(&[1]);
         let b = combo(&[2]);
         let error = ingest_lte(vec![
-            decoded(91, caps(1, 11, vec![a.clone(), b.clone()])),
-            decoded(92, caps(2, 12, vec![b, a])),
+            decoded(91, &caps(1, 11, vec![a.clone(), b.clone()])),
+            decoded(92, &caps(2, 12, vec![b, a])),
         ])
         .unwrap_err()
         .to_string();
@@ -585,8 +582,8 @@ mod tests {
         let registered = combo(&[1]);
         let synthetic = combo(&[2]);
         let document = ingest_lte(vec![
-            decoded(REGISTERED_ID, caps(1, 11, vec![registered])),
-            decoded(91, caps(2, 12, vec![synthetic])),
+            decoded(REGISTERED_ID, &caps(1, 11, vec![registered])),
+            decoded(91, &caps(2, 12, vec![synthetic])),
         ])
         .unwrap()
         .source;
@@ -623,8 +620,11 @@ mod tests {
             unknown2: None,
         };
         let second_only = combo(&[3]);
-        let first = decoded(91, caps(101, 201, vec![shared.clone(), first_only.clone()]));
-        let second = decoded(92, caps(102, 202, vec![shared, second_only]));
+        let first = decoded(
+            91,
+            &caps(101, 201, vec![shared.clone(), first_only.clone()]),
+        );
+        let second = decoded(92, &caps(102, 202, vec![shared, second_only]));
         let expected = first.original.clone();
         let document = ingest_lte(vec![first, second]).unwrap().source;
         let generated = generate_lte_file(&validated(&document), 91, &Sku::Lte(91)).unwrap();
@@ -665,8 +665,8 @@ mod tests {
     #[test]
     fn duplicate_file_ids_are_rejected() {
         let error = ingest_lte(vec![
-            decoded(91, caps(1, 11, vec![combo(&[1])])),
-            decoded(91, caps(2, 12, vec![combo(&[2])])),
+            decoded(91, &caps(1, 11, vec![combo(&[1])])),
+            decoded(91, &caps(2, 12, vec![combo(&[2])])),
         ])
         .unwrap_err()
         .to_string();

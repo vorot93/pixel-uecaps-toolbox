@@ -197,6 +197,6 @@ mod tests {
             report.body,
             "sample:\n  [ok  ] passing\n  [FAIL] failing\n\nSOME TESTS FAILED\n"
         );
-        assert!(report.diagnostics.is_empty());
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     }
 }

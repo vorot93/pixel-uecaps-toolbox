@@ -90,7 +90,7 @@ fn build_nr_domain(
             );
         }
     }
-    NrDomain::new(members)
+    NrDomain::new(&members)
 }
 
 fn validate_nr_combos(
@@ -472,7 +472,7 @@ mod tests {
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
         raw_nr::Direction,
     };
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, fmt::Write};
     #[test]
     fn parses_the_minimal_version_one_document() {
         parse_sources(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
@@ -574,7 +574,11 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         let canonical = parsed.to_kdl().unwrap();
 
         assert_eq!(parsed.nr.palette.dl.len(), 2);
-        assert!(parsed.nr.palette.ul.is_empty());
+        assert!(
+            parsed.nr.palette.ul.is_empty(),
+            "{:?}",
+            parsed.nr.palette.ul
+        );
         assert!(canonical.contains("df s=1 b=40"), "{canonical}");
         assert!(canonical.contains("df s=2 b=100"), "{canonical}");
         assert!(!canonical.contains("df s=1 b=100"), "{canonical}");
@@ -679,8 +683,8 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
     fn global_source_palette_can_exceed_one_byte() {
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=300 {
-            nr.push_str(&format!("\ndf b={value}\n"));
-            nr.push_str(&format!("\nn {{\n    n{value} A{value}\n}}\n"));
+            writeln!(nr, "\ndf b={value}").unwrap();
+            writeln!(nr, "\nn {{\n    n{value} A{value}\n}}").unwrap();
         }
         let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(parsed.nr.palette.dl.len(), 300);
@@ -691,9 +695,9 @@ c "B" pi=0 mi=8 sg=1 t="main" {{
         let index = usize::from(u16::MAX) + 1;
         let mut nr = MINIMAL_NR.to_string();
         for value in 1..=index {
-            nr.push_str(&format!("\ndf b={value}\n"));
+            writeln!(nr, "\ndf b={value}").unwrap();
         }
-        nr.push_str(&format!("\nn {{\n    n78 A{index}\n}}\n"));
+        writeln!(nr, "\nn {{\n    n78 A{index}\n}}").unwrap();
 
         let parsed = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
         assert_eq!(parsed.nr.palette.dl.len(), index);

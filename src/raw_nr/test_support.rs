@@ -2,14 +2,14 @@ use super::RawNrPayload;
 use crate::proto::{ComboHeader, SubBlock, UeCaps};
 
 /// The four header fields required by strict ingestion; intra-ENDC remains absent.
-pub(crate) fn full_header() -> Option<ComboHeader> {
-    Some(ComboHeader {
+pub(crate) fn full_header() -> ComboHeader {
+    ComboHeader {
         power_class: Some(0),
         bcs_nr: Some(0),
         bcs_intra_endc: None,
         bcs_eutra: Some(0),
         intra_band_en_dc_support: Some(0),
-    })
+    }
 }
 
 /// Deliberately absent header fields for feature-only or presence-sensitive fixtures.

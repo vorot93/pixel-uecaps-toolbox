@@ -10,6 +10,7 @@ pub struct Report {
     pub outcome: Outcome,
 }
 
+#[derive(Clone, Copy)]
 pub enum OutputTarget<'a> {
     Stdout,
     File(&'a Path),
@@ -124,7 +125,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(stdout.is_empty());
+        assert!(stdout.is_empty(), "{stdout:?}");
         assert!(
             publish_to(
                 &report,
@@ -134,7 +135,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(stdout.is_empty());
+        assert!(stdout.is_empty(), "{stdout:?}");
     }
 
     fn assert_diagnostic_failure_preserves_file(mut writer: impl Write) {
@@ -151,7 +152,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(file.path()).unwrap(), b"existing");
-        assert!(stdout.is_empty());
+        assert!(stdout.is_empty(), "{stdout:?}");
     }
 
     #[test]
@@ -177,7 +178,7 @@ mod tests {
                 .unwrap(),
                 outcome
             );
-            assert!(stdout.is_empty());
+            assert!(stdout.is_empty(), "{stdout:?}");
             assert_eq!(stderr, b"diagnostic");
             assert_eq!(std::fs::read(file.path()).unwrap(), b"complete body");
             stderr.clear();

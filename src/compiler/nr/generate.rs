@@ -234,7 +234,11 @@ mod tests {
                 .all(|combo| combo.bitmask == Some(65_535))
         );
         let legacy_empty = UeCaps::decode(legacy[1].bytes.as_slice()).unwrap();
-        assert!(legacy_empty.combo_groups.is_empty());
+        assert!(
+            legacy_empty.combo_groups.is_empty(),
+            "{:?}",
+            legacy_empty.combo_groups
+        );
 
         let profiled = generate_nr_files(
             &nr,
@@ -271,7 +275,11 @@ mod tests {
         let profiled_empty = UeCaps::decode(profiled[1].bytes.as_slice()).unwrap();
         assert_eq!(profiled_empty.id, Some(8));
         assert_eq!(profiled_empty.unknown, 33);
-        assert!(profiled_empty.combo_groups.is_empty());
+        assert!(
+            profiled_empty.combo_groups.is_empty(),
+            "{:?}",
+            profiled_empty.combo_groups
+        );
     }
 
     #[test]
@@ -279,7 +287,7 @@ mod tests {
         const ANCHOR: u64 = 66_813_533;
         let mut nr = generation_source();
         let payload = RawNrPayload {
-            header: full_header().unwrap(),
+            header: full_header(),
             // A single resolved DL feature: generation compacts the global catalog down to
             // the one referenced record and rewrites the selector to its 1-based local index.
             // (A raw non-colliding selector-only sub-block — the dropped `dl-cc-id` fallback —
@@ -338,7 +346,7 @@ mod tests {
         direction: Direction,
     ) -> RawNrPayload {
         RawNrPayload {
-            header: full_header().unwrap(),
+            header: full_header(),
             sub_blocks: values
                 .map(|value| {
                     // Single-CC (bw_class 1) so the generated compact-list selector

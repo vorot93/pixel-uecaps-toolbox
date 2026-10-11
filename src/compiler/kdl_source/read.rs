@@ -234,17 +234,17 @@ fn lte_feature_index(
 fn source_lte_sub_block(
     name: &str,
     band: u16,
-    dl: DirectionArg,
-    ul: Option<DirectionArg>,
+    dl: &DirectionArg,
+    ul: Option<&DirectionArg>,
 ) -> Result<SourceLteSubBlock> {
     Ok(SourceLteSubBlock {
         band,
         dl_bw_class: Some(dl.bw_class),
         // Absent UL is the writer's omitted zero, not a genuine absence.
-        ul_bw_class: Some(ul.as_ref().map_or(0, |d| d.bw_class)),
-        dl_feature_index: lte_feature_index(Some(&dl), name, Direction::Dl)?,
+        ul_bw_class: Some(ul.map_or(0, |d| d.bw_class)),
+        dl_feature_index: lte_feature_index(Some(dl), name, Direction::Dl)?,
         // An absent E-UTRA UL index re-defaults to Some(0), including a bare UL class.
-        ul_feature_index: Some(lte_feature_index(ul.as_ref(), name, Direction::Ul)?.unwrap_or(0)),
+        ul_feature_index: Some(lte_feature_index(ul, name, Direction::Ul)?.unwrap_or(0)),
     })
 }
 
@@ -270,7 +270,7 @@ fn read_sub_block(node: &KdlNode) -> Result<SourceSubBlock> {
     let mut r = NodeReader::new(node);
     let (dl, ul) = read_directions(&mut r, name, kind)?;
     let cc = match kind {
-        SubBlockKind::Lte => source_lte_sub_block(name, band, dl, ul)?.into(),
+        SubBlockKind::Lte => source_lte_sub_block(name, band, &dl, ul.as_ref())?.into(),
         SubBlockKind::Nr => source_nr_sub_block(&mut r, band, dl, ul)?.into(),
     };
     r.finish()?; // now rejects any stray dl-cc-id / *-feature-index as unknown properties

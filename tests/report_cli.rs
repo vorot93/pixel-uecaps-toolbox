@@ -554,7 +554,7 @@ fn matrix_unsupported_only_is_header_and_information() {
     assert_eq!(observed.body, stdout(&out));
     assert_eq!(observed.diagnostics, stderr(&out));
     assert_eq!(out.status.code(), Some(CLEAN), "{}", stderr(&out));
-    assert!(rows(&out.stdout).is_empty());
+    assert_eq!(rows(&out.stdout), Vec::<csv::StringRecord>::new());
     assert!(stderr(&out).contains("unsupported/not validated"));
     assert!(!stdout(&out).contains("unsupported"));
 }
@@ -575,7 +575,7 @@ fn matrix_publishes_partial_file_but_preserves_destination_on_scan_failure() {
     };
     let out = publish(dir.path(), dest.path());
     assert_eq!(out.status.code(), Some(REJECTED), "{}", stderr(&out));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, Vec::<u8>::new());
     assert_eq!(rows(&fs::read(dest.path()).unwrap()).len(), 1);
     assert!(stderr(&out).contains("lte_400907661.binarypb"));
     fs::write(dest.path(), b"sentinel").unwrap();
@@ -720,7 +720,7 @@ fn main_only_profiles_are_rejected_in_alt_inspection_coverage_and_matrix() {
             assert_eq!(matrix.status.code(), Some(status), "{}", stderr(&matrix));
             let records = rows(&matrix.stdout);
             if status == REJECTED {
-                assert!(records.is_empty());
+                assert_eq!(records, Vec::<csv::StringRecord>::new());
                 for body in [stderr(&inspected), stdout(&checked), stderr(&matrix)] {
                     for token in [anchor.to_string(), "Main-only".into(), "Alt".into()] {
                         assert!(body.contains(&token), "{body}");

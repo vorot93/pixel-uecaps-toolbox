@@ -12,12 +12,12 @@ use std::{
     process::Command,
 };
 
-pub struct Corpora {
+pub(super) struct Corpora {
     pub bitmask: PathBuf,
     pub profiled: PathBuf,
 }
 
-pub fn corpora() -> Option<Corpora> {
+pub(super) fn corpora() -> Option<Corpora> {
     let (Some(bitmask), Some(profiled)) = (
         env::var_os("UECAPS_BITMASK_CORPUS"),
         env::var_os("UECAPS_PROFILED_CORPUS"),
@@ -31,7 +31,7 @@ pub fn corpora() -> Option<Corpora> {
     })
 }
 
-pub fn output_root() -> Result<PathBuf> {
+pub(super) fn output_root() -> Result<PathBuf> {
     resolve_output_root(env::var_os("UECAPS_CORPUS_OUTPUT_ROOT"))
 }
 
@@ -61,7 +61,7 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 
-pub fn validate_output_root(root: &Path) -> Result<()> {
+pub(super) fn validate_output_root(root: &Path) -> Result<()> {
     let root = root.canonicalize()?;
     ensure!(
         root.file_name()
@@ -92,7 +92,7 @@ pub fn validate_output_root(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn is_uecaps_basename(layout: CapabilityLayout, name: &str) -> bool {
+pub(super) fn is_uecaps_basename(layout: CapabilityLayout, name: &str) -> bool {
     let profiled_lte = name
         .strip_prefix("lte_")
         .and_then(|name| name.strip_suffix(".binarypb"))
@@ -108,7 +108,10 @@ pub fn is_uecaps_basename(layout: CapabilityLayout, name: &str) -> bool {
         && (matches!(layout, CapabilityLayout::Bitmask) || !profiled_lte)
 }
 
-pub fn raw_carriers(bitmask: &Path, profiled: &Path) -> impl Iterator<Item = (PathBuf, UeCaps)> {
+pub(super) fn raw_carriers(
+    bitmask: &Path,
+    profiled: &Path,
+) -> impl Iterator<Item = (PathBuf, UeCaps)> {
     let mut paths = Vec::new();
     for (directory, layout) in [
         (bitmask, CapabilityLayout::Bitmask),
@@ -141,7 +144,7 @@ pub fn raw_carriers(bitmask: &Path, profiled: &Path) -> impl Iterator<Item = (Pa
     })
 }
 
-pub fn components(caps: &UeCaps) -> impl Iterator<Item = &SubBlock> {
+pub(super) fn components(caps: &UeCaps) -> impl Iterator<Item = &SubBlock> {
     caps.combo_groups
         .iter()
         .flat_map(|group| &group.combo)
@@ -149,7 +152,7 @@ pub fn components(caps: &UeCaps) -> impl Iterator<Item = &SubBlock> {
 }
 
 /// Independent all-or-nothing oracle, retaining every CC in selector order.
-pub fn resolve_selector<'a, T>(ids: Option<&[u8]>, list: &'a [T]) -> Option<Vec<&'a T>> {
+pub(super) fn resolve_selector<'a, T>(ids: Option<&[u8]>, list: &'a [T]) -> Option<Vec<&'a T>> {
     let ids = ids.filter(|ids| !ids.is_empty())?;
     ids.iter()
         .map(|&byte| {

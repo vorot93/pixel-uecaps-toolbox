@@ -309,7 +309,7 @@ fn finish_nr_document(
             }
         })
         .collect();
-    let domain = NrDomain::new(domain_members)?;
+    let domain = NrDomain::new(&domain_members)?;
     let combos = payloads
         .into_values()
         .enumerate()
@@ -438,8 +438,7 @@ pub(super) fn canonical_payloads(
             }
             ensure!(
                 !combo.sub_blocks.is_empty(),
-                "{carrier} combo {} must contain at least one component",
-                index
+                "{carrier} combo {index} must contain at least one component"
             );
             let payload = RawNrPayload::from_proto_combo(
                 header,
@@ -699,7 +698,11 @@ mod tests {
         assert_eq!(mapping_only.profiled_id, None);
         assert_eq!(mapping_only.mapping_id, Some(99));
         assert_eq!(mapping_only.plmns, Some(vec![]));
-        assert!(mapping_only.profiles.is_empty());
+        assert!(
+            mapping_only.profiles.is_empty(),
+            "{:?}",
+            mapping_only.profiles
+        );
         assert_eq!(nr.combos.len(), 3);
 
         let real = nr

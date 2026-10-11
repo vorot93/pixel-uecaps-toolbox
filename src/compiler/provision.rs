@@ -250,17 +250,17 @@ mod tests {
     const SYNTHETIC_ANCHOR: u64 = 8_969;
     const TARGET_MODEL: &str = "G2YBB";
 
-    fn selection(carriers: &[&str], skus: &[&str]) -> Option<Vec<SelectionRect>> {
-        Some(vec![SelectionRect {
+    fn selection(carriers: &[&str], skus: &[&str]) -> Vec<SelectionRect> {
+        vec![SelectionRect {
             carriers: Some(carriers.iter().map(|value| (*value).into()).collect()),
             skus: Some(skus.iter().map(|value| (*value).into()).collect()),
-        }])
+        }]
     }
 
     fn nr_combo(band: u16, carriers: &[&str], skus: &[&str]) -> NrSourceCombo {
         NrSourceCombo {
-            selection: selection(carriers, skus),
-            header: crate::raw_nr::test_support::full_header().unwrap(),
+            selection: Some(selection(carriers, skus)),
+            header: crate::raw_nr::test_support::full_header(),
             sub_blocks: vec![
                 SourceNrSubBlock {
                     band,
@@ -365,7 +365,8 @@ mod tests {
                 },
             )]),
             combos: vec![LteSourceCombo {
-                selection: selection(&[], &[TARGET_MODEL]).map(|mut rectangles| {
+                selection: Some({
+                    let mut rectangles = selection(&[], &[TARGET_MODEL]);
                     rectangles[0].carriers = None;
                     rectangles
                 }),
@@ -497,7 +498,7 @@ mod tests {
                 }
                 1 => assert_eq!(bytes, include_bytes!("../magisk/assets/update-binary")),
                 2 => assert_eq!(bytes, b"#MAGISK\n"),
-                3 => assert!(bytes.is_empty()),
+                3 => assert!(bytes.is_empty(), "{bytes:?}"),
                 _ => assert!(!bytes.is_empty(), "{expected_name}"),
             }
         }
@@ -626,11 +627,11 @@ mod tests {
             .iter()
             .find(|file| file.basename == "EMPTY_LEGACY.binarypb")
             .unwrap();
-        assert!(
+        assert_eq!(
             crate::proto::UeCaps::decode(empty.bytes.as_slice())
                 .unwrap()
-                .combo_groups
-                .is_empty()
+                .combo_groups,
+            Vec::<crate::proto::ComboGroup>::new()
         );
     }
 
@@ -694,7 +695,7 @@ mod tests {
         assert_eq!(empty.version, 862_505_271);
         assert_eq!(empty.id, Some(9));
         assert_eq!(empty.unknown, 91);
-        assert!(empty.combo_groups.is_empty());
+        assert!(empty.combo_groups.is_empty(), "{:?}", empty.combo_groups);
 
         let mapping = files
             .iter()

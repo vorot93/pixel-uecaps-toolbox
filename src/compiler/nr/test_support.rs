@@ -21,7 +21,7 @@ pub(in crate::compiler) fn one_combo_caps(
         id,
         unknown,
         combo_groups: vec![ComboGroup {
-            combo_header: full_header(),
+            combo_header: Some(full_header()),
             combo: vec![Combo {
                 sub_blocks: vec![cc(band, 0)],
                 bitmask,

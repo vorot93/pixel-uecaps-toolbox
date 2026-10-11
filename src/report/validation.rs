@@ -212,6 +212,10 @@ mod tests {
                 .all(|e| e.message.contains("duplicate carrier index"))
         );
         map.carriers[1].index = 2;
-        assert!(legend_issues(Path::new("legend"), &map).is_empty());
+        assert!(
+            legend_issues(Path::new("legend"), &map).is_empty(),
+            "{:?}",
+            legend_issues(Path::new("legend"), &map)
+        );
     }
 }
