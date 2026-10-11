@@ -25,30 +25,30 @@ use std::collections::BTreeSet;
 /// materializes it via [`placeholder_ids`]. Keeping it would let a component hold a catalog
 /// reference *and* a raw selector for one direction — a state the source format cannot spell.
 #[derive(Clone, Debug)]
-pub(crate) enum SourceSubBlock {
+pub(in crate::compiler) enum SourceSubBlock {
     Lte(SourceLteSubBlock),
     Nr(SourceNrSubBlock),
 }
 
 /// The `lte` half of [`SourceSubBlock`] — an E-UTRA component inside an EN-DC combo.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SourceLteSubBlock {
-    pub(crate) band: u16,
-    pub(crate) dl_bw_class: Option<u8>,
-    pub(crate) ul_bw_class: Option<u8>,
-    pub(crate) dl_feature_index: Option<u16>,
-    pub(crate) ul_feature_index: Option<u16>,
+pub(in crate::compiler) struct SourceLteSubBlock {
+    pub(in crate::compiler) band: u16,
+    pub(in crate::compiler) dl_bw_class: Option<u8>,
+    pub(in crate::compiler) ul_bw_class: Option<u8>,
+    pub(in crate::compiler) dl_feature_index: Option<u16>,
+    pub(in crate::compiler) ul_feature_index: Option<u16>,
 }
 
 /// The `nr` half of [`SourceSubBlock`].
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SourceNrSubBlock {
-    pub(crate) band: u16,
-    pub(crate) dl_bw_class: Option<u8>,
-    pub(crate) ul_bw_class: Option<u8>,
-    pub(crate) dl_feature_indices: Vec<usize>,
-    pub(crate) ul_feature_indices: Vec<usize>,
-    pub(crate) srs_tx_switch: Option<i32>,
+pub(in crate::compiler) struct SourceNrSubBlock {
+    pub(in crate::compiler) band: u16,
+    pub(in crate::compiler) dl_bw_class: Option<u8>,
+    pub(in crate::compiler) ul_bw_class: Option<u8>,
+    pub(in crate::compiler) dl_feature_indices: Vec<usize>,
+    pub(in crate::compiler) ul_feature_indices: Vec<usize>,
+    pub(in crate::compiler) srs_tx_switch: Option<i32>,
 }
 
 impl From<SourceLteSubBlock> for SourceSubBlock {
@@ -66,21 +66,21 @@ impl From<SourceNrSubBlock> for SourceSubBlock {
 /// The shared read surface for code that treats both kinds alike (the KDL emitter, and
 /// the NR band-collection pass). Anything that *builds* a sub-block matches on the variant.
 impl SourceSubBlock {
-    pub(crate) const fn kind(&self) -> SubBlockKind {
+    pub(in crate::compiler) const fn kind(&self) -> SubBlockKind {
         match self {
             Self::Lte(_) => SubBlockKind::Lte,
             Self::Nr(_) => SubBlockKind::Nr,
         }
     }
 
-    pub(crate) const fn band(&self) -> u16 {
+    pub(in crate::compiler) const fn band(&self) -> u16 {
         match self {
             Self::Lte(cc) => cc.band,
             Self::Nr(cc) => cc.band,
         }
     }
 
-    pub(crate) const fn bw_class(&self, direction: Direction) -> Option<u8> {
+    pub(in crate::compiler) const fn bw_class(&self, direction: Direction) -> Option<u8> {
         match (self, direction) {
             (Self::Lte(cc), Direction::Dl) => cc.dl_bw_class,
             (Self::Lte(cc), Direction::Ul) => cc.ul_bw_class,
@@ -91,7 +91,7 @@ impl SourceSubBlock {
 }
 
 #[derive(Debug)]
-pub(crate) struct LocalFeaturePlan {
+pub(in crate::compiler) struct LocalFeaturePlan {
     dl: Vec<ShannonFeatureSetDlPerCcNr>,
     ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
@@ -154,7 +154,7 @@ fn local_catalog<T: Ord + Clone>(catalog: &[T], used: &BTreeSet<T>) -> Vec<T> {
 }
 
 impl LocalFeaturePlan {
-    pub(crate) fn new(
+    pub(in crate::compiler) fn new(
         palette: &FeaturePalette,
         payloads: &[&RawNrPayload],
         basename: &str,
@@ -190,11 +190,11 @@ impl LocalFeaturePlan {
         Ok(Self { dl, ul })
     }
 
-    pub(crate) fn into_catalogs(self) -> FeaturePalette {
+    pub(in crate::compiler) fn into_catalogs(self) -> FeaturePalette {
         FeaturePalette::from_rows(self.dl, self.ul)
     }
 
-    pub(crate) fn reconstruct_sub_block(
+    pub(in crate::compiler) fn reconstruct_sub_block(
         &self,
         component: &RawSubBlock,
     ) -> anyhow::Result<ProtoSubBlock> {
@@ -252,7 +252,7 @@ fn local_selector<T: Ord>(
 impl FeaturePalette {
     /// Per-CC global-catalog references: each entry in `dl_features`/`ul_features` maps to
     /// its own 1-based index into the canonical (global) catalog — one `usize` per CC.
-    pub(crate) fn source_sub_block(
+    pub(in crate::compiler) fn source_sub_block(
         &self,
         component: &RawSubBlock,
     ) -> anyhow::Result<SourceSubBlock> {
@@ -359,7 +359,10 @@ fn resolve_nr(
 }
 
 impl SourceSubBlock {
-    pub(crate) fn resolve(&self, palette: &FeaturePalette) -> anyhow::Result<RawSubBlock> {
+    pub(in crate::compiler) fn resolve(
+        &self,
+        palette: &FeaturePalette,
+    ) -> anyhow::Result<RawSubBlock> {
         // `ul_bw_class == 0` means UL disabled: no per-CC data at all, hence no placeholder
         // (DL has no such "disabled" class).
         let ul_bw_class = self.bw_class(Direction::Ul).filter(|&bw| bw >= 1);

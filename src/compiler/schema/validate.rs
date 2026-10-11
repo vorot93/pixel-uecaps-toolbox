@@ -23,12 +23,14 @@ use crate::{
 use anyhow::{Context, bail, ensure};
 use compact_str::CompactString;
 use std::collections::{BTreeMap, BTreeSet};
-pub(crate) fn parse_sources(text: &str) -> anyhow::Result<ValidatedSources> {
+pub(in crate::compiler) fn parse_sources(text: &str) -> anyhow::Result<ValidatedSources> {
     let source = crate::compiler::read_sources(text).context("parsing the source document")?;
     validate_documents(source)
 }
 
-pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<ValidatedSources> {
+pub(in crate::compiler) fn validate_documents(
+    source: SourceDocument,
+) -> anyhow::Result<ValidatedSources> {
     // The version check lives in the reader (`kdl_source::checked_version`), not here. It has to
     // run before the document body is mapped: a stale tree fails the *vocabulary* first, so a
     // check at this point only ever saw documents that had already mapped cleanly. `decompose`
@@ -365,7 +367,9 @@ fn validate_carriers(nr: &NrDocument) -> anyhow::Result<BTreeMap<String, Validat
 /// bytes, `decompose`'s `rebuild_mapping` self-checks against them, and
 /// [`validate_mapping_projection`] proves they re-encode. Building it three times is how the
 /// three could drift.
-pub(crate) fn legend_root(carriers: &BTreeMap<String, ValidatedCarrier>) -> MappingRoot {
+pub(in crate::compiler) fn legend_root(
+    carriers: &BTreeMap<String, ValidatedCarrier>,
+) -> MappingRoot {
     let mut mappings: Vec<_> = carriers
         .iter()
         .filter_map(|(name, carrier)| {
@@ -448,7 +452,7 @@ fn validate_fingerprint_partition(nr: &NrDocument) -> anyhow::Result<BTreeMap<St
 
 /// A carrier name must be a nonempty, already-trimmed canonical identifier. Shared by the
 /// compiler's NR ingestion (`nr.rs`) and schema validation.
-pub(crate) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
+pub(in crate::compiler) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
     ensure!(!carrier.is_empty(), "carrier names must be nonempty");
     ensure!(
         carrier.trim() == carrier,

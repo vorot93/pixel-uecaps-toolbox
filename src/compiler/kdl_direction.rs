@@ -34,18 +34,18 @@ use anyhow::{Context, Result, bail, ensure};
 
 /// A parsed DL or UL positional direction argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DirectionArg {
-    pub(crate) bw_class: u8,
+pub(in crate::compiler) struct DirectionArg {
+    pub(in crate::compiler) bw_class: u8,
     /// One 1-based reference per CC. Empty means the all-zero placeholder, which the source
     /// omits and `resolve` re-materialises.
-    pub(crate) indices: Vec<usize>,
+    pub(in crate::compiler) indices: Vec<usize>,
 }
 
 /// Render a class plus its per-CC list.
 ///
 /// Fails closed on a class with no letter rather than emitting a value that cannot be read
 /// back — the same stance `cc_count` takes on an unobserved bandwidth class.
-pub(crate) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String> {
+pub(in crate::compiler) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String> {
     let letter = bw_class_letter(bw_class).with_context(|| {
         format!("bandwidth class {bw_class} has no 3GPP letter (expected 1..=26)")
     })?;
@@ -60,7 +60,7 @@ pub(crate) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String
 
 /// Parse a class plus its per-CC list. `label` names the positional direction argument
 /// (`DL`/`UL`) in diagnostics.
-pub(crate) fn parse_direction(raw: &str, label: Direction) -> Result<DirectionArg> {
+pub(in crate::compiler) fn parse_direction(raw: &str, label: Direction) -> Result<DirectionArg> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
@@ -127,7 +127,7 @@ const CLASS_MIMO_BASES: [(i32, char); 6] = [
 /// UL-disabled. The source spells that by *omitting* the argument, so 0 has no rendering here
 /// and no value has two spellings. A 0 reaching this function is a disabled downlink, which
 /// `validate_lte_combos` rejects first with a message naming the combo and band.
-pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
+pub(in crate::compiler) fn format_class_mimo(value: i32) -> Result<String> {
     let base = value & !1;
     let (_, letter) = CLASS_MIMO_BASES
         .iter()
@@ -143,7 +143,7 @@ pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
 /// Never returns 0: every result is `base + low` with `base >= 1024`. The only route to a zero UL
 /// class is an omitted argument, which the reader defaults — so the source format has exactly one
 /// spelling per value and the round trip stays byte-stable without a uniqueness check.
-pub(crate) fn parse_class_mimo(raw: &str, label: Direction) -> Result<i32> {
+pub(in crate::compiler) fn parse_class_mimo(raw: &str, label: Direction) -> Result<i32> {
     let mut chars = raw.chars();
     let letter = chars
         .next()

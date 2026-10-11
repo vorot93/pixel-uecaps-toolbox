@@ -368,7 +368,7 @@ fn write_carrier(name: &str, c: &CarrierSource) -> Result<KdlNode> {
 /// Takes the halves by reference rather than a `&SourceDocument`: `ValidatedSources` stores them
 /// separately, and `decompose` calls this twice, so a wrapper parameter would mean cloning the
 /// whole multi-megabyte model each time.
-pub(crate) fn write_sources(nr: &NrDocument, lte: &LteDocument) -> Result<String> {
+pub(in crate::compiler) fn write_sources(nr: &NrDocument, lte: &LteDocument) -> Result<String> {
     let mut document = KdlDocument::new();
 
     // The constant, not a parameter: this build only ever writes the format it reads, and

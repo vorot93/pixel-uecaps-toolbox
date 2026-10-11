@@ -45,21 +45,21 @@ impl<T> Observation<T> {
 }
 
 impl FileEvidence {
-    pub fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         match self {
             Self::Carrier { observation, .. } => &observation.path,
             Self::Lte { observation, .. } => &observation.path,
             Self::Legend(observation) => &observation.path,
         }
     }
-    pub fn issues(&self) -> &[Issue] {
+    pub(super) fn issues(&self) -> &[Issue] {
         match self {
             Self::Carrier { observation, .. } => &observation.issues,
             Self::Lte { observation, .. } => &observation.issues,
             Self::Legend(observation) => &observation.issues,
         }
     }
-    pub fn carrier(&self) -> Option<(&str, u64, &Observation<UeCaps>)> {
+    pub(super) fn carrier(&self) -> Option<(&str, u64, &Observation<UeCaps>)> {
         match self {
             Self::Carrier {
                 carrier,
@@ -69,7 +69,7 @@ impl FileEvidence {
             _ => None,
         }
     }
-    pub fn legend(&self) -> Option<&Observation<PlmnMap>> {
+    pub(super) fn legend(&self) -> Option<&Observation<PlmnMap>> {
         match self {
             Self::Legend(observation) => Some(observation),
             _ => None,

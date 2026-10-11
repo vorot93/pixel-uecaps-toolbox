@@ -31,7 +31,7 @@ const PREFIX: char = 'b';
 
 /// Render a 32-bit left-aligned BIT STRING as `b` + its ascending BCS index list. The empty
 /// set renders as the empty string, which KDL writes as `""`.
-pub(crate) fn format_bcs(bits: u32) -> String {
+pub(in crate::compiler) fn format_bcs(bits: u32) -> String {
     if bits == 0 {
         return String::new();
     }
@@ -54,7 +54,7 @@ pub(crate) fn format_bcs(bits: u32) -> String {
 /// Indices must ascend and not repeat. Normalising a descending list instead would give one
 /// value two spellings, and the round trip would stop being byte-stable — the same rule
 /// [`super::kdl_direction::parse_class_mimo`] keeps for its own encoding.
-pub(crate) fn parse_bcs(raw: &str, label: &str) -> Result<u32> {
+pub(in crate::compiler) fn parse_bcs(raw: &str, label: &str) -> Result<u32> {
     if raw.is_empty() {
         return Ok(0);
     }

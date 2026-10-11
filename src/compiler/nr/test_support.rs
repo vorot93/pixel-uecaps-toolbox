@@ -1,5 +1,5 @@
 use super::{LegacyNrFile, ProfiledNrFile, ingest_nr};
-pub(crate) use crate::raw_nr::test_support::{cc, full_header};
+pub(in crate::compiler) use crate::raw_nr::test_support::{cc, full_header};
 use crate::{
     compiler::schema::{
         LteDocument, LteFileSource, NrDocument, SourceDocument, ValidatedNr, parse_sources, to_kdl,
@@ -9,7 +9,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-pub(crate) fn one_combo_caps(
+pub(in crate::compiler) fn one_combo_caps(
     version: u64,
     id: Option<i32>,
     unknown: u64,
@@ -31,14 +31,18 @@ pub(crate) fn one_combo_caps(
     }
 }
 
-pub(crate) fn legacy_file(carrier: &str, caps: UeCaps) -> LegacyNrFile {
+pub(in crate::compiler) fn legacy_file(carrier: &str, caps: UeCaps) -> LegacyNrFile {
     LegacyNrFile {
         carrier: carrier.to_string(),
         caps,
     }
 }
 
-pub(crate) fn profiled_file(carrier: &str, number: u64, caps: UeCaps) -> ProfiledNrFile {
+pub(in crate::compiler) fn profiled_file(
+    carrier: &str,
+    number: u64,
+    caps: UeCaps,
+) -> ProfiledNrFile {
     ProfiledNrFile {
         carrier: carrier.to_string(),
         number,
@@ -46,11 +50,11 @@ pub(crate) fn profiled_file(carrier: &str, number: u64, caps: UeCaps) -> Profile
     }
 }
 
-pub(crate) fn empty_mapping() -> MappingRoot {
+pub(in crate::compiler) fn empty_mapping() -> MappingRoot {
     MappingRoot { mappings: vec![] }
 }
 
-pub(crate) fn mapping(entries: &[(u64, &str, &[&str])]) -> MappingRoot {
+pub(in crate::compiler) fn mapping(entries: &[(u64, &str, &[&str])]) -> MappingRoot {
     MappingRoot {
         mappings: entries
             .iter()
@@ -63,7 +67,7 @@ pub(crate) fn mapping(entries: &[(u64, &str, &[&str])]) -> MappingRoot {
     }
 }
 
-pub(crate) fn validated_nr(document: NrDocument) -> ValidatedNr {
+pub(in crate::compiler) fn validated_nr(document: NrDocument) -> ValidatedNr {
     let lte = LteDocument {
         files: BTreeMap::from([(
             1,
@@ -78,7 +82,7 @@ pub(crate) fn validated_nr(document: NrDocument) -> ValidatedNr {
     parse_sources(&text).unwrap().nr
 }
 
-pub(crate) fn generation_source() -> ValidatedNr {
+pub(in crate::compiler) fn generation_source() -> ValidatedNr {
     const SIGNATURE: u64 = 5;
     const REAL_ANCHOR: u64 = 66_813_533;
     const SYNTHETIC_ANCHOR: u64 = 8_969;

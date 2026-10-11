@@ -43,14 +43,14 @@ pub(super) struct Issue {
     pub message: String,
 }
 impl Issue {
-    pub fn new(kind: IssueKind, path: &Path, message: impl Into<String>) -> Self {
+    pub(super) fn new(kind: IssueKind, path: &Path, message: impl Into<String>) -> Self {
         Self {
             kind,
             paths: vec![path.into()],
             message: message.into(),
         }
     }
-    pub fn input(error: InputError) -> Self {
+    pub(super) fn input(error: InputError) -> Self {
         let (path, kind, message) = match error {
             InputError::Read { path, source } => {
                 (path, IssueKind::Read, format!("cannot read: {source}"))

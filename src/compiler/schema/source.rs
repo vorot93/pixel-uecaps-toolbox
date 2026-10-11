@@ -15,36 +15,36 @@ use std::collections::BTreeMap;
 /// unabbreviated — the marker announcing the version cannot be renamed by the change it
 /// describes, or the check below would be unreachable for exactly the documents it exists to
 /// diagnose.
-pub(crate) const SOURCE_FORMAT_VERSION: u32 = 1;
+pub(in crate::compiler) const SOURCE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
-pub(crate) struct BitmaskFingerprint {
-    pub(crate) fingerprint: u64,
-    pub(crate) carriers: Vec<String>,
+pub(in crate::compiler) struct BitmaskFingerprint {
+    pub(in crate::compiler) fingerprint: u64,
+    pub(in crate::compiler) carriers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ProfileSource {
-    pub(crate) multiplier: u64,
-    pub(crate) unknown: u64,
+pub(in crate::compiler) struct ProfileSource {
+    pub(in crate::compiler) multiplier: u64,
+    pub(in crate::compiler) unknown: u64,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct CarrierSource {
-    pub(crate) bitmask_id: Option<i64>,
-    pub(crate) profiled_id: Option<i64>,
-    pub(crate) mapping_id: Option<u64>,
-    pub(crate) plmns: Option<Vec<Plmn>>,
-    pub(crate) signature: Option<u64>,
-    pub(crate) tier: Option<Tier>,
-    pub(crate) profiles: BTreeMap<u64, ProfileSource>,
+pub(in crate::compiler) struct CarrierSource {
+    pub(in crate::compiler) bitmask_id: Option<i64>,
+    pub(in crate::compiler) profiled_id: Option<i64>,
+    pub(in crate::compiler) mapping_id: Option<u64>,
+    pub(in crate::compiler) plmns: Option<Vec<Plmn>>,
+    pub(in crate::compiler) signature: Option<u64>,
+    pub(in crate::compiler) tier: Option<Tier>,
+    pub(in crate::compiler) profiles: BTreeMap<u64, ProfileSource>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct NrSourceCombo {
-    pub(crate) selection: Option<Vec<SelectionRect>>,
-    pub(crate) header: ComboHeader,
-    pub(crate) sub_blocks: Vec<SourceSubBlock>,
+pub(in crate::compiler) struct NrSourceCombo {
+    pub(in crate::compiler) selection: Option<Vec<SelectionRect>>,
+    pub(in crate::compiler) header: ComboHeader,
+    pub(in crate::compiler) sub_blocks: Vec<SourceSubBlock>,
 }
 
 /// One source document: the NR and LTE halves it carries.
@@ -56,42 +56,42 @@ pub(crate) struct NrSourceCombo {
 /// (`kdl_source::write_sources`) stamps the constant unconditionally. Storing it would only carry
 /// a number both ends already know, so it was carried write-only until it was dropped.
 #[derive(Clone, Debug)]
-pub(crate) struct SourceDocument {
-    pub(crate) nr: NrDocument,
-    pub(crate) lte: LteDocument,
+pub(in crate::compiler) struct SourceDocument {
+    pub(in crate::compiler) nr: NrDocument,
+    pub(in crate::compiler) lte: LteDocument,
 }
 
 /// The NR half. `Default` is the empty half, which the tests that exercise only the LTE half
 /// pass to [`write_sources`](crate::compiler::write_sources) — the writer always emits `bc`, so an empty
 /// half still produces a parseable document.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct NrDocument {
-    pub(crate) bitmask_carriers: Vec<String>,
-    pub(crate) bitmask_fingerprints: Vec<BitmaskFingerprint>,
-    pub(crate) carriers: BTreeMap<String, CarrierSource>,
-    pub(crate) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
-    pub(crate) combos: Vec<NrSourceCombo>,
+pub(in crate::compiler) struct NrDocument {
+    pub(in crate::compiler) bitmask_carriers: Vec<String>,
+    pub(in crate::compiler) bitmask_fingerprints: Vec<BitmaskFingerprint>,
+    pub(in crate::compiler) carriers: BTreeMap<String, CarrierSource>,
+    pub(in crate::compiler) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
+    pub(in crate::compiler) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
+    pub(in crate::compiler) combos: Vec<NrSourceCombo>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct LteFileSource {
-    pub(crate) fingerprint: u64,
-    pub(crate) bitmask: u64,
+pub(in crate::compiler) struct LteFileSource {
+    pub(in crate::compiler) fingerprint: u64,
+    pub(in crate::compiler) bitmask: u64,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct LteSourceCombo {
-    pub(crate) selection: Option<Vec<SelectionRect>>,
-    pub(crate) bcs: Option<u64>,
-    pub(crate) unknown1: Option<u64>,
-    pub(crate) unknown2: Option<u64>,
-    pub(crate) components: Vec<LteComponent>,
+pub(in crate::compiler) struct LteSourceCombo {
+    pub(in crate::compiler) selection: Option<Vec<SelectionRect>>,
+    pub(in crate::compiler) bcs: Option<u64>,
+    pub(in crate::compiler) unknown1: Option<u64>,
+    pub(in crate::compiler) unknown2: Option<u64>,
+    pub(in crate::compiler) components: Vec<LteComponent>,
 }
 
 /// The LTE half. `Default` is the empty half — see [`NrDocument`].
 #[derive(Clone, Debug, Default)]
-pub(crate) struct LteDocument {
-    pub(crate) files: BTreeMap<u64, LteFileSource>,
-    pub(crate) combos: Vec<LteSourceCombo>,
+pub(in crate::compiler) struct LteDocument {
+    pub(in crate::compiler) files: BTreeMap<u64, LteFileSource>,
+    pub(in crate::compiler) combos: Vec<LteSourceCombo>,
 }

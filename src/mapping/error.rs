@@ -3,7 +3,7 @@ use thiserror::Error;
 /// Errors from the PLMN-mapping codec: PLMN parsing/formatting, and the legend's proto ↔
 /// editable-model conversion (`mapping::schema`), used by the compiler and `check`.
 #[derive(Debug, Error)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("PLMN value {0} is out of the 24-bit range")]
     PlmnOutOfRange(u64),
     #[error("invalid PLMN string `{0}` (expected MCC-MNC, e.g. 250-01)")]

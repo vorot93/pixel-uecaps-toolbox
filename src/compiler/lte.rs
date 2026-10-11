@@ -19,11 +19,11 @@ use std::collections::{BTreeMap, BTreeSet};
 /// This is also the dedup key `validate_lte_combos` builds from an `LteSourceCombo`, so the
 /// ingest side and the validate side compare payloads by exactly the same definition.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct RawLteCombo {
-    pub(crate) components: Vec<LteComponent>,
-    pub(crate) bcs: Option<u64>,
-    pub(crate) unknown1: Option<u64>,
-    pub(crate) unknown2: Option<u64>,
+pub(in crate::compiler) struct RawLteCombo {
+    pub(in crate::compiler) components: Vec<LteComponent>,
+    pub(in crate::compiler) bcs: Option<u64>,
+    pub(in crate::compiler) unknown1: Option<u64>,
+    pub(in crate::compiler) unknown2: Option<u64>,
 }
 
 impl From<&LteCombo> for RawLteCombo {
@@ -61,35 +61,35 @@ impl RawLteCombo {
     }
 }
 
-pub(crate) struct DecodedLteFile {
+pub(in crate::compiler) struct DecodedLteFile {
     id: u64,
     original: Vec<u8>,
     caps: LteCaps,
 }
 
 impl DecodedLteFile {
-    pub(crate) fn decode(id: u64, original: Vec<u8>) -> anyhow::Result<Self> {
+    pub(in crate::compiler) fn decode(id: u64, original: Vec<u8>) -> anyhow::Result<Self> {
         let caps = decode_lte_caps(&original, &lte_basename(id))?;
         Ok(Self { id, original, caps })
     }
 
-    pub(crate) fn id(&self) -> u64 {
+    pub(in crate::compiler) fn id(&self) -> u64 {
         self.id
     }
 
-    pub(crate) fn caps(&self) -> &LteCaps {
+    pub(in crate::compiler) fn caps(&self) -> &LteCaps {
         &self.caps
     }
 
-    pub(crate) fn into_original(self) -> (u64, Vec<u8>) {
+    pub(in crate::compiler) fn into_original(self) -> (u64, Vec<u8>) {
         (self.id, self.original)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct IngestedLte {
-    pub(crate) source: LteDocument,
-    pub(crate) originals: BTreeMap<u64, Vec<u8>>,
+pub(in crate::compiler) struct IngestedLte {
+    pub(in crate::compiler) source: LteDocument,
+    pub(in crate::compiler) originals: BTreeMap<u64, Vec<u8>>,
 }
 
 /// Groups `files` by id, erroring on a duplicate — the input is a flat `Vec` (arrival order
@@ -220,7 +220,7 @@ fn verify_lte_ingest(
     Ok(())
 }
 
-pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<IngestedLte> {
+pub(in crate::compiler) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<IngestedLte> {
     ensure!(!files.is_empty(), "at least one LTE file is required");
 
     let files_by_id = group_files_by_id(files)?;
@@ -265,7 +265,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<IngestedL
     })
 }
 
-pub(crate) fn generate_lte_file(
+pub(in crate::compiler) fn generate_lte_file(
     lte: &ValidatedLte,
     id: u64,
     sku: &Sku,

@@ -535,7 +535,7 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
 
 /// Read one source document. The inverse of [`super::write_sources`], and order-independent: node
 /// *order* is the writer's canonical form, not something the reader relies on.
-pub(crate) fn read_sources(text: &str) -> Result<SourceDocument> {
+pub(in crate::compiler) fn read_sources(text: &str) -> Result<SourceDocument> {
     let document: KdlDocument = text
         .parse()
         .context("the source document is not valid KDL")?;

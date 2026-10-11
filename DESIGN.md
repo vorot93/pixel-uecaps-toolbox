@@ -36,10 +36,12 @@ work; `src/main.rs` is a thin `clap` CLI over them.
 compare}` — plus exactly what they need to be callable and testable from outside the crate:
 the `outcome::Outcome` / `report::{Common, Detail, Report, OutputTarget}` types and `report::publish`,
 the `compiler::{load_sources, provision_from_sources}` parse-once pair and the opaque
-`ValidatedSources` handle they leak (the corpus test's perf optimization; see CONTRIBUTING §
+`compiler::ValidatedSources` handle (the corpus test's parse-once optimization; see CONTRIBUTING §
 Performance), `model::PHONE_MODELS` (+
 `CapabilityLayout`/`PhoneModel`) for enumerating registered targets, and `proto` for building
-test fixtures. Everything else defaults to `pub(crate)` or private. An earlier plan sketched
+test fixtures. Compiler submodules are private; their shared items stay within `crate::compiler`.
+Other internals use parent-module or crate visibility. The library tracks current HEAD without
+compatibility wrappers or a stable-API promise. An earlier plan sketched
 a broader library API (a WASM-facing "Plan 2") on top of this crate; it was never built and
 was dropped — do not reintroduce a speculative `pub` surface in anticipation of it.
 

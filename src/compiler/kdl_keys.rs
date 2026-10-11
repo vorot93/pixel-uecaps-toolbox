@@ -11,41 +11,41 @@
 /// Document level. Every name here is a sibling of every other: both radio kinds' nodes live in
 /// one document, so this is one scope, and `tests::collisions_are_only_across_scopes` is what
 /// keeps it that way.
-pub(crate) mod doc {
+pub(in crate::compiler) mod doc {
     /// Deliberately NOT abbreviated. A version mismatch must be diagnosable, and it cannot be if
     /// the marker announcing the version is itself renamed by the version change — the reader
     /// would reject the document as having an unknown top-level node before ever reaching the
     /// version check.
-    pub(crate) const VERSION: &str = "version";
-    pub(crate) const BITMASK_CARRIERS: &str = "bc";
-    pub(crate) const BITMASK_FINGERPRINT: &str = "bf";
+    pub(in crate::compiler) const VERSION: &str = "version";
+    pub(in crate::compiler) const BITMASK_CARRIERS: &str = "bc";
+    pub(in crate::compiler) const BITMASK_FINGERPRINT: &str = "bf";
     /// Carrier. `c` at every level: here, inside a `bf` group, and inside an `s` selection.
-    pub(crate) const CARRIER: &str = "c";
-    pub(crate) const LTE_FILE: &str = "f";
-    pub(crate) const DL_FEATURE: &str = "df";
-    pub(crate) const UL_FEATURE: &str = "uf";
+    pub(in crate::compiler) const CARRIER: &str = "c";
+    pub(in crate::compiler) const LTE_FILE: &str = "f";
+    pub(in crate::compiler) const DL_FEATURE: &str = "df";
+    pub(in crate::compiler) const UL_FEATURE: &str = "uf";
     /// NR / EN-DC combo. Mirrors the `n<band>` sub-block prefix.
-    pub(crate) const NR_COMBO: &str = "n";
+    pub(in crate::compiler) const NR_COMBO: &str = "n";
     /// LTE-fallback combo. Deliberately not `b`, which would make the header line read
     /// `b b=""` against the combo's own `bcs` property.
-    pub(crate) const LTE_COMBO: &str = "l";
+    pub(in crate::compiler) const LTE_COMBO: &str = "l";
 }
 
 /// Children of a `bitmask-fingerprint`.
-pub(crate) mod fingerprint {
-    pub(crate) const CARRIERS: &str = "c";
+pub(in crate::compiler) mod fingerprint {
+    pub(in crate::compiler) const CARRIERS: &str = "c";
 }
 
 /// Properties and children of a `carrier`.
-pub(crate) mod carrier {
-    pub(crate) const BITMASK_ID: &str = "bi";
-    pub(crate) const PROFILED_ID: &str = "pi";
-    pub(crate) const MAPPING_ID: &str = "mi";
-    pub(crate) const SIGNATURE: &str = "sg";
-    pub(crate) const TIER: &str = "t";
-    pub(crate) const PLMN: &str = "p";
-    pub(crate) const PLMNS: &str = "ps";
-    pub(crate) const PROFILE: &str = "pf";
+pub(in crate::compiler) mod carrier {
+    pub(in crate::compiler) const BITMASK_ID: &str = "bi";
+    pub(in crate::compiler) const PROFILED_ID: &str = "pi";
+    pub(in crate::compiler) const MAPPING_ID: &str = "mi";
+    pub(in crate::compiler) const SIGNATURE: &str = "sg";
+    pub(in crate::compiler) const TIER: &str = "t";
+    pub(in crate::compiler) const PLMN: &str = "p";
+    pub(in crate::compiler) const PLMNS: &str = "ps";
+    pub(in crate::compiler) const PROFILE: &str = "pf";
 }
 
 /// Properties of a `plmn`. Deliberately never abbreviated — 444 occurrences in the whole real
@@ -54,80 +54,80 @@ pub(crate) mod carrier {
 /// The node itself is [`carrier::PLMN`]; these are its properties. Consumed by the PLMN codec in
 /// `kdl_support`, which already depends on `raw_nr::SubBlockKind` and so is not a
 /// vocabulary-free toolkit.
-pub(crate) mod plmn {
-    pub(crate) const MCC: &str = "mcc";
-    pub(crate) const MNC: &str = "mnc";
+pub(in crate::compiler) mod plmn {
+    pub(in crate::compiler) const MCC: &str = "mcc";
+    pub(in crate::compiler) const MNC: &str = "mnc";
     /// Pins a 3-digit MNC that would otherwise print as 2 — the only legal override.
-    pub(crate) const MNC_DIGITS: &str = "mnc-digits";
+    pub(in crate::compiler) const MNC_DIGITS: &str = "mnc-digits";
 }
 
 /// Properties of a `profile`.
-pub(crate) mod profile {
-    pub(crate) const MULTIPLIER: &str = "x";
-    pub(crate) const UNKNOWN: &str = "u";
+pub(in crate::compiler) mod profile {
+    pub(in crate::compiler) const MULTIPLIER: &str = "x";
+    pub(in crate::compiler) const UNKNOWN: &str = "u";
 }
 
 /// Properties and children of an NR combo. Named for its radio kind, paired with [`lte_combo`].
-pub(crate) mod nr_combo {
-    pub(crate) const POWER_CLASS: &str = "pc";
-    pub(crate) const BCS_NR: &str = "bn";
-    pub(crate) const BCS_INTRA_ENDC: &str = "bi";
-    pub(crate) const BCS_EUTRA: &str = "be";
-    pub(crate) const INTRA_BAND_EN_DC_SUPPORT: &str = "ie";
-    pub(crate) const SELECTION: &str = "s";
+pub(in crate::compiler) mod nr_combo {
+    pub(in crate::compiler) const POWER_CLASS: &str = "pc";
+    pub(in crate::compiler) const BCS_NR: &str = "bn";
+    pub(in crate::compiler) const BCS_INTRA_ENDC: &str = "bi";
+    pub(in crate::compiler) const BCS_EUTRA: &str = "be";
+    pub(in crate::compiler) const INTRA_BAND_EN_DC_SUPPORT: &str = "ie";
+    pub(in crate::compiler) const SELECTION: &str = "s";
     /// Sub-block node-name prefix for an NR component. The band is appended to it.
-    pub(crate) const NR_PREFIX: &str = "n";
+    pub(in crate::compiler) const NR_PREFIX: &str = "n";
     /// Sub-block node-name prefix for an E-UTRA component.
-    pub(crate) const LTE_PREFIX: &str = "B";
+    pub(in crate::compiler) const LTE_PREFIX: &str = "B";
 }
 
 /// Children of a `selection`.
-pub(crate) mod selection {
-    pub(crate) const CARRIERS: &str = "c";
-    pub(crate) const SKUS: &str = "m";
+pub(in crate::compiler) mod selection {
+    pub(in crate::compiler) const CARRIERS: &str = "c";
+    pub(in crate::compiler) const SKUS: &str = "m";
 }
 
 /// Properties of a sub-block inside an `n` combo. The two directions are **positional
 /// arguments**, not properties — DL first, UL second — so `srs-tx-switch` is all that is left
 /// here. See
 /// `compiler::kdl_direction` for the value format.
-pub(crate) mod sub_block {
-    pub(crate) const SRS_TX_SWITCH: &str = "st";
+pub(in crate::compiler) mod sub_block {
+    pub(in crate::compiler) const SRS_TX_SWITCH: &str = "st";
 }
 
 /// Properties of a `df` catalog node.
-pub(crate) mod dl_catalog {
-    pub(crate) const MAX_SCS: &str = "s";
-    pub(crate) const MAX_MIMO: &str = "m";
-    pub(crate) const MAX_BW: &str = "b";
-    pub(crate) const MAX_MOD_ORDER: &str = "o";
-    pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
+pub(in crate::compiler) mod dl_catalog {
+    pub(in crate::compiler) const MAX_SCS: &str = "s";
+    pub(in crate::compiler) const MAX_MIMO: &str = "m";
+    pub(in crate::compiler) const MAX_BW: &str = "b";
+    pub(in crate::compiler) const MAX_MOD_ORDER: &str = "o";
+    pub(in crate::compiler) const BW_90MHZ_SUPPORTED: &str = "w";
 }
 
 /// Properties of a `uf` catalog node.
-pub(crate) mod ul_catalog {
-    pub(crate) const MAX_SCS: &str = "s";
-    pub(crate) const MAX_MIMO_CB: &str = "m";
-    pub(crate) const MAX_BW: &str = "b";
-    pub(crate) const MAX_MOD_ORDER: &str = "o";
-    pub(crate) const BW_90MHZ_SUPPORTED: &str = "w";
-    pub(crate) const MAX_MIMO_NON_CB: &str = "nc";
+pub(in crate::compiler) mod ul_catalog {
+    pub(in crate::compiler) const MAX_SCS: &str = "s";
+    pub(in crate::compiler) const MAX_MIMO_CB: &str = "m";
+    pub(in crate::compiler) const MAX_BW: &str = "b";
+    pub(in crate::compiler) const MAX_MOD_ORDER: &str = "o";
+    pub(in crate::compiler) const BW_90MHZ_SUPPORTED: &str = "w";
+    pub(in crate::compiler) const MAX_MIMO_NON_CB: &str = "nc";
 }
 
 /// Properties of an LTE file whitelist entry.
-pub(crate) mod lte_file {
-    pub(crate) const FINGERPRINT: &str = "fp";
-    pub(crate) const BITMASK: &str = "bm";
+pub(in crate::compiler) mod lte_file {
+    pub(in crate::compiler) const FINGERPRINT: &str = "fp";
+    pub(in crate::compiler) const BITMASK: &str = "bm";
 }
 
 /// Properties and children of an LTE-fallback combo.
-pub(crate) mod lte_combo {
-    pub(crate) const BCS: &str = "b";
-    pub(crate) const UNKNOWN1: &str = "u1";
-    pub(crate) const UNKNOWN2: &str = "u2";
-    pub(crate) const SELECTION: &str = "s";
+pub(in crate::compiler) mod lte_combo {
+    pub(in crate::compiler) const BCS: &str = "b";
+    pub(in crate::compiler) const UNKNOWN1: &str = "u1";
+    pub(in crate::compiler) const UNKNOWN2: &str = "u2";
+    pub(in crate::compiler) const SELECTION: &str = "s";
     /// Sub-block node-name prefix. The band is appended to it.
-    pub(crate) const SUB_BLOCK_PREFIX: &str = "B";
+    pub(in crate::compiler) const SUB_BLOCK_PREFIX: &str = "B";
 }
 
 #[cfg(test)]

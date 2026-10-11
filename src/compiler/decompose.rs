@@ -176,7 +176,10 @@ fn decode_profiled_files(files: ProfiledInputs) -> anyhow::Result<ProfiledDecode
 
 /// Decode one complete legacy bitmask folder and one complete profiled folder into the canonical
 /// compiler source document. No output path is touched by this pure orchestration seam.
-pub(crate) fn decode_documents(bitmask_dir: &Path, profiled_dir: &Path) -> anyhow::Result<String> {
+pub(in crate::compiler) fn decode_documents(
+    bitmask_dir: &Path,
+    profiled_dir: &Path,
+) -> anyhow::Result<String> {
     let bitmask_files = classify_bitmask_dir(bitmask_dir)?;
     let profiled_files = classify_profiled_dir(profiled_dir)?;
 

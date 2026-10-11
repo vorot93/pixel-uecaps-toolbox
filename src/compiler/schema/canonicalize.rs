@@ -15,7 +15,7 @@ use crate::{
 /// paths validate once and reuse via [`ValidatedSources::to_kdl`]); kept as a convenient fixture
 /// helper.
 #[cfg(test)]
-pub(crate) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
+pub(in crate::compiler) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
     validate_documents(source.clone())?.to_kdl()
 }
 
@@ -27,7 +27,7 @@ pub(crate) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
 /// `finish_nr_document`, building the document for the first time) and the canonicalize side
 /// ([`nr_source_combos`], rebuilding it from validated data) go through it, so a sixth
 /// combo-header field cannot be added to one and forgotten in the other.
-pub(crate) fn nr_source_combo(
+pub(in crate::compiler) fn nr_source_combo(
     payload: &RawNrPayload,
     relation: &NrRelation,
     domain: &NrDomain,

@@ -346,7 +346,7 @@ fn finish_nr_document(
 /// **Phase order is load-bearing.** Legacy files are fully ingested before any profiled group is
 /// touched, and the legend is merged only in [`finish_nr_document`] — both are what make the
 /// emitted document byte-stable across runs.
-pub(crate) fn ingest_nr(
+pub(in crate::compiler) fn ingest_nr(
     legacy: Vec<LegacyNrFile>,
     profiled: Vec<ProfiledNrFile>,
     mapping: &MappingRoot,

@@ -40,13 +40,13 @@ pub(super) struct FolderReport {
     pub legend_gaps: Option<Vec<String>>,
 }
 impl FolderReport {
-    pub fn errors(&self) -> impl Iterator<Item = &Issue> {
+    pub(super) fn errors(&self) -> impl Iterator<Item = &Issue> {
         self.files
             .iter()
             .flat_map(|f| f.evidence.issues())
             .chain(&self.relational_errors)
     }
-    pub fn has_errors(&self) -> bool {
+    pub(super) fn has_errors(&self) -> bool {
         self.errors().next().is_some()
     }
 }

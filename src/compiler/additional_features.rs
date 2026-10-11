@@ -1,6 +1,6 @@
 use crate::proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr};
 
-pub(crate) const ADDITIONAL_DL_FEATURES: &[ShannonFeatureSetDlPerCcNr] =
+pub(in crate::compiler) const ADDITIONAL_DL_FEATURES: &[ShannonFeatureSetDlPerCcNr] =
     &[ShannonFeatureSetDlPerCcNr {
         max_scs: Some(4),
         max_mimo: Some(1),
@@ -9,7 +9,7 @@ pub(crate) const ADDITIONAL_DL_FEATURES: &[ShannonFeatureSetDlPerCcNr] =
         bw_90mhz_supported: Some(false),
     }];
 
-pub(crate) const ADDITIONAL_UL_FEATURES: &[ShannonFeatureSetUlPerCcNr] =
+pub(in crate::compiler) const ADDITIONAL_UL_FEATURES: &[ShannonFeatureSetUlPerCcNr] =
     &[ShannonFeatureSetUlPerCcNr {
         max_scs: Some(4),
         max_mimo_cb: Some(2),

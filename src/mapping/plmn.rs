@@ -3,11 +3,11 @@ use std::{fmt, str::FromStr};
 
 /// A 24-bit packed-BCD PLMN (MCC-MNC). Bijective with its `MCC-MNC` string form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Plmn(u32);
+pub(crate) struct Plmn(u32);
 
 impl Plmn {
     /// Wrap a raw encoded value, validating it fits in 24 bits.
-    pub const fn from_encoded(value: u64) -> Result<Self, Error> {
+    pub(crate) const fn from_encoded(value: u64) -> Result<Self, Error> {
         if value > 0xFF_FFFF {
             return Err(Error::PlmnOutOfRange(value));
         }
@@ -15,13 +15,13 @@ impl Plmn {
     }
 
     /// The raw encoded value (always within 24 bits).
-    pub const fn to_encoded(self) -> u64 {
+    pub(crate) const fn to_encoded(self) -> u64 {
         self.0 as u64
     }
 
     /// Packed-BCD nibbles: `([mcc1, mcc2, mcc3], [mnc1, mnc2], mnc3)`, each `0x0..=0xF`.
     /// `mnc3 == 0xF` is the filler nibble (2-digit MNC; third digit absent).
-    pub const fn nibbles(self) -> ([u8; 3], [u8; 2], u8) {
+    pub(crate) const fn nibbles(self) -> ([u8; 3], [u8; 2], u8) {
         let [_, b0, b1, b2] = self.0.to_be_bytes();
         ([b0 & 0xf, b0 >> 4, b1 & 0xf], [b2 & 0xf, b2 >> 4], b1 >> 4)
     }

@@ -4,8 +4,8 @@ mod read;
 #[cfg(test)]
 mod tests;
 mod write;
-pub(crate) use read::read_sources;
-pub(crate) use write::write_sources;
+pub(in crate::compiler) use read::read_sources;
+pub(in crate::compiler) use write::write_sources;
 // ---- NR document mapping ----
 /// A sub-block's node name: its kind prefix followed by the plain band, e.g. `nr257`, `lte66`.
 ///

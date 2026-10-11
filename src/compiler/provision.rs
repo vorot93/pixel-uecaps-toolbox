@@ -88,7 +88,7 @@ fn resolve_model(model_code: &str) -> anyhow::Result<&'static PhoneModel> {
 }
 
 /// Assemble a complete model-specific `uecapconfig` file set in memory.
-pub(crate) fn generate_files(
+pub(in crate::compiler) fn generate_files(
     sources: &ValidatedSources,
     model: &'static PhoneModel,
 ) -> anyhow::Result<Vec<GeneratedFile>> {

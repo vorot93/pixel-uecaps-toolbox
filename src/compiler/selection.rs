@@ -4,7 +4,7 @@ use compact_str::CompactString;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Sku {
+pub(in crate::compiler) enum Sku {
     Legacy,
     // Inline (SSO) string: model codes are 5 chars and this variant is a set key touched
     // hundreds of millions of times per decompose (the selection-algebra hot path), so keeping
@@ -16,15 +16,15 @@ pub(crate) enum Sku {
 }
 
 impl Sku {
-    pub(crate) fn for_nr_anchor(anchor: u64) -> BTreeSet<Self> {
+    pub(in crate::compiler) fn for_nr_anchor(anchor: u64) -> BTreeSet<Self> {
         Self::from_models(profile_model_codes(anchor), Self::Prime(anchor))
     }
 
-    pub(crate) fn for_lte_file(id: u64) -> BTreeSet<Self> {
+    pub(in crate::compiler) fn for_lte_file(id: u64) -> BTreeSet<Self> {
         Self::from_models(lte_model_codes(id), Self::Lte(id))
     }
 
-    pub(crate) fn representative_for_nr_anchor(anchor: u64) -> Self {
+    pub(in crate::compiler) fn representative_for_nr_anchor(anchor: u64) -> Self {
         Self::for_nr_anchor(anchor)
             .pop_first()
             .expect("SKU expansion is nonempty")
@@ -58,9 +58,9 @@ impl std::fmt::Display for Sku {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SelectionRect {
-    pub(crate) carriers: Option<Vec<String>>,
-    pub(crate) skus: Option<Vec<String>>,
+pub(in crate::compiler) struct SelectionRect {
+    pub(in crate::compiler) carriers: Option<Vec<String>>,
+    pub(in crate::compiler) skus: Option<Vec<String>>,
 }
 
 /// Domain-local dense ids for carriers and skus. Assigned in sorted order by `NrDomain::new`, so
@@ -69,7 +69,7 @@ pub(crate) struct SelectionRect {
 /// while the hot membership sets compare 4-byte keys instead of 24-byte inline strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub(crate) struct CarrierId(u16);
+pub(in crate::compiler) struct CarrierId(u16);
 
 impl TryFrom<usize> for CarrierId {
     type Error = std::num::TryFromIntError;
@@ -80,14 +80,14 @@ impl TryFrom<usize> for CarrierId {
 }
 
 impl CarrierId {
-    pub(crate) fn index(self) -> usize {
+    pub(in crate::compiler) fn index(self) -> usize {
         usize::from(self.0)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub(crate) struct SkuId(u16);
+pub(in crate::compiler) struct SkuId(u16);
 
 impl TryFrom<usize> for SkuId {
     type Error = std::num::TryFromIntError;
@@ -98,13 +98,13 @@ impl TryFrom<usize> for SkuId {
 }
 
 impl SkuId {
-    pub(crate) fn index(self) -> usize {
+    pub(in crate::compiler) fn index(self) -> usize {
         usize::from(self.0)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NrDomain {
+pub(in crate::compiler) struct NrDomain {
     // Interners: `carrier_names[id]` / `sku_values[id]`, sorted ascending (id order == value
     // order); `binary_search` is the reverse value->id lookup.
     carrier_names: Vec<CompactString>,
@@ -120,7 +120,7 @@ pub(crate) struct NrDomain {
 }
 
 impl NrDomain {
-    pub(crate) fn new(members: BTreeSet<(CompactString, Sku)>) -> Result<Self> {
+    pub(in crate::compiler) fn new(members: BTreeSet<(CompactString, Sku)>) -> Result<Self> {
         let carrier_names: Vec<CompactString> = members
             .iter()
             .map(|(carrier, _)| carrier.clone())
@@ -188,14 +188,21 @@ impl NrDomain {
     /// Intern a `(carrier, sku)` probe (built once, then tested against many combos in
     /// `selected_payloads`). `None` if either value is outside the domain — no relation can
     /// contain it.
-    pub(crate) fn probe(&self, carrier: &str, sku: &Sku) -> Option<(CarrierId, SkuId)> {
+    pub(in crate::compiler) fn probe(
+        &self,
+        carrier: &str,
+        sku: &Sku,
+    ) -> Option<(CarrierId, SkuId)> {
         Some((self.carrier_id(carrier)?, self.sku_id(sku)?))
     }
 
     /// Intern a raw `(carrier, sku)` member set (every pair must already be a domain member) into
     /// an id-keyed relation. Used by ingest, which builds each payload's relation from the same
     /// values the domain was built from.
-    pub(crate) fn relation(&self, members: &BTreeSet<(CompactString, Sku)>) -> NrRelation {
+    pub(in crate::compiler) fn relation(
+        &self,
+        members: &BTreeSet<(CompactString, Sku)>,
+    ) -> NrRelation {
         NrRelation(
             members
                 .iter()
@@ -211,7 +218,7 @@ impl NrDomain {
     }
 
     #[cfg(test)]
-    pub(crate) fn denorm_members(&self) -> BTreeSet<(CompactString, Sku)> {
+    pub(in crate::compiler) fn denorm_members(&self) -> BTreeSet<(CompactString, Sku)> {
         self.members
             .iter()
             .map(|&(carrier, sku)| self.denorm(carrier, sku))
@@ -219,7 +226,10 @@ impl NrDomain {
     }
 
     #[cfg(test)]
-    pub(crate) fn denorm_relation(&self, relation: &NrRelation) -> BTreeSet<(CompactString, Sku)> {
+    pub(in crate::compiler) fn denorm_relation(
+        &self,
+        relation: &NrRelation,
+    ) -> BTreeSet<(CompactString, Sku)> {
         relation
             .0
             .iter()
@@ -237,14 +247,14 @@ impl NrDomain {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LteDomain(BTreeSet<Sku>);
+pub(in crate::compiler) struct LteDomain(BTreeSet<Sku>);
 
 impl LteDomain {
-    pub(crate) fn new(members: BTreeSet<Sku>) -> Self {
+    pub(in crate::compiler) fn new(members: BTreeSet<Sku>) -> Self {
         Self(members)
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Sku> {
+    pub(in crate::compiler) fn iter(&self) -> impl Iterator<Item = &Sku> {
         self.0.iter()
     }
 }
@@ -307,17 +317,17 @@ fn rectangle_sku_axis(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct NrRelation(BTreeSet<(CarrierId, SkuId)>);
+pub(in crate::compiler) struct NrRelation(BTreeSet<(CarrierId, SkuId)>);
 
 impl NrRelation {
     /// This relation's `(carrier_id, sku_id)` members in ascending order. Consumed once by
     /// `NrSelectionIndex::build`, which inverts these into an O(1) `selected_payloads` lookup —
     /// superseding the per-combo `contains` probe interned via `NrDomain::probe`.
-    pub(crate) fn members(&self) -> impl Iterator<Item = (CarrierId, SkuId)> + '_ {
+    pub(in crate::compiler) fn members(&self) -> impl Iterator<Item = (CarrierId, SkuId)> + '_ {
         self.0.iter().copied()
     }
 
-    pub(crate) fn from_selection(
+    pub(in crate::compiler) fn from_selection(
         domain: &NrDomain,
         selection: Option<&[SelectionRect]>,
     ) -> Result<Self> {
@@ -358,7 +368,7 @@ impl NrRelation {
         Ok(Self(relation))
     }
 
-    pub(crate) fn canonical_selection(
+    pub(in crate::compiler) fn canonical_selection(
         &self,
         domain: &NrDomain,
     ) -> Result<Option<Vec<SelectionRect>>> {
@@ -409,14 +419,14 @@ impl NrRelation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LteRelation(BTreeSet<Sku>);
+pub(in crate::compiler) struct LteRelation(BTreeSet<Sku>);
 
 impl LteRelation {
-    pub(crate) fn new(members: BTreeSet<Sku>) -> Self {
+    pub(in crate::compiler) fn new(members: BTreeSet<Sku>) -> Self {
         Self(members)
     }
 
-    pub(crate) fn from_selection(
+    pub(in crate::compiler) fn from_selection(
         domain: &LteDomain,
         selection: Option<&[SelectionRect]>,
     ) -> Result<Self> {
@@ -459,7 +469,7 @@ impl LteRelation {
         Ok(Self(relation))
     }
 
-    pub(crate) fn canonical_selection(
+    pub(in crate::compiler) fn canonical_selection(
         &self,
         domain: &LteDomain,
     ) -> Result<Option<Vec<SelectionRect>>> {
@@ -481,7 +491,7 @@ impl LteRelation {
         }]))
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Sku> {
+    pub(in crate::compiler) fn iter(&self) -> impl Iterator<Item = &Sku> {
         self.0.iter()
     }
 }

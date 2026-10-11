@@ -11,20 +11,20 @@ use crate::{
 };
 use std::collections::{BTreeMap, HashMap};
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedNr {
-    pub(crate) source: NrDocument,
-    pub(crate) bitmask_fingerprints: BTreeMap<String, u64>,
-    pub(crate) carriers: BTreeMap<String, ValidatedCarrier>,
-    pub(crate) domain: NrDomain,
-    pub(crate) palette: FeaturePalette,
-    pub(crate) combos: Vec<ValidatedNrCombo>,
-    pub(crate) selection_index: NrSelectionIndex,
+pub(in crate::compiler) struct ValidatedNr {
+    pub(in crate::compiler) source: NrDocument,
+    pub(in crate::compiler) bitmask_fingerprints: BTreeMap<String, u64>,
+    pub(in crate::compiler) carriers: BTreeMap<String, ValidatedCarrier>,
+    pub(in crate::compiler) domain: NrDomain,
+    pub(in crate::compiler) palette: FeaturePalette,
+    pub(in crate::compiler) combos: Vec<ValidatedNrCombo>,
+    pub(in crate::compiler) selection_index: NrSelectionIndex,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedNrCombo {
-    pub(crate) payload: RawNrPayload,
-    pub(crate) relation: NrRelation,
+pub(in crate::compiler) struct ValidatedNrCombo {
+    pub(in crate::compiler) payload: RawNrPayload,
+    pub(in crate::compiler) relation: NrRelation,
 }
 
 /// Inverted index from an interned `(carrier_id, sku_id)` target to the `combo` indices whose
@@ -36,7 +36,7 @@ pub(crate) struct ValidatedNrCombo {
 /// byte-identical. Combo validation fixes the order; canonicalization never reorders the
 /// validated combos, so the indices stay valid through generation.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct NrSelectionIndex(HashMap<(CarrierId, SkuId), Vec<u32>>);
+pub(in crate::compiler) struct NrSelectionIndex(HashMap<(CarrierId, SkuId), Vec<u32>>);
 
 impl NrSelectionIndex {
     pub(super) fn build(combos: &[ValidatedNrCombo]) -> Self {
@@ -51,7 +51,7 @@ impl NrSelectionIndex {
     }
 
     /// The `combo` indices selected by `target`, ascending; empty when the target selects nothing.
-    pub(crate) fn payload_indices(&self, target: &(CarrierId, SkuId)) -> &[u32] {
+    pub(in crate::compiler) fn payload_indices(&self, target: &(CarrierId, SkuId)) -> &[u32] {
         self.0.get(target).map_or(&[], Vec::as_slice)
     }
 }
@@ -65,7 +65,7 @@ impl ValidatedNr {
     /// fields once in `validate_documents`; because `selection_index` points at `combo`
     /// positions, any post-construction combo replacement must go through here or those indices
     /// dangle.
-    pub(crate) fn set_combos(&mut self, combo: Vec<ValidatedNrCombo>) {
+    pub(in crate::compiler) fn set_combos(&mut self, combo: Vec<ValidatedNrCombo>) {
         let mut dl = self.palette.dl.clone();
         let mut ul = self.palette.ul.clone();
         for component in combo
@@ -90,13 +90,13 @@ impl ValidatedNr {
 /// independent `Option`s meant five downstream sites had to recover the proof with
 /// `expect`/`unwrap`; as paired sub-structs the proof travels with the data.
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedCarrier {
-    pub(crate) bitmask_id: Option<i32>,
-    pub(crate) profiled_id: Option<i32>,
+pub(in crate::compiler) struct ValidatedCarrier {
+    pub(in crate::compiler) bitmask_id: Option<i32>,
+    pub(in crate::compiler) profiled_id: Option<i32>,
     /// The carrier's PLMN-legend entry, present iff it has one.
     pub(super) legend: Option<LegendEntry>,
     /// The carrier's profiled role, present iff it ships profile files.
-    pub(crate) profiled: Option<ProfiledRole>,
+    pub(in crate::compiler) profiled: Option<ProfiledRole>,
 }
 
 /// A carrier's entry in the PLMN legend. `mapping_id` and `plmns` are validated to imply each
@@ -111,29 +111,29 @@ pub(super) struct LegendEntry {
 /// imply one another. Only the derived per-profile identities are needed after validation;
 /// the original signature and tier remain in the source document for serialization.
 #[derive(Clone, Debug)]
-pub(crate) struct ProfiledRole {
-    pub(crate) profiles: BTreeMap<u64, ValidatedProfile>,
+pub(in crate::compiler) struct ProfiledRole {
+    pub(in crate::compiler) profiles: BTreeMap<u64, ValidatedProfile>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedProfile {
-    pub(crate) number: u64,
-    pub(crate) unknown: u64,
-    pub(crate) fingerprint: u64,
+pub(in crate::compiler) struct ValidatedProfile {
+    pub(in crate::compiler) number: u64,
+    pub(in crate::compiler) unknown: u64,
+    pub(in crate::compiler) fingerprint: u64,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedLte {
-    pub(crate) source: LteDocument,
-    pub(crate) files: BTreeMap<u64, LteFileSource>,
-    pub(crate) domain: LteDomain,
-    pub(crate) combos: Vec<ValidatedLteCombo>,
+pub(in crate::compiler) struct ValidatedLte {
+    pub(in crate::compiler) source: LteDocument,
+    pub(in crate::compiler) files: BTreeMap<u64, LteFileSource>,
+    pub(in crate::compiler) domain: LteDomain,
+    pub(in crate::compiler) combos: Vec<ValidatedLteCombo>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ValidatedLteCombo {
-    pub(crate) source: LteSourceCombo,
-    pub(crate) relation: LteRelation,
+pub(in crate::compiler) struct ValidatedLteCombo {
+    pub(in crate::compiler) source: LteSourceCombo,
+    pub(in crate::compiler) relation: LteRelation,
 }
 
 /// A fully parsed, cross-referenced, canonicalized source set. Produced once by
@@ -143,8 +143,8 @@ pub(crate) struct ValidatedLteCombo {
 /// is an opaque handle.
 #[derive(Clone, Debug)]
 pub struct ValidatedSources {
-    pub(crate) nr: ValidatedNr,
-    pub(crate) lte: ValidatedLte,
+    pub(in crate::compiler) nr: ValidatedNr,
+    pub(in crate::compiler) lte: ValidatedLte,
 }
 
 impl ValidatedSources {
@@ -153,7 +153,7 @@ impl ValidatedSources {
     /// directly reproduces the canonical writer's output — letting `decompose` drop a redundant
     /// third `validate_documents` pass while its byte-idempotence assertion still proves the
     /// emitted document is a fixed point.
-    pub(crate) fn to_kdl(&self) -> anyhow::Result<String> {
+    pub(in crate::compiler) fn to_kdl(&self) -> anyhow::Result<String> {
         crate::compiler::write_sources(&self.nr.source, &self.lte.source)
     }
 }

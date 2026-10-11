@@ -10,7 +10,7 @@ use crate::{
 };
 use anyhow::{Context, ensure};
 use prost::Message;
-pub(crate) fn generate_nr_files(
+pub(in crate::compiler) fn generate_nr_files(
     nr: &ValidatedNr,
     target: NrTarget,
 ) -> anyhow::Result<Vec<GeneratedFile>> {

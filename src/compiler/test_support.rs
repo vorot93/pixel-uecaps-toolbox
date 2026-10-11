@@ -11,10 +11,10 @@ use std::{
     path::Path,
 };
 
-pub(crate) const REGISTERED_ANCHOR: u64 = 66_813_533;
-pub(crate) const SYNTHETIC_ANCHOR: u64 = 8_969;
-pub(crate) const FIRST_LTE_ID: u64 = 400_907_661;
-pub(crate) const SECOND_LTE_ID: u64 = 92;
+pub(in crate::compiler) const REGISTERED_ANCHOR: u64 = 66_813_533;
+pub(in crate::compiler) const SYNTHETIC_ANCHOR: u64 = 8_969;
+pub(in crate::compiler) const FIRST_LTE_ID: u64 = 400_907_661;
+pub(in crate::compiler) const SECOND_LTE_ID: u64 = 92;
 
 const EXPECTED_SOURCE_KDL: &str = r#"version 1
 bc ALPHA BETA
@@ -77,31 +77,31 @@ l b="" u1=0 u2=0 {
 "#;
 
 #[derive(Clone, Debug)]
-pub(crate) struct FixtureFile {
-    pub(crate) basename: String,
-    pub(crate) bytes: Vec<u8>,
+pub(in crate::compiler) struct FixtureFile {
+    pub(in crate::compiler) basename: String,
+    pub(in crate::compiler) bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct MiniCorpus {
-    pub(crate) bitmask: Vec<FixtureFile>,
-    pub(crate) profiled: Vec<FixtureFile>,
-    pub(crate) expected: ExpectedMiniCorpus,
+pub(in crate::compiler) struct MiniCorpus {
+    pub(in crate::compiler) bitmask: Vec<FixtureFile>,
+    pub(in crate::compiler) profiled: Vec<FixtureFile>,
+    pub(in crate::compiler) expected: ExpectedMiniCorpus,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ExpectedMiniCorpus {
-    pub(crate) bitmask_carriers: Vec<String>,
-    pub(crate) profiles: BTreeMap<String, BTreeSet<u64>>,
-    pub(crate) plmns: BTreeMap<String, Vec<Plmn>>,
-    pub(crate) lte_ids: Vec<u64>,
-    pub(crate) nr_payloads: usize,
-    pub(crate) lte_payloads: usize,
-    pub(crate) source_kdl: String,
+pub(in crate::compiler) struct ExpectedMiniCorpus {
+    pub(in crate::compiler) bitmask_carriers: Vec<String>,
+    pub(in crate::compiler) profiles: BTreeMap<String, BTreeSet<u64>>,
+    pub(in crate::compiler) plmns: BTreeMap<String, Vec<Plmn>>,
+    pub(in crate::compiler) lte_ids: Vec<u64>,
+    pub(in crate::compiler) nr_payloads: usize,
+    pub(in crate::compiler) lte_payloads: usize,
+    pub(in crate::compiler) source_kdl: String,
 }
 
 impl MiniCorpus {
-    pub(crate) fn new() -> Self {
+    pub(in crate::compiler) fn new() -> Self {
         let bitmask = vec![
             encoded_file(
                 "BETA.binarypb",
@@ -177,7 +177,7 @@ impl MiniCorpus {
         }
     }
 
-    pub(crate) fn write_to(
+    pub(in crate::compiler) fn write_to(
         &self,
         root: &Path,
         order: FileOrder,
@@ -192,7 +192,7 @@ impl MiniCorpus {
         (bitmask_dir, profiled_dir)
     }
 
-    pub(crate) fn rename_carrier(&mut self, old: &str, new: &str) {
+    pub(in crate::compiler) fn rename_carrier(&mut self, old: &str, new: &str) {
         let mut bitmask_renamed = 0;
         for file in &mut self.bitmask {
             if file.basename == format!("{old}.binarypb") {
@@ -241,30 +241,33 @@ impl MiniCorpus {
         );
     }
 
-    pub(crate) fn bitmask_file_mut(&mut self, basename: &str) -> &mut FixtureFile {
+    pub(in crate::compiler) fn bitmask_file_mut(&mut self, basename: &str) -> &mut FixtureFile {
         self.bitmask
             .iter_mut()
             .find(|file| file.basename == basename)
             .unwrap()
     }
 
-    pub(crate) fn profiled_file_mut(&mut self, basename: &str) -> &mut FixtureFile {
+    pub(in crate::compiler) fn profiled_file_mut(&mut self, basename: &str) -> &mut FixtureFile {
         self.profiled
             .iter_mut()
             .find(|file| file.basename == basename)
             .unwrap()
     }
 
-    pub(crate) fn remove_profiled(&mut self, predicate: impl Fn(&FixtureFile) -> bool) {
+    pub(in crate::compiler) fn remove_profiled(
+        &mut self,
+        predicate: impl Fn(&FixtureFile) -> bool,
+    ) {
         self.profiled.retain(|file| !predicate(file));
     }
 }
 
-pub(crate) fn decode<M: Message + Default>(file: &FixtureFile) -> M {
+pub(in crate::compiler) fn decode<M: Message + Default>(file: &FixtureFile) -> M {
     M::decode(file.bytes.as_slice()).unwrap()
 }
 
-pub(crate) fn replace(file: &mut FixtureFile, message: &impl Message) {
+pub(in crate::compiler) fn replace(file: &mut FixtureFile, message: &impl Message) {
     file.bytes = message.encode_to_vec();
 }
 
@@ -276,7 +279,7 @@ pub(crate) fn replace(file: &mut FixtureFile, message: &impl Message) {
 /// duplicates, and overlong varints), so a reordered encoding never reaches the byte comparison.
 /// An explicit zero for a non-`optional` scalar is the one non-canonical form the scanner cannot
 /// reject — prost drops it on re-encode — which makes it the right probe here.
-pub(crate) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
+pub(in crate::compiler) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
     let mut caps = decode::<crate::proto::LteCaps>(file);
     caps.bitmask = 0;
     let mut bytes = caps.encode_to_vec();
@@ -286,7 +289,7 @@ pub(crate) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
     file.bytes = bytes;
 }
 
-pub(crate) fn inject_unknown_nr_cc_field(file: &mut FixtureFile) {
+pub(in crate::compiler) fn inject_unknown_nr_cc_field(file: &mut FixtureFile) {
     let caps = decode::<crate::proto::UeCaps>(file);
     let group = &caps.combo_groups[0];
     let combo = &group.combo[0];
@@ -337,7 +340,7 @@ fn length_delimited_field(field: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum FileOrder {
+pub(in crate::compiler) enum FileOrder {
     Forward,
     Reverse,
 }

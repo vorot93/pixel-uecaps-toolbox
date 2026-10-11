@@ -1,29 +1,29 @@
 mod generate;
 mod ingest;
 #[cfg(test)]
-pub(crate) mod test_support;
+pub(in crate::compiler) mod test_support;
 mod verify;
 use crate::{compiler::selection::Sku, proto::UeCaps};
-pub(crate) use generate::generate_nr_files;
-pub(crate) use ingest::ingest_nr;
+pub(in crate::compiler) use generate::generate_nr_files;
+pub(in crate::compiler) use ingest::ingest_nr;
 
 /// An unnumbered `<CARRIER>.binarypb` from the bitmask folder. Legacy files have no filename
 /// number *by construction*, so there is nothing to validate downstream.
-pub(crate) struct LegacyNrFile {
-    pub(crate) carrier: String,
-    pub(crate) caps: UeCaps,
+pub(in crate::compiler) struct LegacyNrFile {
+    pub(in crate::compiler) carrier: String,
+    pub(in crate::compiler) caps: UeCaps,
 }
 
 /// A numbered `<CARRIER>_<NUMBER>.binarypb` from the profiled folder. The number is not
 /// optional: `decompose`'s classifier already parsed it out of the filename to decide this
 /// file belongs here at all, so the type records what the classifier proved.
-pub(crate) struct ProfiledNrFile {
-    pub(crate) carrier: String,
-    pub(crate) number: u64,
-    pub(crate) caps: UeCaps,
+pub(in crate::compiler) struct ProfiledNrFile {
+    pub(in crate::compiler) carrier: String,
+    pub(in crate::compiler) number: u64,
+    pub(in crate::compiler) caps: UeCaps,
 }
 
-pub(crate) enum NrTarget {
+pub(in crate::compiler) enum NrTarget {
     Legacy,
     Profile { anchor: u64, sku: Sku },
 }

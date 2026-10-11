@@ -1,34 +1,34 @@
-pub(crate) mod additional_features;
+mod additional_features;
 mod decompose;
-pub(crate) mod feature_palette;
-pub(crate) mod features;
-pub(crate) mod kdl_bcs;
-pub(crate) mod kdl_direction;
-pub(crate) mod kdl_keys;
+mod feature_palette;
+mod features;
+mod kdl_bcs;
+mod kdl_direction;
+mod kdl_keys;
 mod kdl_source;
-pub(crate) mod lte;
-pub(crate) mod nr;
+mod lte;
+mod nr;
 mod provision;
-pub(crate) mod schema;
-pub(crate) mod selection;
+mod schema;
+mod selection;
 
 #[cfg(test)]
-pub(crate) mod test_support;
+mod test_support;
 
 pub use decompose::decompose;
-pub(crate) use kdl_source::{read_sources, write_sources};
+pub(in crate::compiler) use kdl_source::{read_sources, write_sources};
 pub use provision::{load_sources, provision, provision_from_sources};
 pub use schema::ValidatedSources;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GeneratedFile {
-    pub(crate) basename: String,
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) role: GeneratedRole,
+pub(in crate::compiler) struct GeneratedFile {
+    pub(in crate::compiler) basename: String,
+    pub(in crate::compiler) bytes: Vec<u8>,
+    pub(in crate::compiler) role: GeneratedRole,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GeneratedRole {
+pub(in crate::compiler) enum GeneratedRole {
     LegacyNr,
     ProfiledNr,
     Mapping,
@@ -40,12 +40,14 @@ pub(crate) enum GeneratedRole {
 /// shortest-decimal contract; callers map `None` to their own serde/anyhow error.
 /// (`decompose::parse_filename_number` deliberately keeps its own two-step form — it reports a
 /// distinct "does not fit u64" vs "must be shortest decimal" message, one of which is tested.)
-pub(crate) fn parse_shortest_u64(s: &str) -> Option<u64> {
+pub(in crate::compiler) fn parse_shortest_u64(s: &str) -> Option<u64> {
     s.parse::<u64>().ok().filter(|n| n.to_string() == s)
 }
 
 /// Source traversal uses decimal-text order, even though identities are numeric.
-pub(crate) fn decimal_key_entries<T>(map: &std::collections::BTreeMap<u64, T>) -> Vec<(&u64, &T)> {
+pub(in crate::compiler) fn decimal_key_entries<T>(
+    map: &std::collections::BTreeMap<u64, T>,
+) -> Vec<(&u64, &T)> {
     let mut entries: Vec<_> = map.iter().collect();
     entries.sort_by_cached_key(|(id, _)| id.to_string());
     entries

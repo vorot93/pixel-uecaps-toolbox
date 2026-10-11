@@ -36,12 +36,12 @@ pub(crate) enum Tier {
 
 pub(crate) struct Profile {
     /// Unique prime that divides the number of every file for this profile.
-    pub anchor: u64,
+    pub(crate) anchor: u64,
     /// Full prime tag (one prime per SKU; several primes = a group of SKUs).
-    pub core: &'static [u64],
-    pub family: Family,
+    pub(crate) core: &'static [u64],
+    pub(crate) family: Family,
     /// Known real device model for this SKU profile; `None` when unknown.
-    pub model: Option<&'static str>,
+    pub(crate) model: Option<&'static str>,
 }
 
 /// The 16 capability profiles.
@@ -192,10 +192,10 @@ fn matching_profiles(number: u64) -> impl Iterator<Item = &'static Profile> {
 /// Pixel model label (`None` when only the raw family is known; inferred identities
 /// are marked in the label).
 pub(crate) struct LteConfig {
-    pub id: u64,
-    pub family: &'static str,
-    pub category_codes: &'static [u32],
-    pub model: Option<&'static str>,
+    pub(crate) id: u64,
+    pub(crate) family: &'static str,
+    pub(crate) category_codes: &'static [u32],
+    pub(crate) model: Option<&'static str>,
 }
 
 /// The modem's LTE-config selection table (from `g5400c-main.bin`). The id is the

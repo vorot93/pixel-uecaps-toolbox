@@ -1,19 +1,11 @@
 //! Integer helpers for the trailing filename numbers, backed by num-prime.
 
+pub(crate) use num_integer::gcd;
+pub(crate) use num_prime::nt_funcs::is_prime64 as is_prime;
 use std::collections::BTreeMap;
 
-/// Greatest common divisor.
-pub fn gcd(a: u64, b: u64) -> u64 {
-    num_integer::gcd(a, b)
-}
-
-/// Primality test.
-pub fn is_prime(n: u64) -> bool {
-    num_prime::nt_funcs::is_prime64(n)
-}
-
 /// Factor `n` into `{prime: exponent}` (empty for n <= 1).
-pub fn factorize(n: u64) -> BTreeMap<u64, usize> {
+pub(crate) fn factorize(n: u64) -> BTreeMap<u64, usize> {
     if n <= 1 {
         return BTreeMap::new();
     }
@@ -26,7 +18,7 @@ pub fn factorize(n: u64) -> BTreeMap<u64, usize> {
 /// cannot tell them apart and renders 0 as `"1"`. Prefer this over
 /// `format_factors(&factorize(n))` at any display site whose input can be 0 (e.g. a
 /// degenerate `<carrier>_0.binarypb` number, or a 0 carrier signature).
-pub fn factor_display(n: u64) -> String {
+pub(crate) fn factor_display(n: u64) -> String {
     if n == 0 {
         return "0".into();
     }

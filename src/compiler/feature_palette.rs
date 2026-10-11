@@ -6,20 +6,20 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FeaturePalette {
-    pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
+pub(in crate::compiler) struct FeaturePalette {
+    pub(in crate::compiler) dl: Vec<ShannonFeatureSetDlPerCcNr>,
+    pub(in crate::compiler) ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
 impl FeaturePalette {
-    pub(crate) fn from_rows(
+    pub(in crate::compiler) fn from_rows(
         dl: Vec<ShannonFeatureSetDlPerCcNr>,
         ul: Vec<ShannonFeatureSetUlPerCcNr>,
     ) -> Self {
         Self { dl, ul }
     }
 
-    pub(crate) fn canonicalized(mut self) -> Self {
+    pub(in crate::compiler) fn canonicalized(mut self) -> Self {
         self.dl.sort_unstable();
         self.dl.dedup();
         self.ul.sort_unstable();
@@ -29,7 +29,7 @@ impl FeaturePalette {
 }
 
 #[derive(Default)]
-pub(crate) struct ObservedFeatureDomains {
+pub(in crate::compiler) struct ObservedFeatureDomains {
     dl: DlFeatureDomains,
     ul: UlFeatureDomains,
 }
@@ -54,7 +54,7 @@ struct UlFeatureDomains {
 }
 
 impl ObservedFeatureDomains {
-    pub(crate) fn observe(&mut self, caps: &UeCaps) {
+    pub(in crate::compiler) fn observe(&mut self, caps: &UeCaps) {
         for row in &caps.dl_feature_per_cc_list {
             self.dl.max_scs.insert(row.max_scs);
             self.dl.max_mimo.insert(row.max_mimo);
@@ -72,7 +72,7 @@ impl ObservedFeatureDomains {
         }
     }
 
-    pub(crate) fn into_palette(
+    pub(in crate::compiler) fn into_palette(
         self,
         additional_dl: &[ShannonFeatureSetDlPerCcNr],
         additional_ul: &[ShannonFeatureSetUlPerCcNr],
