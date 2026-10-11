@@ -18,6 +18,7 @@ pub(crate) mod test_support;
 pub use decompose::decompose;
 pub(crate) use kdl_source::{source_from_kdl, source_to_kdl};
 pub use provision::{load_sources, provision, provision_from_sources};
+pub use schema::ValidatedSources;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GeneratedFile {

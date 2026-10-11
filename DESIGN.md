@@ -80,7 +80,7 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/compiler/additional_features.rs` | The two exact reviewed DL/UL rows unioned into fresh decompose palettes after Cartesian closure. |
 | `src/compiler/feature_palette.rs` | Raw feature-field domain observation, checked Cartesian closure, and complete canonical source `FeaturePalette`. |
 | `src/compiler/features.rs` | Fallible source-palette references and compact referenced-only per-file `LocalFeaturePlan` projection. |
-| `src/compiler/schema.rs` | Strict version-1 source-document DTOs (`SourceDocument`, wrapping the `NrDocument`/`LteDocument` halves), shortest-decimal map-key parsing, cross-reference validation, canonical KDL, and source loading invariants. |
+| `src/compiler/schema/{source,validated,validate,canonicalize}.rs` | Editable DTOs, validated models and selection index, cross-reference validation, and canonical source projections behind a narrow facade. |
 | `src/compiler/kdl_source.rs` | Hand-written source-document (de)serialization (`source_to_kdl`/`source_from_kdl`) over the shared `kdl_support` toolkit. |
 | `src/compiler/nr/{ingest,generate,verify}.rs` | Bitmask/profiled NR ingestion and metadata, model-targeted generation, and canonical self-verification behind a shared type facade. |
 | `src/compiler/lte.rs` | Ordered LTE payload identity, applicability, global DAG/topological ordering, byte-identical regeneration, and self-verification. |

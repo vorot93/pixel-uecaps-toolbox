@@ -1,263 +1,30 @@
 use super::{
-    decimal_key_entries,
-    feature_palette::FeaturePalette,
-    features::SourceSubBlock,
-    selection::{
-        CarrierId, LteDomain, LteRelation, NrDomain, NrRelation, SelectionRect, Sku, SkuId,
+    canonicalize::canonicalize_sources,
+    source::{
+        CarrierSource, LteDocument, LteFileSource, LteSourceCombo, NrDocument, NrSourceCombo,
+        ProfileSource, SourceDocument,
+    },
+    validated::{
+        LegendEntry, NrSelectionIndex, ProfiledRole, ValidatedCarrier, ValidatedLte,
+        ValidatedLteCombo, ValidatedNr, ValidatedNrCombo, ValidatedProfile, ValidatedSources,
     },
 };
 use crate::{
-    compiler::lte::RawLteCombo,
-    mapping::{MappingEntry, MappingRoot, Plmn, map_to_root, root_to_map},
+    compiler::{
+        decimal_key_entries,
+        feature_palette::FeaturePalette,
+        lte::RawLteCombo,
+        selection::{LteDomain, LteRelation, NrDomain, NrRelation, Sku},
+    },
+    mapping::{MappingEntry, MappingRoot, map_to_root, root_to_map},
     model::{Family, Tier, matching_anchors, profile},
-    proto::{ComboHeader, LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
 use anyhow::{Context, bail, ensure};
 use compact_str::CompactString;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-/// The source document's format version.
-///
-/// This number identifies *the* format, not a count of revisions — it is reset rather than
-/// advanced when a format change lands in an unpublished series, because this repo's history is
-/// squashable and a reader at HEAD must see one coherent state. The check below is an
-/// inequality, not an ordering, so a reset still rejects a tree from any build that emitted a
-/// different number. That is also why `kdl_keys::doc::VERSION` is the one key left
-/// unabbreviated — the marker announcing the version cannot be renamed by the change it
-/// describes, or the check below would be unreachable for exactly the documents it exists to
-/// diagnose.
-pub(crate) const SOURCE_FORMAT_VERSION: u32 = 1;
-
-#[derive(Clone, Debug)]
-pub(crate) struct BitmaskFingerprint {
-    pub(crate) fingerprint: u64,
-    pub(crate) carriers: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ProfileSource {
-    pub(crate) multiplier: u64,
-    pub(crate) unknown: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct CarrierSource {
-    pub(crate) bitmask_id: Option<i64>,
-    pub(crate) profiled_id: Option<i64>,
-    pub(crate) mapping_id: Option<u64>,
-    pub(crate) plmns: Option<Vec<Plmn>>,
-    pub(crate) signature: Option<u64>,
-    pub(crate) tier: Option<Tier>,
-    pub(crate) profiles: BTreeMap<u64, ProfileSource>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NrSourceCombo {
-    pub(crate) selection: Option<Vec<SelectionRect>>,
-    pub(crate) header: ComboHeader,
-    pub(crate) sub_blocks: Vec<SourceSubBlock>,
-}
-
-/// One source document: the NR and LTE halves it carries.
-///
-/// The format version is deliberately *not* a field. One file has one version — a state the
-/// two-document format had to reject at runtime — and by the time anything downstream sees a
-/// `SourceDocument` that version is always [`SOURCE_FORMAT_VERSION`]: the reader
-/// (`kdl_source::checked_version`) refuses any other value before returning, and the writer
-/// (`kdl_source::source_to_kdl`) stamps the constant unconditionally. Storing it would only carry
-/// a number both ends already know, so it was carried write-only until it was dropped.
-#[derive(Clone, Debug)]
-pub(crate) struct SourceDocument {
-    pub(crate) nr: NrDocument,
-    pub(crate) lte: LteDocument,
-}
-
-/// The NR half. `Default` is the empty half, which the tests that exercise only the LTE half
-/// pass to [`source_to_kdl`](super::source_to_kdl) — the writer always emits `bc`, so an empty
-/// half still produces a parseable document.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct NrDocument {
-    pub(crate) bitmask_carriers: Vec<String>,
-    pub(crate) bitmask_fingerprints: Vec<BitmaskFingerprint>,
-    pub(crate) carriers: BTreeMap<String, CarrierSource>,
-    pub(crate) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
-    pub(crate) combos: Vec<NrSourceCombo>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LteFileSource {
-    pub(crate) fingerprint: u64,
-    pub(crate) bitmask: u64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LteSourceCombo {
-    pub(crate) selection: Option<Vec<SelectionRect>>,
-    pub(crate) bcs: Option<u64>,
-    pub(crate) unknown1: Option<u64>,
-    pub(crate) unknown2: Option<u64>,
-    pub(crate) components: Vec<LteComponent>,
-}
-
-/// The LTE half. `Default` is the empty half — see [`NrDocument`].
-#[derive(Clone, Debug, Default)]
-pub(crate) struct LteDocument {
-    pub(crate) files: BTreeMap<u64, LteFileSource>,
-    pub(crate) combos: Vec<LteSourceCombo>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedNr {
-    pub(crate) source: NrDocument,
-    pub(crate) bitmask_fingerprints: BTreeMap<String, u64>,
-    pub(crate) carriers: BTreeMap<String, ValidatedCarrier>,
-    pub(crate) domain: NrDomain,
-    pub(crate) palette: FeaturePalette,
-    pub(crate) combos: Vec<ValidatedNrCombo>,
-    pub(crate) selection_index: NrSelectionIndex,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedNrCombo {
-    pub(crate) payload: RawNrPayload,
-    pub(crate) relation: NrRelation,
-}
-
-/// Inverted index from an interned `(carrier_id, sku_id)` target to the `combo` indices whose
-/// relation contains it, built once per [`ValidatedNr`]. It replaces `selected_payloads`' former
-/// per-target linear scan over every combo (each an O(log n) [`NrRelation::contains`] probe) with
-/// one O(1) lookup — the dominant `decompose`/`provision` cost, since generation runs `selected_payloads`
-/// once per carrier per target. Indices are stored ascending, so a lookup yields payloads in the
-/// exact order the old `combo.iter().filter(..)` produced them, keeping generated output
-/// byte-identical. Combo order is fixed once [`validate_nr_combos`] returns
-/// ([`canonicalize_sources`] never reorders `combo`), so the indices stay valid through generation.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct NrSelectionIndex(HashMap<(CarrierId, SkuId), Vec<u32>>);
-
-impl NrSelectionIndex {
-    fn build(combos: &[ValidatedNrCombo]) -> Self {
-        let mut index: HashMap<(CarrierId, SkuId), Vec<u32>> = HashMap::new();
-        for (combo_index, combo) in combos.iter().enumerate() {
-            let combo_index = u32::try_from(combo_index).expect("combo count fits in u32");
-            for member in combo.relation.members() {
-                index.entry(member).or_default().push(combo_index);
-            }
-        }
-        Self(index)
-    }
-
-    /// The `combo` indices selected by `target`, ascending; empty when the target selects nothing.
-    pub(crate) fn payload_indices(&self, target: &(CarrierId, SkuId)) -> &[u32] {
-        self.0.get(target).map_or(&[], Vec::as_slice)
-    }
-}
-
-#[cfg(test)]
-impl ValidatedNr {
-    /// Test-only combo surgery: replace `combo`, union every newly referenced value into the
-    /// existing complete palette, canonicalize that union, and rebuild the selection/source
-    /// projections. The union is load-bearing: tests may start with manual unreferenced rows,
-    /// and changing their combos must not silently discard those rows. Production sets these
-    /// fields once in [`validate_documents`]; because `selection_index` points at `combo`
-    /// positions, any post-construction combo replacement must go through here or those indices
-    /// dangle.
-    pub(crate) fn set_combos(&mut self, combo: Vec<ValidatedNrCombo>) {
-        let mut dl = self.palette.dl.clone();
-        let mut ul = self.palette.ul.clone();
-        for component in combo
-            .iter()
-            .flat_map(|combo| combo.payload.sub_blocks.iter())
-        {
-            dl.extend_from_slice(component.dl_features());
-            ul.extend_from_slice(component.ul_features());
-        }
-        self.palette = FeaturePalette::from_rows(dl, ul).canonicalized();
-        self.selection_index = NrSelectionIndex::build(&combo);
-        self.combos = combo;
-        self.source.dl_features = self.palette.dl.clone();
-        self.source.ul_features = self.palette.ul.clone();
-        self.source.combos = nr_source_combos(&self.combos, &self.domain, &self.palette)
-            .expect("combo surgery must produce serializable source combos");
-    }
-}
-
-/// A carrier after validation, shaped the way `validate_carrier_role` proved it: the two
-/// legend fields imply each other, and so do signature/tier/profiles. Keeping them as
-/// independent `Option`s meant five downstream sites had to recover the proof with
-/// `expect`/`unwrap`; as paired sub-structs the proof travels with the data.
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedCarrier {
-    pub(crate) bitmask_id: Option<i32>,
-    pub(crate) profiled_id: Option<i32>,
-    /// The carrier's PLMN-legend entry, present iff it has one.
-    legend: Option<LegendEntry>,
-    /// The carrier's profiled role, present iff it ships profile files.
-    pub(crate) profiled: Option<ProfiledRole>,
-}
-
-/// A carrier's entry in the PLMN legend. `mapping_id` and `plmns` are validated to imply each
-/// other, so they are never separately absent.
-#[derive(Clone, Debug)]
-struct LegendEntry {
-    mapping_id: u64,
-    plmns: Vec<Plmn>,
-}
-
-/// A carrier's profiled role. Signature, tier, and a non-empty profile table are validated to
-/// imply one another. Only the derived per-profile identities are needed after validation;
-/// the original signature and tier remain in the source document for serialization.
-#[derive(Clone, Debug)]
-pub(crate) struct ProfiledRole {
-    pub(crate) profiles: BTreeMap<u64, ValidatedProfile>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedProfile {
-    pub(crate) number: u64,
-    pub(crate) unknown: u64,
-    pub(crate) fingerprint: u64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedLte {
-    pub(crate) source: LteDocument,
-    pub(crate) files: BTreeMap<u64, LteFileSource>,
-    pub(crate) domain: LteDomain,
-    pub(crate) combos: Vec<ValidatedLteCombo>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ValidatedLteCombo {
-    pub(crate) source: LteSourceCombo,
-    pub(crate) relation: LteRelation,
-}
-
-/// A fully parsed, cross-referenced, canonicalized source set. Produced once by
-/// [`load_sources`](crate::compiler::load_sources) and consumed by
-/// [`provision_from_sources`](crate::compiler::provision_from_sources) for every model, so a
-/// batch `provision` run parses the multi-megabyte source a single time. Fields are crate-internal; externally it
-/// is an opaque handle.
-#[derive(Clone, Debug)]
-pub struct ValidatedSources {
-    pub(crate) nr: ValidatedNr,
-    pub(crate) lte: ValidatedLte,
-}
-
-impl ValidatedSources {
-    /// Serialize these already-validated, canonical sources **without** re-validating.
-    /// `validate_documents` leaves `nr.source`/`lte.source` canonical, so serializing them
-    /// directly reproduces exactly what [`to_kdl`] would — letting `decompose` drop a redundant
-    /// third `validate_documents` pass while its byte-idempotence assertion still proves the
-    /// emitted document is a fixed point.
-    pub(crate) fn to_kdl(&self) -> anyhow::Result<String> {
-        super::source_to_kdl(&self.nr.source, &self.lte.source)
-    }
-}
-
+use std::collections::{BTreeMap, BTreeSet};
 pub(crate) fn parse_sources(text: &str) -> anyhow::Result<ValidatedSources> {
-    let source = super::source_from_kdl(text).context("parsing the source document")?;
+    let source = crate::compiler::source_from_kdl(text).context("parsing the source document")?;
     validate_documents(source)
 }
 
@@ -297,92 +64,6 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
     };
     canonicalize_sources(&mut validated)?;
     Ok(validated)
-}
-
-/// Validate + canonicalize + serialize in one step. Now used only by tests (the `decompose`/`provision`
-/// paths validate once and reuse via [`ValidatedSources::to_kdl`]); kept as a convenient fixture
-/// helper.
-#[cfg(test)]
-pub(crate) fn to_kdl(source: &SourceDocument) -> anyhow::Result<String> {
-    validate_documents(source.clone())?.to_kdl()
-}
-
-/// One NR source combo projected from a payload and its relation: the selection in canonical
-/// rectangle form, the five combo-header fields verbatim, and per-component catalog references
-/// re-derived via `source_sub_block`. The write-side inverse of `validate_nr_combos`/`resolve`.
-///
-/// The single source for this projection — both the ingest side (`compiler::nr`'s
-/// `finish_nr_document`, building the document for the first time) and the canonicalize side
-/// ([`nr_source_combos`], rebuilding it from validated data) go through it, so a sixth
-/// combo-header field cannot be added to one and forgotten in the other.
-pub(crate) fn nr_source_combo(
-    payload: &RawNrPayload,
-    relation: &NrRelation,
-    domain: &NrDomain,
-    palette: &FeaturePalette,
-) -> anyhow::Result<NrSourceCombo> {
-    Ok(NrSourceCombo {
-        selection: relation.canonical_selection(domain)?,
-        header: payload.header,
-        sub_blocks: payload
-            .sub_blocks
-            .iter()
-            .map(|component| palette.source_sub_block(component))
-            .collect::<anyhow::Result<Vec<_>>>()?,
-    })
-}
-
-fn nr_source_combos(
-    combo: &[ValidatedNrCombo],
-    domain: &NrDomain,
-    palette: &FeaturePalette,
-) -> anyhow::Result<Vec<NrSourceCombo>> {
-    combo
-        .iter()
-        .map(|combo| nr_source_combo(&combo.payload, &combo.relation, domain, palette))
-        .collect()
-}
-
-/// Rebuilds the LTE half's `combo` list from validated data: only `selection` is re-derived (to
-/// its canonical rectangle form); every other field is a straight clone of the validated
-/// source combo, since LTE combos carry no catalog references to re-derive.
-fn lte_source_combos(
-    combo: &[ValidatedLteCombo],
-    domain: &LteDomain,
-) -> anyhow::Result<Vec<LteSourceCombo>> {
-    combo
-        .iter()
-        .map(|combo| {
-            let mut source = combo.source.clone();
-            source.selection = combo.relation.canonical_selection(domain)?;
-            Ok(source)
-        })
-        .collect()
-}
-
-fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> {
-    validated.nr.source.bitmask_carriers.sort_unstable();
-    for group in &mut validated.nr.source.bitmask_fingerprints {
-        group.carriers.sort_unstable();
-    }
-    validated
-        .nr
-        .source
-        .bitmask_fingerprints
-        .sort_by(|left, right| {
-            (left.fingerprint, &left.carriers).cmp(&(right.fingerprint, &right.carriers))
-        });
-
-    validated.nr.source.dl_features = validated.nr.palette.dl.clone();
-    validated.nr.source.ul_features = validated.nr.palette.ul.clone();
-    validated.nr.source.combos = nr_source_combos(
-        &validated.nr.combos,
-        &validated.nr.domain,
-        &validated.nr.palette,
-    )?;
-
-    validated.lte.source.combos = lte_source_combos(&validated.lte.combos, &validated.lte.domain)?;
-    Ok(())
 }
 
 fn build_nr_domain(
@@ -712,7 +393,7 @@ fn validate_mapping_projection(
 /// The modern (profiled) fingerprint for a `(family, tier)` pair. Thin wrapper over the one
 /// source `model::fingerprint_for` (from `model::FINGERPRINTS`), shared by the NR generation
 /// and schema-validation paths so the table lives in exactly one place.
-pub(crate) fn modern_fingerprint(family: Family, tier: Tier) -> u64 {
+fn modern_fingerprint(family: Family, tier: Tier) -> u64 {
     crate::model::fingerprint_for(family, tier)
         .expect("every (family, tier) pair is present in model::FINGERPRINTS")
 }
@@ -778,94 +459,16 @@ pub(crate) fn validate_carrier_name(carrier: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LteSourceCombo, parse_sources, to_kdl};
     use crate::{
-        compiler::{selection::Sku, source_from_kdl},
+        compiler::{
+            schema::{LteSourceCombo, parse_sources, test_support::*, to_kdl},
+            selection::Sku,
+            source_from_kdl,
+        },
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
         raw_nr::Direction,
     };
     use std::collections::BTreeSet;
-
-    /// Join an NR body and an LTE body into one source document. The constants and helpers below
-    /// are *bodies*, not documents: a merged document carries exactly one `version` marker, so
-    /// concatenating two complete documents would trip `duplicate \`version\``.
-    fn source(nr_body: &str, lte_body: &str) -> String {
-        format!("version 1\n{nr_body}\n{lte_body}\n")
-    }
-
-    const MINIMAL_NR: &str = r#"
-bc "LEGACY"
-
-bf 715188856 {
-    c "LEGACY"
-}
-"#;
-
-    const MINIMAL_LTE: &str = r#"
-f "400907661" fp=862505271 bm=4082165014
-"#;
-
-    fn profiled_nr(profile_key: &str) -> String {
-        format!(
-            r#"
-bc "LEGACY"
-
-bf 715188856 {{
-    c "LEGACY"
-}}
-
-c "PROFILED" pi=7 sg=1 t="main" {{
-    pf "{profile_key}" x=66813533 u=0
-}}
-"#
-        )
-    }
-
-    fn lte_with_file_key(file_key: &str) -> String {
-        format!(
-            r#"
-f "{file_key}" fp=862505271 bm=4082165014
-"#
-        )
-    }
-
-    fn nr_with_carrier_sections(sections: &str) -> String {
-        format!(
-            r#"
-bc "LEGACY"
-
-bf 715188856 {{
-    c "LEGACY"
-}}
-
-{sections}
-"#
-        )
-    }
-
-    fn nr_with_complete_domain() -> String {
-        nr_with_carrier_sections(
-            r#"
-c "PROFILED" pi=7 sg=1 t="main" {
-    pf "66813533" x=66813533 u=0
-    pf "8969" x=8969 u=0
-}
-
-c "MAPPING" mi=8 {
-    ps
-}
-"#,
-        )
-    }
-
-    fn lte_with_complete_domain() -> String {
-        r#"
-f "400907661" fp=862505271 bm=1
-f "564260317" fp=874888686 bm=2
-"#
-        .into()
-    }
-
     #[test]
     fn parses_the_minimal_version_one_document() {
         parse_sources(&source(MINIMAL_NR, MINIMAL_LTE)).unwrap();
@@ -1638,81 +1241,5 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
         assert_eq!(profile.number, 66_813_533);
         assert_eq!(profile.fingerprint, 627_223_094);
         assert_eq!(profile.unknown, 9);
-    }
-
-    #[test]
-    fn to_kdl_canonicalizes_metadata_payloads_and_selections() {
-        let nr_text = format!(
-            "{}\ndf s=3\nn {{\n    s {{\n        c \"PROFILED\" \"PROFILED\"\n        m \"G2YBB\" \"G2YBB\"\n    }}\n    n78 A1\n    B1 A\n}}\nn {{\n    s {{\n        c \"LEGACY\"\n    }}\n    B3 A\n}}\n",
-            nr_with_complete_domain()
-        );
-        let lte_text = format!(
-            "{}\nl {{\n    s {{\n        m \"lte:564260317\" \"G2YBB\" \"G2YBB\"\n    }}\n    B3 A4\n    B1 A4\n}}\nl {{\n    s {{\n        m \"GR83Y\"\n    }}\n    B7 A4\n}}\n",
-            lte_with_complete_domain()
-        );
-        let text = to_kdl(&source_from_kdl(&source(&nr_text, &lte_text)).unwrap()).unwrap();
-
-        assert!(text.ends_with('\n') && !text.ends_with("\n\n"));
-
-        let canonical = parse_sources(&text).unwrap();
-        assert_eq!(
-            canonical.nr.combos[0]
-                .payload
-                .sub_blocks
-                .iter()
-                .map(|cc| cc.band_label().to_string())
-                .collect::<Vec<_>>(),
-            ["B1", "n78"]
-        );
-        assert_eq!(
-            canonical.nr.combos[0].payload.sub_blocks[1].selector(Direction::Dl),
-            None
-        );
-        assert_eq!(
-            canonical.nr.combos[1].payload.sub_blocks[0]
-                .band_label()
-                .to_string(),
-            "B3"
-        );
-        assert_eq!(canonical.lte.combos[0].source.components[0].band, 3);
-        assert_eq!(canonical.lte.combos[1].source.components[0].band, 7);
-
-        assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
-    }
-
-    #[test]
-    fn to_kdl_preserves_plmn_presence_order_duplicates_and_large_mapping_ids() {
-        let nr_text = nr_with_carrier_sections(
-            r#"
-c "ABSENT" bi=1
-
-c "MAP_ONLY" mi=18446744073709551615 {
-    ps
-}
-
-c "ORDERED" mi=7 {
-    p mcc=302 mnc=220
-    p mcc=228
-    p mcc=302 mnc=220
-}
-"#,
-        )
-        .replace("bc \"LEGACY\"", "bc \"ABSENT\" \"LEGACY\"")
-        .replace("c \"LEGACY\"", "c \"ABSENT\" \"LEGACY\"");
-        let text = to_kdl(&source_from_kdl(&source(&nr_text, MINIMAL_LTE)).unwrap()).unwrap();
-        let nr = source_from_kdl(&text).unwrap().nr;
-        assert_eq!(nr.carriers["ABSENT"].plmns, None);
-        assert_eq!(nr.carriers["MAP_ONLY"].plmns, Some(Vec::new()));
-        assert_eq!(
-            nr.carriers["ORDERED"].plmns,
-            Some(
-                ["302-220", "228-ff", "302-220"]
-                    .map(|s| s.parse().unwrap())
-                    .into()
-            )
-        );
-        assert_eq!(nr.carriers["MAP_ONLY"].profiled_id, None);
-        assert_eq!(nr.carriers["MAP_ONLY"].mapping_id, Some(u64::MAX));
-        assert!(text.contains("mi=18446744073709551615"));
     }
 }
