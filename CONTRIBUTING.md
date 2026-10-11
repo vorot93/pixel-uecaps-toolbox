@@ -194,6 +194,32 @@ keep source `usize` references separate from compact per-file `u8` catalogs.
 
 ## Performance: readability first, then re-optimize
 
+### Verified remediation outcome (2026-10-11)
+
+The typed source/report boundaries, ownership cleanup, and module splits preserve the canonical
+source and generated archives. With one frozen dependency resolution and stable Rust 1.99.0,
+the baseline and candidate produced identical source bytes and identical ZIPs for all **52**
+registered models, both from a fixed baseline source and from freshly decomposed candidate source.
+The real-corpus suite passed all 11 tests with all four gated bodies executed, including the
+later-component-carrier regression and independent every-model oracle. The source palette remains
+265 DL / 529 UL rows and the canonical document is 7,099,014 bytes.
+
+Five interleaved baseline/candidate pairs, timed with `std::time::Instant` and checked for byte
+identity on every run, gave these minima:
+
+| Operation | Baseline | Candidate |
+| --- | ---: | ---: |
+| `decompose` | 17,289 ms | 16,435 ms |
+| `provision GUL82` from the fixed source | 3,773 ms | 3,745 ms |
+
+No regression was observed in these minima; shared-host timing variation does not establish a
+speedup. Readability and stronger invariant boundaries required no measured speed trade here.
+These are dated observations, not a replacement for a fresh source-bound comparison after future
+changes. Corpus runs remain serialized in the primary product checkout, with one retained source
+and ephemeral ZIPs; logs and executable provenance live outside the repository.
+
+### Measurement policy
+
 **Policy (2026-07-23): readability outranks speed.** If a clearer expression costs performance,
 take it — the bar is a *large* readability gain, not any gain. This reverses the previous
 "don't de-optimize" rule. It is a **sequencing** decision, not an abandonment of performance: the
