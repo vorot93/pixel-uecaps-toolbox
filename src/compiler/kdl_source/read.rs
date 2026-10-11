@@ -24,7 +24,7 @@ use kdl::{KdlDocument, KdlNode};
 use std::collections::BTreeMap;
 fn read_fingerprint(node: &KdlNode) -> Result<BitmaskFingerprint> {
     let mut r = NodeReader::new(node);
-    let fingerprint = r.key_int::<u64>()?;
+    let fingerprint = r.arg_int::<u64>()?;
     let carriers = read_str_list(
         r.opt_child(fingerprint::CARRIERS)?
             .ok_or_else(|| anyhow!("`bitmask-fingerprint` missing `carriers`"))?,
@@ -38,7 +38,7 @@ fn read_fingerprint(node: &KdlNode) -> Result<BitmaskFingerprint> {
 
 fn read_profile(node: &KdlNode, carrier: &str) -> Result<(u64, ProfileSource)> {
     let mut r = NodeReader::new(node);
-    let key = r.key_str()?;
+    let key = r.arg_str()?;
     let multiplier = r.req_int::<u64>(profile::MULTIPLIER)?;
     let unknown = r.req_int::<u64>(profile::UNKNOWN)?;
     r.finish()?;
@@ -56,7 +56,7 @@ fn read_profile(node: &KdlNode, carrier: &str) -> Result<(u64, ProfileSource)> {
 
 fn read_carrier(node: &KdlNode) -> Result<(String, CarrierSource)> {
     let mut r = NodeReader::new(node);
-    let name = r.key_str()?;
+    let name = r.arg_str()?;
     let bitmask_id = r.opt_int::<i64>(carrier::BITMASK_ID)?;
     let profiled_id = r.opt_int::<i64>(carrier::PROFILED_ID)?;
     let mapping_id = r.opt_int::<u64>(carrier::MAPPING_ID)?;
@@ -134,14 +134,14 @@ fn read_ul_feature(node: &KdlNode) -> Result<ShannonFeatureSetUlPerCcNr> {
 
 fn read_selection(node: &KdlNode) -> Result<SelectionRect> {
     let mut r = NodeReader::new(node);
-    let carriers = match r.opt_child(selection::CARRIERS)? {
-        None => None,
-        Some(n) => Some(read_str_list(n)?),
-    };
-    let skus = match r.opt_child(selection::SKUS)? {
-        None => None,
-        Some(n) => Some(read_str_list(n)?),
-    };
+    let carriers = r
+        .opt_child(selection::CARRIERS)?
+        .map(read_str_list)
+        .transpose()?;
+    let skus = r
+        .opt_child(selection::SKUS)?
+        .map(read_str_list)
+        .transpose()?;
     r.finish()?;
     Ok(SelectionRect { carriers, skus })
 }
@@ -166,10 +166,10 @@ fn read_directions(
     name: &str,
     kind: SubBlockKind,
 ) -> Result<(DirectionArg, Option<DirectionArg>)> {
-    // DL then UL, positional. `key_str` errors when the argument is missing, which is what
+    // DL then UL, positional. `arg_str` errors when the argument is missing, which is what
     // makes an argument-free sub-block a hard failure rather than a silently classless one.
     let dl = parse_direction(
-        &r.key_str()
+        &r.arg_str()
             .with_context(|| format!("`{name}` is missing its DL bandwidth class"))?,
         Direction::Dl,
     )?;
@@ -336,22 +336,23 @@ pub(super) fn read_nr_combo(node: &KdlNode) -> Result<NrSourceCombo> {
         }
         None => derive_bcs_intra_endc(intra_band_en_dc_support),
     };
-    let mut selection = Vec::new();
-    for snode in r.children(nr_combo::SELECTION) {
-        selection.push(read_selection(snode)?);
-    }
+    let selection = r
+        .children(nr_combo::SELECTION)
+        .into_iter()
+        .map(read_selection)
+        .collect::<Result<Vec<_>>>()?;
     // Reading NR before E-UTRA preserves the previous behaviour; `validate_nr_combos` sorts
     // sub-blocks by `RawSubBlockKey` regardless, which is why the reader could already read
     // NR-first while real documents store E-UTRA first and still round-trip byte-identically.
     let mut sub_blocks = Vec::new();
-    for cnode in r.children_matching("nr<band>", |name| {
-        parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some()
-    }) {
+    for cnode in
+        r.children_matching(|name| parse_sub_block_name(name, nr_combo::NR_PREFIX).is_some())
+    {
         sub_blocks.push(read_sub_block(cnode)?);
     }
-    for cnode in r.children_matching("lte<band>", |name| {
-        parse_sub_block_name(name, nr_combo::LTE_PREFIX).is_some()
-    }) {
+    for cnode in
+        r.children_matching(|name| parse_sub_block_name(name, nr_combo::LTE_PREFIX).is_some())
+    {
         sub_blocks.push(read_sub_block(cnode)?);
     }
     r.finish()?;
@@ -380,7 +381,7 @@ fn read_version(node: &KdlNode, existing: Option<u32>) -> Result<u32> {
         bail!("duplicate `version`");
     }
     let mut r = NodeReader::new(node);
-    let v = r.key_int::<u32>()?;
+    let v = r.arg_int::<u32>()?;
     r.finish()?;
     Ok(v)
 }
@@ -448,7 +449,7 @@ fn insert_unique<K: Ord + std::fmt::Display, T>(
 
 fn read_lte_file(node: &KdlNode) -> Result<(u64, LteFileSource)> {
     let mut r = NodeReader::new(node);
-    let key = r.key_str()?;
+    let key = r.arg_str()?;
     let fingerprint = r.req_int::<u64>(lte_file::FINGERPRINT)?;
     let bitmask = r.req_int::<u64>(lte_file::BITMASK)?;
     r.finish()?;
@@ -474,7 +475,7 @@ fn read_lte_component(node: &KdlNode) -> Result<LteComponent> {
     let band = i32::from(band);
     let mut r = NodeReader::new(node);
     let dl_bw_class_mimo = parse_class_mimo(
-        &r.key_str()
+        &r.arg_str()
             .with_context(|| format!("`{name}` is missing its DL class+MIMO value"))?,
         Direction::Dl,
     )?;
@@ -508,16 +509,16 @@ fn read_lte_combo(node: &KdlNode) -> Result<LteSourceCombo> {
         .transpose()?;
     let unknown1 = r.opt_int::<u64>(lte_combo::UNKNOWN1)?;
     let unknown2 = r.opt_int::<u64>(lte_combo::UNKNOWN2)?;
-    let mut selection = Vec::new();
-    for snode in r.children(lte_combo::SELECTION) {
-        selection.push(read_selection(snode)?);
-    }
-    let mut components = Vec::new();
-    for cnode in r.children_matching("subblock<band>", |name| {
-        parse_sub_block_name(name, lte_combo::SUB_BLOCK_PREFIX).is_some()
-    }) {
-        components.push(read_lte_component(cnode)?);
-    }
+    let selection = r
+        .children(lte_combo::SELECTION)
+        .into_iter()
+        .map(read_selection)
+        .collect::<Result<Vec<_>>>()?;
+    let components = r
+        .children_matching(|name| parse_sub_block_name(name, lte_combo::SUB_BLOCK_PREFIX).is_some())
+        .into_iter()
+        .map(read_lte_component)
+        .collect::<Result<Vec<_>>>()?;
     r.finish()?;
     Ok(LteSourceCombo {
         selection: if selection.is_empty() {

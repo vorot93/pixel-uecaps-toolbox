@@ -503,6 +503,14 @@ class-letter bit decoding, and the clap argument relationships.
 
 ## Gotchas
 
+- **Reader and fixture contracts.** `NodeReader::arg_str`/`arg_int` consume positional
+  arguments; property and exact-child keys are static vocabulary strings. Dynamic child
+  names are claimed by predicates. Report validation accumulates issues; source parsing
+  fails fast, with DL read before optional UL. `MiniCorpus::write_to` takes `FileOrder` and
+  writes sorted borrowed files forward or backward. Shared `decode`/`replace` helpers keep
+  fixture mutations on typed protobufs. Use `full_header` for strict ingestion fixtures and
+  `empty_payload` for deliberately absent header fields; they are not interchangeable.
+
 - **`let`-chains require edition 2024** (`&& let` chains in `compiler/schema/validate.rs` and `report/folder.rs`). Down-editioning won't compile.
 - **A shared NR anchor does not identify a model.** Pixel 10 Pro XL codes `GUL82`, `G45RY`, `GYPW4` all use `nr_anchor = 3616442437` but differ in `lte_id` (`GUL82` mmWave-US = `1254026417`; the sub-6 pair = `4017061044`).
 - **Magisk path layout.** There is one destination and it is not configurable: generated files land at `system/vendor/firmware/uecapconfig/<basename>`, and the module always carries the `.replace` marker. `--dest` and its validation are gone (they defended a user-supplied value that no longer exists). What remains user-supplied is `--name`, which is interpolated as `name=<name>` in `module.prop` and is rejected for control/line-separator characters, and the generated basenames, which `validate_module_basename` rejects for path separators, `.`/`..`, and control characters.

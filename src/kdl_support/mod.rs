@@ -47,17 +47,13 @@ pub(crate) fn finish_doc(mut doc: KdlDocument) -> String {
 /// Reads one `KdlNode`, tracking which positional args, properties, and child-node
 /// names were consumed so `finish()` can reject anything unexpected (the strict
 /// `deny_unknown_fields` equivalent).
-/// A claimed child *shape*: a diagnostic label plus the predicate that recognises the name.
-type ChildPredicate = (&'static str, fn(&str) -> bool);
-
 pub(crate) struct NodeReader<'a> {
     node: &'a KdlNode,
     args_used: usize,
-    props_used: BTreeSet<String>,
+    props_used: BTreeSet<&'static str>,
     children_used: BTreeSet<&'static str>,
-    /// Predicates that claimed children, with a human label for diagnostics. The parallel of
-    /// `children_used` for child names that are computed rather than fixed.
-    child_predicates: Vec<ChildPredicate>,
+    /// Predicates for child names computed rather than fixed.
+    child_predicates: Vec<fn(&str) -> bool>,
 }
 
 impl<'a> NodeReader<'a> {
@@ -81,7 +77,7 @@ impl<'a> NodeReader<'a> {
     }
 
     /// The next unconsumed positional arg, advancing the cursor. Shared preamble of
-    /// [`key_str`](Self::key_str) and [`key_int`](Self::key_int).
+    /// [`arg_str`](Self::arg_str) and [`arg_int`](Self::arg_int).
     fn next_arg(&mut self) -> Result<&'a KdlValue> {
         let v = *self.positional().get(self.args_used).ok_or_else(|| {
             anyhow!(
@@ -94,7 +90,7 @@ impl<'a> NodeReader<'a> {
     }
 
     /// Next positional arg as an owned string (advances the arg cursor).
-    pub(crate) fn key_str(&mut self) -> Result<String> {
+    pub(crate) fn arg_str(&mut self) -> Result<String> {
         let name = self.node.name().value().to_string();
         Ok(self
             .next_arg()?
@@ -104,7 +100,7 @@ impl<'a> NodeReader<'a> {
     }
 
     /// Next positional arg as a range-checked integer (advances the arg cursor).
-    pub(crate) fn key_int<T: TryFrom<i128>>(&mut self) -> Result<T> {
+    pub(crate) fn arg_int<T: TryFrom<i128>>(&mut self) -> Result<T> {
         let name = self.node.name().value().to_string();
         let i = self
             .next_arg()?
@@ -115,7 +111,7 @@ impl<'a> NodeReader<'a> {
 
     /// The next positional arg as an owned string, or `None` when the node has no more.
     ///
-    /// The optional counterpart of [`key_str`](Self::key_str), for a node whose trailing
+    /// The optional counterpart of [`arg_str`](Self::arg_str), for a node whose trailing
     /// argument is omitted rather than defaulted — a sub-block's UL direction, say, where
     /// absence means bandwidth class 0.
     pub(crate) fn opt_arg_str(&mut self) -> Result<Option<String>> {
@@ -148,8 +144,8 @@ impl<'a> NodeReader<'a> {
         Ok(out)
     }
 
-    pub(crate) fn opt_str(&mut self, key: &str) -> Result<Option<String>> {
-        self.props_used.insert(key.to_string());
+    pub(crate) fn opt_str(&mut self, key: &'static str) -> Result<Option<String>> {
+        self.props_used.insert(key);
         self.node
             .get(key)
             .map(|v| {
@@ -160,8 +156,8 @@ impl<'a> NodeReader<'a> {
             .transpose()
     }
 
-    pub(crate) fn opt_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<Option<T>> {
-        self.props_used.insert(key.to_string());
+    pub(crate) fn opt_int<T: TryFrom<i128>>(&mut self, key: &'static str) -> Result<Option<T>> {
+        self.props_used.insert(key);
         self.node
             .get(key)
             .map(|v| {
@@ -173,7 +169,7 @@ impl<'a> NodeReader<'a> {
             .transpose()
     }
 
-    pub(crate) fn req_int<T: TryFrom<i128>>(&mut self, key: &str) -> Result<T> {
+    pub(crate) fn req_int<T: TryFrom<i128>>(&mut self, key: &'static str) -> Result<T> {
         self.opt_int(key)?.ok_or_else(|| {
             anyhow!(
                 "`{}` missing required property `{key}`",
@@ -182,8 +178,8 @@ impl<'a> NodeReader<'a> {
         })
     }
 
-    pub(crate) fn opt_bool(&mut self, key: &str) -> Result<Option<bool>> {
-        self.props_used.insert(key.to_string());
+    pub(crate) fn opt_bool(&mut self, key: &'static str) -> Result<Option<bool>> {
+        self.props_used.insert(key);
         self.node
             .get(key)
             .map(|v| {
@@ -209,14 +205,9 @@ impl<'a> NodeReader<'a> {
     /// All child nodes whose name satisfies `matches` (marks them consumed).
     ///
     /// The name-based [`children`](Self::children) cannot express a computed child name — a
-    /// sub-block is spelled `nr257`, one distinct node name per band. `label` names the shape
-    /// in diagnostics (e.g. `"nr<band>"`).
-    pub(crate) fn children_matching(
-        &mut self,
-        label: &'static str,
-        matches: fn(&str) -> bool,
-    ) -> Vec<&'a KdlNode> {
-        self.child_predicates.push((label, matches));
+    /// sub-block is spelled `n257`, one distinct node name per band.
+    pub(crate) fn children_matching(&mut self, matches: fn(&str) -> bool) -> Vec<&'a KdlNode> {
+        self.child_predicates.push(matches);
         match self.node.children() {
             None => Vec::new(),
             Some(doc) => doc
@@ -272,7 +263,7 @@ impl<'a> NodeReader<'a> {
                         name.value()
                     );
                 }
-                if !seen.insert(name.value().to_string()) {
+                if !seen.insert(name.value()) {
                     bail!(
                         "`{}` sets property `{}` more than once; only the last value would be \
                          read, silently discarding the others",
@@ -289,7 +280,7 @@ impl<'a> NodeReader<'a> {
                 // (`children_matching`) — a computed child name has no fixed spelling to
                 // record, so the predicate itself is what marks it known.
                 let claimed = self.children_used.contains(cn)
-                    || self.child_predicates.iter().any(|(_, matches)| matches(cn));
+                    || self.child_predicates.iter().any(|matches| matches(cn));
                 if !claimed {
                     bail!(
                         "`{}` has unknown child node `{cn}`",
@@ -354,7 +345,7 @@ mod combinator_tests {
     fn reads_key_props_and_children_then_finishes() {
         let n = node("cr VZW bi=1 t=main {\n    ps \"311-480\"\n}\n");
         let mut r = NodeReader::new(&n);
-        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert_eq!(r.arg_str().unwrap(), "VZW");
         assert_eq!(r.opt_int::<i64>("bi").unwrap(), Some(1));
         assert_eq!(r.opt_str("t").unwrap().as_deref(), Some("main"));
         let plmns = r.opt_child("ps").unwrap().unwrap();
@@ -366,7 +357,7 @@ mod combinator_tests {
     fn finish_rejects_unknown_property() {
         let n = node("cr VZW bogus=9\n");
         let mut r = NodeReader::new(&n);
-        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert_eq!(r.arg_str().unwrap(), "VZW");
         assert!(r.finish().is_err());
     }
 
@@ -378,7 +369,7 @@ mod combinator_tests {
     fn finish_rejects_a_duplicate_property() {
         let n = node("node 78 dl-bw-class=1 dl-bw-class=2\n");
         let mut r = NodeReader::new(&n);
-        assert_eq!(r.key_int::<u16>().unwrap(), 78);
+        assert_eq!(r.arg_int::<u16>().unwrap(), 78);
         assert_eq!(r.opt_int::<u8>("dl-bw-class").unwrap(), Some(2));
 
         let error = r.finish().unwrap_err().to_string();
@@ -406,13 +397,11 @@ mod combinator_tests {
         let n = node("c {\n    n257 x=1\n    n41 x=2\n    B66 x=3\n}\n");
         let mut r = NodeReader::new(&n);
 
-        let nr = r.children_matching("n<band>", |name| {
-            name.strip_prefix('n').is_some_and(|band| !band.is_empty())
-        });
+        let nr =
+            r.children_matching(|name| name.strip_prefix('n').is_some_and(|band| !band.is_empty()));
         assert_eq!(nr.len(), 2);
-        let lte = r.children_matching("B<band>", |name| {
-            name.strip_prefix('B').is_some_and(|band| !band.is_empty())
-        });
+        let lte =
+            r.children_matching(|name| name.strip_prefix('B').is_some_and(|band| !band.is_empty()));
         assert_eq!(lte.len(), 1);
 
         r.finish().expect("predicate-consumed children are known");
@@ -424,7 +413,7 @@ mod combinator_tests {
     fn finish_still_rejects_a_child_no_predicate_claimed() {
         let n = node("c {\n    n257 x=1\n    mystery 1\n}\n");
         let mut r = NodeReader::new(&n);
-        let _ = r.children_matching("n<band>", |name| name.starts_with('n'));
+        let _ = r.children_matching(|name| name.starts_with('n'));
 
         let error = r.finish().unwrap_err().to_string();
 
@@ -435,7 +424,7 @@ mod combinator_tests {
     fn finish_rejects_unknown_child() {
         let n = node("cr VZW {\n    mystery 1\n}\n");
         let mut r = NodeReader::new(&n);
-        assert_eq!(r.key_str().unwrap(), "VZW");
+        assert_eq!(r.arg_str().unwrap(), "VZW");
         assert!(r.finish().is_err());
     }
 

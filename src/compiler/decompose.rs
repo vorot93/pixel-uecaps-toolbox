@@ -618,9 +618,8 @@ mod tests {
             read_sources,
             schema::{parse_sources, to_kdl},
             test_support::{
-                FIRST_LTE_ID, MiniCorpus, SECOND_LTE_ID, SYNTHETIC_ANCHOR, decode_lte,
-                decode_mapping, decode_nr, inject_unknown_nr_cc_field,
-                make_lte_encoding_noncanonical, replace_lte, replace_mapping, replace_nr,
+                FIRST_LTE_ID, MiniCorpus, SECOND_LTE_ID, SYNTHETIC_ANCHOR, decode,
+                inject_unknown_nr_cc_field, make_lte_encoding_noncanonical, replace,
             },
         },
         outcome::Outcome,
@@ -639,7 +638,10 @@ mod tests {
 
     fn assert_prewrite_failure(corpus: MiniCorpus, expected: &str) -> String {
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let (bitmask, profiled) = corpus.write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         let out = NamedTempFile::new_in(temp.path()).unwrap();
         fs::write(out.path(), b"old source\n").unwrap();
 
@@ -666,7 +668,10 @@ mod tests {
         let temp = tempdir().unwrap();
         let corpus = MiniCorpus::new();
         let expected = corpus.expected.clone();
-        let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let (bitmask, profiled) = corpus.write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
 
         let text = decode_documents(&bitmask, &profiled).unwrap();
         let source = read_sources(&text).unwrap();
@@ -698,7 +703,10 @@ mod tests {
     #[test]
     fn both_inputs_must_be_directories() {
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
+        let (bitmask, profiled) = MiniCorpus::new().write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         let regular_file = temp.path().join("not-a-directory");
         fs::write(&regular_file, b"x").unwrap();
 
@@ -801,8 +809,14 @@ mod tests {
     fn unrelated_files_are_ignored_and_creation_order_does_not_change_output() {
         let first = tempdir().unwrap();
         let second = tempdir().unwrap();
-        let (first_bitmask, first_profiled) = MiniCorpus::new().write_to(first.path(), false);
-        let (second_bitmask, second_profiled) = MiniCorpus::new().write_to(second.path(), true);
+        let (first_bitmask, first_profiled) = MiniCorpus::new().write_to(
+            first.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
+        let (second_bitmask, second_profiled) = MiniCorpus::new().write_to(
+            second.path(),
+            crate::compiler::test_support::FileOrder::Reverse,
+        );
         fs::write(first_bitmask.join("README.txt"), b"ignored").unwrap();
         fs::write(first_profiled.join("notes.txt"), b"ignored").unwrap();
         fs::create_dir(first_profiled.join("nested")).unwrap();
@@ -829,7 +843,10 @@ mod tests {
         corpus.rename_carrier("ALPHA", "EU_COMMON");
         corpus.rename_carrier("BETA", "EU_COMMON1");
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let (bitmask, profiled) = corpus.write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         decode_documents(&bitmask, &profiled).unwrap();
     }
 
@@ -847,7 +864,10 @@ mod tests {
     #[test]
     fn nr_self_verification_is_tied_to_the_input_folder_not_re_derived() {
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
+        let (bitmask, profiled) = MiniCorpus::new().write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         let text = decode_documents(&bitmask, &profiled).unwrap();
         let sources = parse_sources(&text).unwrap();
 
@@ -894,7 +914,10 @@ mod tests {
     #[test]
     fn decompose_writes_exactly_one_newline_terminated_idempotent_document() {
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = MiniCorpus::new().write_to(temp.path(), false);
+        let (bitmask, profiled) = MiniCorpus::new().write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         let out = NamedTempFile::new_in(temp.path()).unwrap();
 
         assert_eq!(
@@ -934,9 +957,9 @@ mod tests {
     fn mapping_must_already_be_in_increasing_mapping_id_order() {
         let mut corpus = MiniCorpus::new();
         let file = mapping_file(&mut corpus);
-        let mut mapping = decode_mapping(file);
+        let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers.reverse();
-        replace_mapping(file, &mapping);
+        replace(file, &mapping);
 
         assert_prewrite_failure(corpus, "in increasing mapping_id order");
     }
@@ -960,7 +983,7 @@ mod tests {
     fn value_bearing_empty_nr_group_fails_before_outputs_change() {
         let mut corpus = MiniCorpus::new();
         let file = corpus.bitmask_file_mut("ALPHA.binarypb");
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups.push(ComboGroup {
             combo_header: Some(ComboHeader {
                 power_class: Some(3),
@@ -968,7 +991,7 @@ mod tests {
             }),
             combo: Vec::new(),
         });
-        replace_nr(file, &caps);
+        replace(file, &caps);
 
         assert_prewrite_failure(corpus, "empty combo group");
     }
@@ -977,15 +1000,18 @@ mod tests {
     fn semantically_empty_nr_layout_remains_decodable() {
         let mut corpus = MiniCorpus::new();
         let file = corpus.bitmask_file_mut("ALPHA.binarypb");
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups.push(ComboGroup::default());
         caps.dl_feature_per_cc_list
             .push(ShannonFeatureSetDlPerCcNr::default());
         caps.ul_feature_per_cc_list
             .push(ShannonFeatureSetUlPerCcNr::default());
-        replace_nr(file, &caps);
+        replace(file, &caps);
         let temp = tempdir().unwrap();
-        let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let (bitmask, profiled) = corpus.write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
         let out = NamedTempFile::new_in(temp.path()).unwrap();
 
         assert_eq!(
@@ -1025,23 +1051,23 @@ mod tests {
     fn malformed_mapping_and_duplicate_mapping_metadata_fail_before_writes() {
         let mut malformed = MiniCorpus::new();
         let file = mapping_file(&mut malformed);
-        let mut mapping = decode_mapping(file);
+        let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[0].plmns.push(0x0100_0000);
-        replace_mapping(file, &mapping);
+        replace(file, &mapping);
         assert_prewrite_failure(malformed, "PLMN");
 
         let mut duplicate_id = MiniCorpus::new();
         let file = mapping_file(&mut duplicate_id);
-        let mut mapping = decode_mapping(file);
+        let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[1].index = mapping.carriers[0].index;
-        replace_mapping(file, &mapping);
+        replace(file, &mapping);
         assert_prewrite_failure(duplicate_id, "duplicate carrier id");
 
         let mut duplicate_name = MiniCorpus::new();
         let file = mapping_file(&mut duplicate_name);
-        let mut mapping = decode_mapping(file);
+        let mut mapping = decode::<crate::proto::PlmnMap>(file);
         mapping.carriers[1].name = mapping.carriers[0].name.clone();
-        replace_mapping(file, &mapping);
+        replace(file, &mapping);
         assert_prewrite_failure(duplicate_name, "duplicate mapping name");
     }
 
@@ -1050,16 +1076,16 @@ mod tests {
         let mut ids = MiniCorpus::new();
         let name = profile_name("ALPHA", 11, SYNTHETIC_ANCHOR);
         let file = ids.profiled_file_mut(&name);
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.id = Some(9);
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(ids, "inconsistent field 2 IDs");
 
         let mut tiers = MiniCorpus::new();
         let file = tiers.profiled_file_mut(&name);
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.version = 707_802_847;
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(tiers, "inconsistent fingerprint tiers");
     }
 
@@ -1083,23 +1109,23 @@ mod tests {
         let mut modern_bitmask = MiniCorpus::new();
         let name = profile_name("ALPHA", 11, SYNTHETIC_ANCHOR);
         let file = modern_bitmask.profiled_file_mut(&name);
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups[0].combo[0].bitmask = Some(1);
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(modern_bitmask, "unsupported nonzero bitmask");
 
         let mut legacy_unknown = MiniCorpus::new();
         let file = legacy_unknown.bitmask_file_mut("ALPHA.binarypb");
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.unknown = 1;
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(legacy_unknown, "unsupported field 9 value");
 
         let mut unknown_fingerprint = MiniCorpus::new();
         let file = unknown_fingerprint.profiled_file_mut(&name);
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.version = 123;
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(unknown_fingerprint, "unknown fingerprint");
     }
 
@@ -1116,9 +1142,9 @@ mod tests {
     fn duplicate_canonical_nr_payloads_fail_before_writes() {
         let mut corpus = MiniCorpus::new();
         let file = corpus.profiled_file_mut(&profile_name("ALPHA", 11, SYNTHETIC_ANCHOR));
-        let mut caps = decode_nr(file);
+        let mut caps = decode::<crate::proto::UeCaps>(file);
         caps.combo_groups.push(caps.combo_groups[0].clone());
-        replace_nr(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(corpus, "duplicate canonical NR payload");
     }
 
@@ -1126,17 +1152,17 @@ mod tests {
     fn lte_duplicates_and_cycles_fail_before_writes() {
         let mut duplicate = MiniCorpus::new();
         let file = lte_file(&mut duplicate, FIRST_LTE_ID);
-        let mut caps = decode_lte(file);
+        let mut caps = decode::<crate::proto::LteCaps>(file);
         caps.combos.push(caps.combos[0].clone());
-        replace_lte(file, &caps);
+        replace(file, &caps);
         assert_prewrite_failure(duplicate, "duplicate LTE payload");
 
         let mut cycle = MiniCorpus::new();
-        let first = decode_lte(lte_file(&mut cycle, FIRST_LTE_ID));
+        let first = decode::<crate::proto::LteCaps>(lte_file(&mut cycle, FIRST_LTE_ID));
         let file = lte_file(&mut cycle, SECOND_LTE_ID);
-        let mut second = decode_lte(file);
+        let mut second = decode::<crate::proto::LteCaps>(file);
         second.combos = vec![first.combos[1].clone(), first.combos[0].clone()];
-        replace_lte(file, &second);
+        replace(file, &second);
         assert_prewrite_failure(cycle, "cycle");
     }
 
@@ -1151,7 +1177,10 @@ mod tests {
             .unwrap()
             .bytes
             .clone();
-        let (bitmask, profiled) = corpus.write_to(temp.path(), false);
+        let (bitmask, profiled) = corpus.write_to(
+            temp.path(),
+            crate::compiler::test_support::FileOrder::Forward,
+        );
 
         decode_documents(&bitmask, &profiled).unwrap();
 

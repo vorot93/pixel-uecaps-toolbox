@@ -399,7 +399,7 @@ mod tests {
     use super::*;
     use crate::{
         proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
-        raw_nr::{RawNrPayload, RawSubBlock, RawSubBlockKey},
+        raw_nr::{RawNrPayload, RawSubBlock, RawSubBlockKey, test_support::empty_payload},
     };
 
     fn referenced_palette<'a>(
@@ -431,8 +431,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![sb.clone()],
+            ..empty_payload()
         };
         let palette = referenced_palette([&payload]);
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -467,8 +467,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component.clone()],
+            ..empty_payload()
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.dl.len(), 1);
@@ -498,8 +498,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component],
+            ..empty_payload()
         };
 
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -525,13 +525,12 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component.clone()],
+            ..empty_payload()
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.ul, vec![high]);
-        assert!(plan.dl.is_empty());
-        assert!(plan.dl.is_empty());
+        assert_eq!(plan.dl, Vec::<ShannonFeatureSetDlPerCcNr>::new());
         let reconstructed = plan.reconstruct_sub_block(&component).unwrap();
         assert_eq!(reconstructed.ul_feature_per_cc_ids, Some(vec![1]));
         assert_eq!(reconstructed.dl_feature_per_cc_ids, None);
@@ -548,8 +547,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component.clone()],
+            ..empty_payload()
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.dl, vec![ShannonFeatureSetDlPerCcNr::default()]);
@@ -572,8 +571,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component.clone()],
+            ..empty_payload()
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
         assert_eq!(plan.ul, vec![ShannonFeatureSetUlPerCcNr::default()]);
@@ -618,8 +617,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![component],
+            ..empty_payload()
         };
 
         let error = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy")
@@ -664,8 +663,8 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![sb.clone()],
+            ..empty_payload()
         };
         let palette = referenced_palette([&payload]);
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -697,8 +696,8 @@ mod tests {
         }
         .into();
         let nr_payload = RawNrPayload {
-            header: Default::default(),
             sub_blocks: vec![nr_sb.clone()],
+            ..empty_payload()
         };
         let nr_palette = referenced_palette([&nr_payload]);
         let nr_plan =

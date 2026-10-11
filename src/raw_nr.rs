@@ -11,6 +11,9 @@ use std::fmt::{self, Display, Formatter};
 
 pub const NR_BAND_OFFSET: i32 = 10_000;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Compiler-facing first-byte resolution; zero/absent/out-of-range remains unresolved.
 pub(crate) fn feature_index(ids: Option<&[u8]>, len: usize) -> Option<usize> {
     let k = *ids?.first()? as usize;
@@ -1869,8 +1872,8 @@ mod tests {
 mod conversion_tests {
     use super::*;
     use crate::{
-        compiler::nr::test_support::{cc, full_header, raw_payloads},
         proto::{Combo, ComboGroup, SubBlock, UeCaps},
+        raw_nr::test_support::{cc, full_header, raw_payloads},
     };
     #[test]
     fn raw_conversion_flattens_group_packing_and_sorts_components_by_full_key() {

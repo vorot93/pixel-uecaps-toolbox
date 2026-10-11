@@ -1,46 +1,13 @@
 use super::{LegacyNrFile, ProfiledNrFile, ingest_nr};
+pub(crate) use crate::raw_nr::test_support::{cc, full_header};
 use crate::{
     compiler::schema::{
         LteDocument, LteFileSource, NrDocument, SourceDocument, ValidatedNr, parse_sources, to_kdl,
     },
     mapping::{MappingEntry, MappingRoot},
-    proto::{Combo, ComboGroup, ComboHeader, ShannonFeatureSetDlPerCcNr, SubBlock, UeCaps},
-    raw_nr::RawNrPayload,
+    proto::{Combo, ComboGroup, ShannonFeatureSetDlPerCcNr, SubBlock, UeCaps},
 };
 use std::collections::BTreeMap;
-/// A component that differs from its siblings only in `srs_tx_switch`. (It used to vary
-/// `dl_feature_index`, but an NR component no longer stores one — the index is derived,
-/// so two otherwise-identical NR components can no longer differ in it.)
-pub(crate) fn cc(band: i32, srs_tx_switch: i32) -> SubBlock {
-    SubBlock {
-        band,
-        dl_bw_class: Some(1),
-        ul_bw_class: Some(1),
-        // A class-1 direction always carries a one-byte per-CC list; the biconditional in
-        // `RawSubBlock::validate` requires it, and every real file has it.
-        dl_feature_per_cc_ids: Some(vec![0]),
-        ul_feature_per_cc_ids: Some(vec![0]),
-        srstxswitch: Some(srs_tx_switch),
-        ..Default::default()
-    }
-}
-
-pub(crate) fn raw_payloads(caps: &UeCaps) -> Vec<RawNrPayload> {
-    RawNrPayload::all_from_caps(caps).expect("fixture caps must be representable")
-}
-
-/// The four corpus-verified always-`Some` header fields. Ingest fails closed on a missing
-/// one, so even a fixture that says nothing about the header has to carry a complete one —
-/// real input always does.
-pub(crate) fn full_header() -> Option<ComboHeader> {
-    Some(ComboHeader {
-        power_class: Some(0),
-        bcs_nr: Some(0),
-        bcs_intra_endc: None,
-        bcs_eutra: Some(0),
-        intra_band_en_dc_support: Some(0),
-    })
-}
 
 pub(crate) fn one_combo_caps(
     version: u64,
@@ -54,16 +21,7 @@ pub(crate) fn one_combo_caps(
         id,
         unknown,
         combo_groups: vec![ComboGroup {
-            combo_header: Some(ComboHeader {
-                // The four corpus-verified always-`Some` header fields (all but
-                // `bcs_intra_endc`) — the strict decode boundary
-                // (`raw_nr::from_proto_combo`) fails closed on a missing one (Task 8).
-                power_class: Some(0),
-                bcs_nr: Some(0),
-                bcs_intra_endc: None,
-                bcs_eutra: Some(0),
-                intra_band_en_dc_support: Some(0),
-            }),
+            combo_header: full_header(),
             combo: vec![Combo {
                 sub_blocks: vec![cc(band, 0)],
                 bitmask,

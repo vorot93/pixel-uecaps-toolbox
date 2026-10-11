@@ -1,8 +1,7 @@
 use crate::{
     mapping::Plmn,
     proto::{
-        Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap,
-        SubBlock, UeCaps,
+        Carrier, Combo, ComboGroup, LteCaps, LteCombo, LteComponent, PlmnMap, SubBlock, UeCaps,
     },
 };
 use prost::Message;
@@ -181,15 +180,15 @@ impl MiniCorpus {
     pub(crate) fn write_to(
         &self,
         root: &Path,
-        reverse: bool,
+        order: FileOrder,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
         let bitmask_dir = root.join("bitmask");
         let profiled_dir = root.join("profiled");
         fs::create_dir_all(&bitmask_dir).unwrap();
         fs::create_dir_all(&profiled_dir).unwrap();
 
-        write_files(&bitmask_dir, &self.bitmask, reverse);
-        write_files(&profiled_dir, &self.profiled, reverse);
+        write_files(&bitmask_dir, &self.bitmask, order);
+        write_files(&profiled_dir, &self.profiled, order);
         (bitmask_dir, profiled_dir)
     }
 
@@ -223,7 +222,7 @@ impl MiniCorpus {
             .iter_mut()
             .find(|file| file.basename == "ap_plmn_mapping.binarypb")
             .expect("mini corpus has a mapping file");
-        let mut decoded = PlmnMap::decode(mapping.bytes.as_slice()).unwrap();
+        let mut decoded: PlmnMap = decode(mapping);
         let mapping_renamed = decoded
             .carriers
             .iter()
@@ -234,7 +233,7 @@ impl MiniCorpus {
             .iter_mut()
             .filter(|carrier| carrier.name == old)
             .for_each(|carrier| carrier.name = new.into());
-        mapping.bytes = decoded.encode_to_vec();
+        replace(mapping, &decoded);
         assert_eq!(
             (bitmask_renamed, profiled_renamed, mapping_renamed),
             (1, 2, 1),
@@ -261,20 +260,12 @@ impl MiniCorpus {
     }
 }
 
-pub(crate) fn decode_nr(file: &FixtureFile) -> UeCaps {
-    UeCaps::decode(file.bytes.as_slice()).unwrap()
+pub(crate) fn decode<M: Message + Default>(file: &FixtureFile) -> M {
+    M::decode(file.bytes.as_slice()).unwrap()
 }
 
-pub(crate) fn replace_nr(file: &mut FixtureFile, caps: &UeCaps) {
-    file.bytes = caps.encode_to_vec();
-}
-
-pub(crate) fn decode_lte(file: &FixtureFile) -> LteCaps {
-    LteCaps::decode(file.bytes.as_slice()).unwrap()
-}
-
-pub(crate) fn replace_lte(file: &mut FixtureFile, caps: &LteCaps) {
-    file.bytes = caps.encode_to_vec();
+pub(crate) fn replace(file: &mut FixtureFile, message: &impl Message) {
+    file.bytes = message.encode_to_vec();
 }
 
 /// Rewrite `file` into a non-canonical encoding of the *same* value, so the LTE byte-identity
@@ -286,7 +277,7 @@ pub(crate) fn replace_lte(file: &mut FixtureFile, caps: &LteCaps) {
 /// An explicit zero for a non-`optional` scalar is the one non-canonical form the scanner cannot
 /// reject — prost drops it on re-encode — which makes it the right probe here.
 pub(crate) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
-    let mut caps = decode_lte(file);
+    let mut caps = decode::<crate::proto::LteCaps>(file);
     caps.bitmask = 0;
     let mut bytes = caps.encode_to_vec();
     bytes.extend([0x18, 0x00]); // field 3 (bitmask), explicit zero, keeping ascending order
@@ -295,16 +286,8 @@ pub(crate) fn make_lte_encoding_noncanonical(file: &mut FixtureFile) {
     file.bytes = bytes;
 }
 
-pub(crate) fn decode_mapping(file: &FixtureFile) -> PlmnMap {
-    PlmnMap::decode(file.bytes.as_slice()).unwrap()
-}
-
-pub(crate) fn replace_mapping(file: &mut FixtureFile, mapping: &PlmnMap) {
-    file.bytes = mapping.encode_to_vec();
-}
-
 pub(crate) fn inject_unknown_nr_cc_field(file: &mut FixtureFile) {
-    let caps = decode_nr(file);
+    let caps = decode::<crate::proto::UeCaps>(file);
     let group = &caps.combo_groups[0];
     let combo = &group.combo[0];
     let mut cc = combo.sub_blocks[0].encode_to_vec();
@@ -353,12 +336,18 @@ fn length_delimited_field(field: u64, payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn write_files(dir: &Path, files: &[FixtureFile], reverse: bool) {
-    let ordered: Box<dyn Iterator<Item = &FixtureFile>> = if reverse {
-        Box::new(files.iter().rev())
-    } else {
-        Box::new(files.iter())
-    };
+#[derive(Clone, Copy)]
+pub(crate) enum FileOrder {
+    Forward,
+    Reverse,
+}
+
+fn write_files(dir: &Path, files: &[FixtureFile], order: FileOrder) {
+    let mut ordered: Vec<_> = files.iter().collect();
+    ordered.sort_by(|a, b| a.basename.cmp(&b.basename));
+    if matches!(order, FileOrder::Reverse) {
+        ordered.reverse();
+    }
     for file in ordered {
         fs::write(dir.join(&file.basename), &file.bytes).unwrap();
     }
@@ -382,16 +371,7 @@ fn nr_caps(
         version: fingerprint,
         id,
         combo_groups: vec![ComboGroup {
-            // The four corpus-verified always-`Some` header fields (all but
-            // `bcs_intra_endc`, which stays `None`) — the strict decode boundary
-            // (`raw_nr::from_proto_combo`) fails closed on a missing one (Task 8).
-            combo_header: Some(ComboHeader {
-                power_class: Some(0),
-                bcs_nr: Some(0),
-                bcs_intra_endc: None,
-                bcs_eutra: Some(0),
-                intra_band_en_dc_support: Some(0),
-            }),
+            combo_header: crate::raw_nr::test_support::full_header(),
             combo: vec![Combo {
                 sub_blocks: vec![SubBlock {
                     band,
