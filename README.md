@@ -86,10 +86,11 @@ $ pixel-uecaps-toolbox decompose \
 $ pixel-uecaps-toolbox provision G2YBB uecaps.kdl -o pixel-uecaps-G2YBB.zip
 ```
 
-> Piping and early exit: `inspect`, `compare`, `check`, and `matrix` return 2 on an encountered
+> Piping and early exit: `inspect`, `compare`, `check`, `matrix`, and `self-test` return 2 on an encountered
 > stdout/stderr write or flush failure, including a broken pipe. A short report may finish before
-> an early reader close is observed. `decompose` and `self-test` still use print macros and can
-> panic (exit 101) on stdout failure. File outputs use atomic replacement.
+> an early reader close is observed. Report diagnostics are written and flushed before the body;
+> diagnostic failure preserves an existing output file. `decompose` still uses a print macro and
+> can panic (exit 101) on stdout failure. File outputs use atomic replacement.
 
 `decompose` requires both directories. The bitmask input may contain only unnumbered
 `<CARRIER>.binarypb` capability files and must contain at least one. The profiled

@@ -389,6 +389,10 @@ the drift that consolidation removed.
   tag order and singular duplicates before interpreting wire types (including invalid codes 6/7).
   Varint errors retain distinct key/value/length context; changing that order hides the more
   useful first failure on multiply-invalid input.
+- **Report publication order.** Constructors return a `Report`; only `report::publish` writes.
+  Diagnostics must finish (including flush) before stdout or an atomic file replacement starts.
+  Test write and flush failures independently: a successful body cannot mask either failure,
+  even when the report outcome itself is Clean, Findings, or Rejected.
 - **Per-tier eligibility and counts (16/14).** `model::tier_profile_count` +
   `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its
   16/14 from these. The shared report carrier-context validator uses the same anchor set

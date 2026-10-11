@@ -102,16 +102,28 @@ impl Cmd {
                 out,
                 name,
             } => compiler::provision(&model, &source, &out, name.as_deref()),
-            Self::Inspect { file, full } => report::inspect(&file, full.into()),
-            Self::Check { dir } => report::check_folder(&dir),
-            Self::Matrix { dir, out } => report::matrix(&dir, out.as_deref()),
-            Self::SelfTest => report::self_test(),
+            Self::Inspect { file, full } => report::publish(
+                &report::inspect(&file, full.into())?,
+                report::OutputTarget::Stdout,
+            ),
+            Self::Check { dir } => {
+                report::publish(&report::check_folder(&dir)?, report::OutputTarget::Stdout)
+            }
+            Self::Matrix { dir, out } => report::publish(
+                &report::matrix(&dir)?,
+                out.as_deref()
+                    .map_or(report::OutputTarget::Stdout, report::OutputTarget::File),
+            ),
+            Self::SelfTest => report::publish(&report::self_test(), report::OutputTarget::Stdout),
             Self::Compare {
                 file_a,
                 file_b,
                 full,
                 common,
-            } => report::compare(&file_a, &file_b, full.into(), common.into()),
+            } => report::publish(
+                &report::compare(&file_a, &file_b, full.into(), common.into())?,
+                report::OutputTarget::Stdout,
+            ),
         }
     }
 }

@@ -227,6 +227,25 @@ fn failed_error_stream_returns_two_instead_of_panicking() {
 }
 #[cfg(target_os = "linux")]
 #[test]
+fn self_test_stdout_failure_returns_two_without_panicking() {
+    let out = command()
+        .arg("self-test")
+        .stdout(
+            fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .output()
+        .unwrap();
+    let diagnostic = stderr(&out);
+    assert!(!diagnostic.contains("panicked"), "{diagnostic}");
+    assert!(diagnostic.contains("error:"), "{diagnostic}");
+    out.assert().code(REJECTED);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn report_stdout_failures_return_two() {
     let dir = support::fixture();
     let path = dir.path().join("ALPHA_66813533.binarypb");

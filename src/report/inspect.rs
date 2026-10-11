@@ -1,12 +1,11 @@
 //! Single-file observation with contextual validation and useful partial output.
 use super::{
+    Report,
     combos::render_combos,
     detail::Detail,
     identity::project_combinations,
     input::{DecodeKind, Payload, read_input, read_optional_legend},
-    validation::{
-        Issue, IssueKind, carrier_context_issues, completion, diagnostics, payload_issues,
-    },
+    validation::{Issue, IssueKind, carrier_context_issues, diagnostics, payload_issues},
 };
 use crate::{
     factor::{factor_display, gcd},
@@ -118,7 +117,7 @@ fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carri
         }
     }
 }
-pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Outcome> {
+pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Report> {
     let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
     let parsed = parse_name(base);
     let kind = match parsed {
@@ -229,6 +228,9 @@ pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Outcome> {
         }
         Parsed::Other => unreachable!(),
     }
-    super::write_report(&out, &diagnostics(&issues))?;
-    Ok(completion(!issues.is_empty()))
+    Ok(Report {
+        body: out,
+        diagnostics: diagnostics(&issues),
+        outcome: Outcome::from_validation_errors(!issues.is_empty()),
+    })
 }

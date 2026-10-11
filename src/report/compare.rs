@@ -1,5 +1,6 @@
 //! Typed capability set comparison; rendering and differences never determine success.
 use super::{
+    Report,
     combos::{render_key, render_shape},
     detail::{Common, Detail},
     identity::{CombinationKey, ShapeKey, project_combinations, shape},
@@ -74,7 +75,7 @@ fn load(path: &Path) -> anyhow::Result<(Index, String)> {
     ))
 }
 
-pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Result<Outcome> {
+pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Result<Report> {
     let (left, header_a) = load(a)?;
     let (right, header_b) = load(b)?;
     let shared: Vec<_> = left.keys().filter(|k| right.contains_key(*k)).collect();
@@ -130,6 +131,9 @@ pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Re
             }
         }
     }
-    super::write_report(&out, "")?;
-    Ok(Outcome::Clean)
+    Ok(Report {
+        body: out,
+        diagnostics: String::new(),
+        outcome: Outcome::Clean,
+    })
 }

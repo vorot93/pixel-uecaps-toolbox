@@ -1,15 +1,13 @@
 //! Carrier × profile matrix as CSV (`matrix`).
 
-use super::{
-    folder::{FolderReport, scan_folder},
-    validation::{completion, diagnostics},
-};
+use super::{Report, folder::scan_folder, validation::diagnostics};
 use crate::{
     model::{PROFILES, Profile},
     outcome::Outcome,
 };
-use anyhow::Context;
 use std::{collections::BTreeMap, fmt::Write, path::Path};
+
+type MatrixCells = BTreeMap<String, BTreeMap<u64, Vec<u64>>>;
 
 /// The column header for a profile: its known Pixel model, else the anchor prime.
 fn header_for(p: &Profile) -> String {
@@ -25,10 +23,7 @@ fn sorted_columns() -> Vec<(String, u64)> {
 
 /// Render the matrix: a `carrier` header row, then one alphabetical row per carrier;
 /// an absent profile is an empty cell. Columns are emitted in the given order.
-fn build_csv(
-    columns: &[(String, u64)],
-    cells: &BTreeMap<String, BTreeMap<u64, Vec<u64>>>,
-) -> anyhow::Result<String> {
+fn build_csv(columns: &[(String, u64)], cells: &MatrixCells) -> anyhow::Result<String> {
     let mut wtr = csv::WriterBuilder::new()
         .terminator(csv::Terminator::Any(b'\n'))
         .from_writer(Vec::new());
@@ -59,19 +54,10 @@ fn build_csv(
     Ok(String::from_utf8(bytes)?)
 }
 
-/// `matrix [DIR] [-o FILE]`: scan `dir` and emit the carrier × profile CSV to
-/// `out` (a file) or stdout.
-pub fn matrix(dir: &Path, out: Option<&Path>) -> anyhow::Result<Outcome> {
-    finish_matrix(scan_folder(dir), out)
-}
-fn finish_matrix(
-    report: anyhow::Result<FolderReport>,
-    out: Option<&Path>,
-) -> anyhow::Result<Outcome> {
-    publish_matrix(&report?, out)
-}
-fn publish_matrix(report: &FolderReport, out: Option<&Path>) -> anyhow::Result<Outcome> {
-    let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
+/// Construct the carrier × profile CSV and retained diagnostics.
+pub fn matrix(dir: &Path) -> anyhow::Result<Report> {
+    let report = scan_folder(dir)?;
+    let mut cells = MatrixCells::new();
     for c in &report.candidates {
         cells
             .entry(c.carrier.clone())
@@ -85,18 +71,11 @@ fn publish_matrix(report: &FolderReport, out: Option<&Path>) -> anyhow::Result<O
         writeln!(errors, "info: {path:?}: unsupported/not validated")?;
     }
     let csv = build_csv(&sorted_columns(), &cells)?;
-    match out {
-        // Through the crate's atomic writer like every other file output, so a failure part-way
-        // cannot leave a truncated CSV in place of a previously good one, and replacing an
-        // existing file keeps its mode.
-        Some(path) => {
-            super::write_report("", &errors)?;
-            crate::atomic::write_bytes_atomic(path, csv.as_bytes())
-                .with_context(|| format!("cannot write {}", path.display()))?;
-        }
-        None => super::write_report(&csv, &errors)?,
-    }
-    Ok(completion(report.has_errors()))
+    Ok(Report {
+        body: csv,
+        diagnostics: errors,
+        outcome: Outcome::from_validation_errors(report.has_errors()),
+    })
 }
 
 #[cfg(test)]
@@ -145,7 +124,7 @@ mod tests {
             ("Alpha".to_string(), 22u64),
             ("Bravo".to_string(), 11u64),
         ];
-        let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
+        let mut cells = MatrixCells::new();
         cells.entry("ZED".into()).or_default().insert(11, vec![100]);
         cells.entry("ZED".into()).or_default().insert(22, vec![200]);
         cells.entry("ZED".into()).or_default().insert(33, vec![300]);
@@ -170,11 +149,10 @@ mod tests {
         .encode_to_vec();
         std::fs::write(dir.path().join("ALPHA_3347.binarypb"), &bytes).unwrap();
         std::fs::write(dir.path().join("ALPHA_6694.binarypb"), &bytes).unwrap();
-        let out = dir.path().join("m.csv");
-        let code = matrix(dir.path(), Some(&out)).unwrap();
-        let csv = std::fs::read_to_string(&out).unwrap();
+        let report = matrix(dir.path()).unwrap();
+        let csv = report.body;
         assert_eq!(
-            code,
+            report.outcome,
             Outcome::Rejected,
             "a (carrier, anchor) collision must exit 2:\n{csv}"
         );
@@ -187,7 +165,7 @@ mod tests {
     #[test]
     fn build_csv_quotes_fields_with_commas() {
         let columns = vec![("Pixel, Comma".to_string(), 7u64)];
-        let mut cells: BTreeMap<String, BTreeMap<u64, Vec<u64>>> = BTreeMap::new();
+        let mut cells = MatrixCells::new();
         cells.entry("C".into()).or_default().insert(7, vec![42]);
 
         let csv = build_csv(&columns, &cells).unwrap();
@@ -199,12 +177,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.csv");
         std::fs::write(&path, b"sentinel").unwrap();
-        let error = finish_matrix(
-            Err(anyhow::anyhow!("injected iteration failure")),
-            Some(&path),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("injected iteration failure"));
+        let error = matrix(&dir.path().join("missing"))
+            .and_then(|report| {
+                crate::report::publish(&report, crate::report::OutputTarget::File(&path))
+            })
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("missing"));
         assert_eq!(std::fs::read(path).unwrap(), b"sentinel");
     }
 }

@@ -34,7 +34,7 @@ work; `src/main.rs` is a thin `clap` CLI over them.
 **The library API is intentionally minimal.** It is the 7 CLI entry points —
 `compiler::{decompose, provision}` and `report::{inspect, check_folder, matrix, self_test,
 compare}` — plus exactly what they need to be callable and testable from outside the crate:
-the `outcome::Outcome` / `report::{Common, Detail}` types those entry points take or return,
+the `outcome::Outcome` / `report::{Common, Detail, Report, OutputTarget}` types and `report::publish`,
 the `compiler::{load_sources, provision_from_sources}` parse-once pair and the opaque
 `ValidatedSources` handle they leak (the corpus test's perf optimization; see CONTRIBUTING §
 Performance), `model::PHONE_MODELS` (+
@@ -92,7 +92,8 @@ it handles either registered layout — `CapabilityLayout::Bitmask` or
 | `src/mapping/schema.rs` | The editable mapping schema (`Root`/`MappingEntry`) ↔ proto `PlmnMap` (`map_to_root`/`root_to_map`). |
 | `src/mapping/error.rs` | The mapping `Error` enum (thiserror). |
 | `src/magisk/mod.rs` | Assembles the compiler's generated files into a deterministic `.replace` Magisk `.zip` (overlay tree + `module.prop` + `META-INF/.../update-binary`) at the fixed `/vendor/firmware/uecapconfig` destination. |
-| `src/report/mod.rs` | Reports facade and fallible text output boundary. |
+| `src/report/mod.rs` | Reports facade. |
+| `src/report/output.rs` | Report values and checked stream/atomic-file publication. |
 | `src/report/input.rs`, `validation.rs`, `folder.rs` | Retained strict inputs, applicable payload/context checks, deterministic shared folder evidence. |
 | `src/report/identity.rs`, `combos.rs` | Typed observation-preserving combination keys and rendering; compiler-facing selector helpers retain their separate contract. |
 | `src/report/detail.rs` | The `Detail` (`Summary`/`Full`) and `Common` (`Hide`/`Show`) presentation enums that replaced `full`/`show_common` `bool` parameters; `clap`'s flags stay `bool` and convert to these at the CLI boundary. |
@@ -142,6 +143,14 @@ anchors. Per-file failures omit candidates, while relational errors (collision, 
 invalid legend) leave otherwise-valid candidates visible. CSV remains deterministic and may be
 partial on exit 2; completed partial files use the existing atomic publication mechanism.
 Failure to enumerate reliably prevents publication entirely.
+
+All five report commands construct `Report { body, diagnostics, outcome }` without writing.
+`matrix(&Path)` returns CSV without choosing a destination; `self_test()` is infallible report
+construction, with checked results rendered through a fallible `Display` implementation.
+`publish` writes and flushes diagnostics first, then writes/flushes stdout or atomically replaces
+the destination. Diagnostic failure therefore prevents body publication and preserves an existing
+file. Publication failure overrides every report outcome. The CLI publishes each report once;
+its outer error envelope remains best-effort if stderr itself has failed.
 
 **Re-encode fidelity differs by file kind — this is the subtlest contract here.**
 
@@ -941,7 +950,7 @@ their test-owned files. See CONTRIBUTING for the complete three-variable invocat
   renamed into place, so a failure part-way cannot leave a truncated document where a good
   one was, and replacing an existing file keeps its mode. With `-o` omitted the document
   goes to stdout via `print!`, so a reader that closes the pipe early makes that `print!`
-  panic (exit 101) instead of producing this crate's usual `error:`/exit 2. The four reporting
+   panic (exit 101) instead of producing this crate's usual `error:`/exit 2. The five reporting
   commands instead use fallible writes and flushes and return 2 on output failure.
 - `provision MODEL SOURCE -o ZIP` reads and validates the source document before model
   resolution. `MODEL` is a real registered Google hardware code, never `legacy`,

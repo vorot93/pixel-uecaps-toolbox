@@ -6,7 +6,6 @@ use super::{
 use crate::{
     mapping::Plmn,
     model::{MAIN_ONLY_ANCHORS, Tier, fingerprint_info, matching_anchors},
-    outcome::Outcome,
     proto::{PlmnMap, UeCaps},
 };
 use std::{
@@ -60,13 +59,6 @@ pub(super) fn diagnostics<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> St
         let _ = writeln!(out, "error: {paths} [{:?}]: {}", issue.kind, issue.message);
     }
     out
-}
-pub(super) fn completion(has_errors: bool) -> Outcome {
-    if has_errors {
-        Outcome::Rejected
-    } else {
-        Outcome::Clean
-    }
 }
 pub(super) fn legend_issues(path: &Path, map: &PlmnMap) -> Vec<Issue> {
     let mut names = BTreeMap::new();

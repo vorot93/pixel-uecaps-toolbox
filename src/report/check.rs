@@ -1,8 +1,9 @@
 //! Folder-wide consistency report rendered from shared retained evidence.
 use super::{
+    Report,
     folder::scan_folder,
     input::{LoadedInput, Payload},
-    validation::{completion, diagnostics},
+    validation::diagnostics,
 };
 use crate::{
     model::{FINGERPRINTS, MAPPING_BASENAME, Parsed, Tier, tier_fingerprints, tier_profile_count},
@@ -29,7 +30,7 @@ fn alt_tier_header() -> String {
         tier_profile_count(Tier::Alt)
     )
 }
-pub fn check_folder(dir: &Path) -> anyhow::Result<Outcome> {
+pub fn check_folder(dir: &Path) -> anyhow::Result<Report> {
     let report = scan_folder(dir)?;
     let legend = report
         .files
@@ -116,8 +117,11 @@ pub fn check_folder(dir: &Path) -> anyhow::Result<Outcome> {
     for path in &report.unsupported {
         writeln!(out, "   {path:?}: unsupported/not validated")?;
     }
-    super::write_report(&out, "")?;
-    Ok(completion(report.has_errors()))
+    Ok(Report {
+        body: out,
+        diagnostics: String::new(),
+        outcome: Outcome::from_validation_errors(report.has_errors()),
+    })
 }
 
 #[cfg(test)]
@@ -166,7 +170,7 @@ mod tests {
                 .errors()
                 .any(|e| e.message.contains("empty carrier name"))
         );
-        assert_eq!(check_folder(dir.path()).unwrap(), Outcome::Rejected);
+        assert_eq!(check_folder(dir.path()).unwrap().outcome, Outcome::Rejected);
     }
     #[test]
     fn mixed_tier_fingerprints_are_flagged() {
@@ -198,6 +202,6 @@ mod tests {
                 .errors()
                 .any(|e| e.message.contains("mixes tier fingerprints"))
         );
-        assert_eq!(check_folder(dir.path()).unwrap(), Outcome::Rejected);
+        assert_eq!(check_folder(dir.path()).unwrap().outcome, Outcome::Rejected);
     }
 }
