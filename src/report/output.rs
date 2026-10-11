@@ -162,6 +162,57 @@ mod tests {
     }
 
     #[test]
+    fn atomic_publish_failure_preserves_destination_after_diagnostics() {
+        let input = tempfile::tempdir().unwrap();
+        std::fs::write(input.path().join("unmodeled.binarypb"), b"unsupported").unwrap();
+        let report = crate::report::matrix(input.path()).unwrap();
+        assert_eq!(report.outcome, Outcome::Clean);
+        assert!(report.body.starts_with("carrier,"), "{}", report.body);
+        assert!(
+            report.diagnostics.contains("unsupported/not validated"),
+            "{}",
+            report.diagnostics
+        );
+
+        let output = tempfile::tempdir().unwrap();
+        let destination = output.path().join("matrix.csv");
+        // A nonempty directory forces a real persist failure, even when run as root;
+        // chmod-based fixtures can accidentally permit writes with elevated privileges.
+        std::fs::create_dir(&destination).unwrap();
+        let sentinel = destination.join("existing");
+        std::fs::write(&sentinel, b"sentinel").unwrap();
+        let mut stdout = Vec::new();
+        // Inspect the underlying buffer before drop to prove diagnostics were flushed.
+        let mut stderr = std::io::BufWriter::new(Vec::new());
+        let error = publish_to(
+            &report,
+            OutputTarget::File(&destination),
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap_err();
+
+        assert_eq!(stderr.get_ref(), report.diagnostics.as_bytes());
+        assert!(stdout.is_empty(), "{stdout:?}");
+        assert_eq!(
+            error.to_string(),
+            format!("cannot write {}", destination.display())
+        );
+        assert_eq!(
+            error.chain().nth(1).unwrap().to_string(),
+            format!("persist temporary file as output {}", destination.display())
+        );
+        assert!(
+            error.downcast_ref::<std::io::Error>().is_some(),
+            "{error:#}"
+        );
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel");
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn successful_publication_retains_outcome_and_routes_body_once() {
         for outcome in [Outcome::Clean, Outcome::Findings, Outcome::Rejected] {
             let report = report(outcome);
