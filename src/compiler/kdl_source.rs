@@ -24,7 +24,7 @@ use crate::{
     },
     mapping::Plmn,
     model::Tier,
-    proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
+    proto::{ComboHeader, LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{SubBlockKind, bw_class_letter, cc_count},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -227,12 +227,17 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     opt_int_prop(
         &mut node,
         nr_combo::POWER_CLASS,
-        combo.power_class.filter(|&v| v != 0),
+        combo.header.power_class.filter(|&v| v != 0),
     );
     opt_str_prop(
         &mut node,
         nr_combo::BCS_NR,
-        combo.bcs_nr.filter(|&v| v != 0).map(format_bcs).as_deref(),
+        combo
+            .header
+            .bcs_nr
+            .filter(|&v| v != 0)
+            .map(format_bcs)
+            .as_deref(),
     );
     // Task 2: `bcs-intra-endc` is the BCS index for intra-band EN-DC; a combo carries it
     // exactly when it advertises that mode (`intra-band-en-dc-support == 1`). Derive the
@@ -240,8 +245,8 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     // (intra_band != 1) and every nonzero explicitly. The one unrepresentable state
     // (`None` + intra_band == 1, 0 corpus cases) fails closed. See spec
     // DESIGN.md.
-    let derived_bcs_intra_endc = derive_bcs_intra_endc(combo.intra_band_en_dc_support);
-    match combo.bcs_intra_endc {
+    let derived_bcs_intra_endc = derive_bcs_intra_endc(combo.header.intra_band_en_dc_support);
+    match combo.header.bcs_intra_endc {
         actual if actual == derived_bcs_intra_endc => {} // omit: derivable zeros + every None
         Some(v) => {
             let spelling = format_bcs(v);
@@ -263,6 +268,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
         &mut node,
         nr_combo::BCS_EUTRA,
         combo
+            .header
             .bcs_eutra
             .filter(|&v| v != 0)
             .map(format_bcs)
@@ -271,7 +277,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
     opt_int_prop(
         &mut node,
         nr_combo::INTRA_BAND_EN_DC_SUPPORT,
-        combo.intra_band_en_dc_support.filter(|&v| v != 0),
+        combo.header.intra_band_en_dc_support.filter(|&v| v != 0),
     );
     if combo.selection.is_some() || !combo.sub_blocks.is_empty() {
         let kids = node.ensure_children();
@@ -756,11 +762,13 @@ fn read_combo(node: &KdlNode) -> Result<NrSourceCombo> {
         } else {
             Some(selection)
         },
-        power_class,
-        bcs_nr,
-        bcs_intra_endc,
-        bcs_eutra,
-        intra_band_en_dc_support,
+        header: ComboHeader {
+            power_class,
+            bcs_nr,
+            bcs_intra_endc,
+            bcs_eutra,
+            intra_band_en_dc_support,
+        },
         sub_blocks,
     })
 }
@@ -1246,11 +1254,11 @@ mod nr_tests {
                     carriers: Some(vec!["VZW".into()]),
                     skus: Some(vec!["legacy".into()]),
                 }]),
-                power_class: Some(3),
-                bcs_nr: Some(1),
-                bcs_intra_endc: None,
-                bcs_eutra: None,
-                intra_band_en_dc_support: None,
+                header: ComboHeader {
+                    power_class: Some(3),
+                    bcs_nr: Some(1),
+                    ..Default::default()
+                },
                 sub_blocks: vec![
                     SourceNrSubBlock {
                         band: 78,
@@ -1563,11 +1571,13 @@ mod nr_tests {
     ) -> NrSourceCombo {
         NrSourceCombo {
             selection: None,
-            power_class: Some(0),
-            bcs_nr: Some(0),
-            bcs_intra_endc,
-            bcs_eutra: Some(0),
-            intra_band_en_dc_support,
+            header: ComboHeader {
+                power_class: Some(0),
+                bcs_nr: Some(0),
+                bcs_intra_endc,
+                bcs_eutra: Some(0),
+                intra_band_en_dc_support,
+            },
             sub_blocks: vec![],
         }
     }
@@ -1587,8 +1597,8 @@ mod nr_tests {
             "derivable zero omitted: {text}"
         );
         let back = read_combo(&parse_combo(&text)).unwrap();
-        assert_eq!(back.bcs_intra_endc, Some(0));
-        assert_eq!(back.intra_band_en_dc_support, Some(1));
+        assert_eq!(back.header.bcs_intra_endc, Some(0));
+        assert_eq!(back.header.intra_band_en_dc_support, Some(1));
     }
 
     #[test]
@@ -1599,8 +1609,8 @@ mod nr_tests {
         let text = node.to_string();
         assert!(text.contains("bi=\"\""), "exception zero explicit: {text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
-        assert_eq!(back.bcs_intra_endc, Some(0));
-        assert_eq!(back.intra_band_en_dc_support, Some(0));
+        assert_eq!(back.header.bcs_intra_endc, Some(0));
+        assert_eq!(back.header.intra_band_en_dc_support, Some(0));
     }
 
     #[test]
@@ -1609,7 +1619,7 @@ mod nr_tests {
         let text = node.to_string();
         assert!(text.contains("bi=b29,30,31"), "{text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
-        assert_eq!(back.bcs_intra_endc, Some(7));
+        assert_eq!(back.header.bcs_intra_endc, Some(7));
     }
 
     #[test]
@@ -1618,7 +1628,7 @@ mod nr_tests {
         let text = node.to_string();
         assert!(!text.contains("bcs-intra-endc"), "{text}");
         let back = read_combo(&parse_combo(&text)).unwrap();
-        assert_eq!(back.bcs_intra_endc, None);
+        assert_eq!(back.header.bcs_intra_endc, None);
     }
 
     #[test]
@@ -1638,8 +1648,8 @@ mod nr_tests {
     fn bcs_nr_and_eutra_round_trip_as_index_lists() {
         let text = "version 1\nbc ATT\nn bn=b0,1 be=b0 {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].bcs_nr, Some(3_221_225_472));
-        assert_eq!(doc.combo[0].bcs_eutra, Some(2_147_483_648));
+        assert_eq!(doc.combo[0].header.bcs_nr, Some(3_221_225_472));
+        assert_eq!(doc.combo[0].header.bcs_eutra, Some(2_147_483_648));
         assert_eq!(
             nr_only(&doc).unwrap(),
             text,
@@ -1649,7 +1659,7 @@ mod nr_tests {
         // An omitted property is the zero, and stays omitted on the way back out.
         let zero = "version 1\nbc ATT\nn {\n    n78 A\n}\n";
         let doc = nr_from(zero).expect("parse");
-        assert_eq!(doc.combo[0].bcs_nr, Some(0));
+        assert_eq!(doc.combo[0].header.bcs_nr, Some(0));
         assert_eq!(nr_only(&doc).unwrap(), zero);
 
         for key in ["bn", "be"] {
@@ -1666,14 +1676,14 @@ mod nr_tests {
         // Nonzero, written explicitly.
         let text = "version 1\nbc ATT\nn bi=b0,1 ie=1 {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].bcs_intra_endc, Some(3_221_225_472));
+        assert_eq!(doc.combo[0].header.bcs_intra_endc, Some(3_221_225_472));
         assert_eq!(nr_only(&doc).unwrap(), text);
 
         // The exceptional zero: `ie` is not 1, so `Some(0)` is NOT derivable and must be
         // spelled. The empty set is `""`.
         let text = "version 1\nbc ATT\nn bi=\"\" {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].bcs_intra_endc, Some(0));
+        assert_eq!(doc.combo[0].header.bcs_intra_endc, Some(0));
         assert_eq!(nr_only(&doc).unwrap(), text);
     }
 

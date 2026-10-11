@@ -456,11 +456,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![sb.clone()],
         };
         let palette = referenced_palette([&payload]);
@@ -496,11 +492,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -532,11 +524,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component],
         };
 
@@ -563,11 +551,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -591,11 +575,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -619,11 +599,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
@@ -669,11 +645,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![component],
         };
 
@@ -714,11 +686,7 @@ mod tests {
         }
         .into();
         let payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![sb.clone()],
         };
         let palette = referenced_palette([&payload]);
@@ -751,11 +719,7 @@ mod tests {
         }
         .into();
         let nr_payload = RawNrPayload {
-            power_class: None,
-            bcs_nr: None,
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: Default::default(),
             sub_blocks: vec![nr_sb.clone()],
         };
         let nr_palette = referenced_palette([&nr_payload]);

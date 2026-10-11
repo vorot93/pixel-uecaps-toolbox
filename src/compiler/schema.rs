@@ -10,7 +10,7 @@ use crate::{
     compiler::lte::RawLteCombo,
     mapping::{MappingEntry, MappingRoot, Plmn, map_to_root, root_to_map},
     model::{Family, Tier, matching_anchors, profile},
-    proto::{LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
+    proto::{ComboHeader, LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
     raw_nr::{RawNrPayload, RawNrPayloadKey, RawSubBlockKey},
 };
 use anyhow::{Context, bail, ensure};
@@ -55,11 +55,7 @@ pub(crate) struct CarrierSource {
 #[derive(Clone, Debug)]
 pub(crate) struct NrSourceCombo {
     pub(crate) selection: Option<Vec<SelectionRect>>,
-    pub(crate) power_class: Option<i32>,
-    pub(crate) bcs_nr: Option<u32>,
-    pub(crate) bcs_intra_endc: Option<u32>,
-    pub(crate) bcs_eutra: Option<u32>,
-    pub(crate) intra_band_en_dc_support: Option<i32>,
+    pub(crate) header: ComboHeader,
     pub(crate) sub_blocks: Vec<NrSourceSubBlock>,
 }
 
@@ -329,11 +325,7 @@ pub(crate) fn nr_source_combo(
 ) -> anyhow::Result<NrSourceCombo> {
     Ok(NrSourceCombo {
         selection: relation.canonical_selection(domain)?,
-        power_class: payload.power_class,
-        bcs_nr: payload.bcs_nr,
-        bcs_intra_endc: payload.bcs_intra_endc,
-        bcs_eutra: payload.bcs_eutra,
-        intra_band_en_dc_support: payload.intra_band_en_dc_support,
+        header: payload.header,
         sub_blocks: payload
             .sub_blocks
             .iter()
@@ -447,11 +439,7 @@ fn validate_nr_combos(
             .collect::<anyhow::Result<Vec<_>>>()?;
         sub_blocks.sort_by_cached_key(|component| RawSubBlockKey::from(component));
         let payload = RawNrPayload {
-            power_class: source.power_class,
-            bcs_nr: source.bcs_nr,
-            bcs_intra_endc: source.bcs_intra_endc,
-            bcs_eutra: source.bcs_eutra,
-            intra_band_en_dc_support: source.intra_band_en_dc_support,
+            header: source.header,
             sub_blocks,
         };
         ensure!(

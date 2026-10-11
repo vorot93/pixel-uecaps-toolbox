@@ -759,35 +759,11 @@ impl RawNrSubBlock {
 /// provenance, group packing, and wire bitmask live outside this neutral value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RawNrPayload {
-    pub(crate) power_class: Option<i32>,
-    pub(crate) bcs_nr: Option<u32>,
-    pub(crate) bcs_intra_endc: Option<u32>,
-    pub(crate) bcs_eutra: Option<u32>,
-    pub(crate) intra_band_en_dc_support: Option<i32>,
+    pub(crate) header: ComboHeader,
     pub(crate) sub_blocks: Vec<RawSubBlock>,
 }
 
 impl RawNrPayload {
-    /// The combo header (`ComboHeader`) for this payload, materialized for compiler NR
-    /// generation.
-    ///
-    /// Four of the five header fields (all but `bcs_intra_endc`) are corpus-verified
-    /// always `Some` once a payload has passed through the strict decode boundary
-    /// (`from_proto_combo` below) or the KDL source reader (`compiler::kdl_source::read_combo`,
-    /// Task 8's omit-when-0 defaulting) — so the old "all five fields `None` ⇒ no header"
-    /// case is unrepresentable from real source and has never been observed in the corpus.
-    /// This always returns `Some`; the `Option` return type is kept only because
-    /// `ComboGroup::combo_header` is itself `Option<ComboHeader>`.
-    pub(crate) const fn header(&self) -> Option<ComboHeader> {
-        Some(ComboHeader {
-            bcs_nr: self.bcs_nr,
-            bcs_intra_endc: self.bcs_intra_endc,
-            bcs_eutra: self.bcs_eutra,
-            power_class: self.power_class,
-            intra_band_en_dc_support: self.intra_band_en_dc_support,
-        })
-    }
-
     /// Build a raw payload directly from a protobuf combo `Combo` and its group header,
     /// using the file's feature-set lists — the folder-ingest path that avoids the report
     /// `Combo`/`SubBlock` DTO entirely — that DTO is output-only.
@@ -807,22 +783,20 @@ impl RawNrPayload {
         let Some(header) = header else {
             anyhow::bail!("combo omits its header (never observed; refusing to normalize to 0)")
         };
-        anyhow::ensure!(
-            header.power_class.is_some(),
-            "combo header omits power_class (never observed; refusing to normalize to 0)"
-        );
-        anyhow::ensure!(
-            header.bcs_nr.is_some(),
-            "combo header omits bcs_nr (never observed; refusing to normalize to 0)"
-        );
-        anyhow::ensure!(
-            header.bcs_eutra.is_some(),
-            "combo header omits bcs_eutra (never observed; refusing to normalize to 0)"
-        );
-        anyhow::ensure!(
-            header.intra_band_en_dc_support.is_some(),
-            "combo header omits intra_band_en_dc_support (never observed; refusing to normalize to 0)"
-        );
+        for (label, present) in [
+            ("power_class", header.power_class.is_some()),
+            ("bcs_nr", header.bcs_nr.is_some()),
+            ("bcs_eutra", header.bcs_eutra.is_some()),
+            (
+                "intra_band_en_dc_support",
+                header.intra_band_en_dc_support.is_some(),
+            ),
+        ] {
+            anyhow::ensure!(
+                present,
+                "combo header omits {label} (never observed; refusing to normalize to 0)"
+            );
+        }
         let mut sub_blocks = combo
             .sub_blocks
             .iter()
@@ -830,11 +804,7 @@ impl RawNrPayload {
             .collect::<anyhow::Result<Vec<_>>>()?;
         sub_blocks.sort_by_cached_key(|component| RawSubBlockKey::from(component));
         Ok(Self {
-            power_class: header.power_class,
-            bcs_nr: header.bcs_nr,
-            bcs_intra_endc: header.bcs_intra_endc,
-            bcs_eutra: header.bcs_eutra,
-            intra_band_en_dc_support: header.intra_band_en_dc_support,
+            header: *header,
             sub_blocks,
         })
     }
@@ -907,14 +877,35 @@ impl From<&RawSubBlock> for RawSubBlockKey {
 }
 
 /// Ordered payload identity with component order normalized away.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RawNrPayloadKey {
-    power_class: Option<i32>,
-    bcs_nr: Option<u32>,
-    bcs_intra_endc: Option<u32>,
-    bcs_eutra: Option<u32>,
-    intra_band_en_dc_support: Option<i32>,
+    header: ComboHeader,
     sub_blocks: Vec<RawSubBlockKey>,
+}
+
+impl Ord for RawNrPayloadKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Canonical source order predates the shared header: power class leads, unlike
+        // ComboHeader's wire-declaration order. Every equality field participates.
+        let key = |h: ComboHeader| {
+            (
+                h.power_class,
+                h.bcs_nr,
+                h.bcs_intra_endc,
+                h.bcs_eutra,
+                h.intra_band_en_dc_support,
+            )
+        };
+        key(self.header)
+            .cmp(&key(other.header))
+            .then_with(|| self.sub_blocks.cmp(&other.sub_blocks))
+    }
+}
+
+impl PartialOrd for RawNrPayloadKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl From<&RawNrPayload> for RawNrPayloadKey {
@@ -926,11 +917,7 @@ impl From<&RawNrPayload> for RawNrPayloadKey {
             .collect();
         sub_blocks.sort_unstable();
         Self {
-            power_class: payload.power_class,
-            bcs_nr: payload.bcs_nr,
-            bcs_intra_endc: payload.bcs_intra_endc,
-            bcs_eutra: payload.bcs_eutra,
-            intra_band_en_dc_support: payload.intra_band_en_dc_support,
+            header: payload.header,
             sub_blocks,
         }
     }
@@ -1126,11 +1113,11 @@ mod tests {
 
     fn payload(sub_blocks: Vec<RawSubBlock>) -> RawNrPayload {
         RawNrPayload {
-            power_class: Some(3),
-            bcs_nr: Some(1),
-            bcs_intra_endc: None,
-            bcs_eutra: None,
-            intra_band_en_dc_support: None,
+            header: ComboHeader {
+                power_class: Some(3),
+                bcs_nr: Some(1),
+                ..Default::default()
+            },
             sub_blocks,
         }
     }
@@ -1208,9 +1195,9 @@ mod tests {
         let [payload] = &payloads[..] else {
             panic!("one combo group with one combo yields one payload, got {payloads:?}")
         };
-        assert_eq!(payload.power_class, Some(3));
+        assert_eq!(payload.header.power_class, Some(3));
         assert_eq!(
-            payload.bcs_intra_endc, None,
+            payload.header.bcs_intra_endc, None,
             "genuinely absent, not defaulted"
         );
 
@@ -1677,6 +1664,58 @@ mod tests {
             RawNrPayloadKey::from(&first),
             RawNrPayloadKey::from(&second)
         );
+    }
+
+    #[test]
+    fn payload_order_prioritizes_power_class_over_proto_header_order() {
+        let a = RawNrPayload {
+            header: ComboHeader {
+                power_class: Some(0),
+                bcs_nr: Some(9),
+                ..Default::default()
+            },
+            sub_blocks: vec![],
+        };
+        let b = RawNrPayload {
+            header: ComboHeader {
+                power_class: Some(1),
+                bcs_nr: Some(0),
+                ..Default::default()
+            },
+            sub_blocks: vec![],
+        };
+        assert!(a.header > b.header);
+        assert!(RawNrPayloadKey::from(&a) < RawNrPayloadKey::from(&b));
+    }
+
+    #[test]
+    fn payload_order_includes_every_header_field_and_component_identity() {
+        let base = RawNrPayload {
+            header: ComboHeader::default(),
+            sub_blocks: vec![],
+        };
+        for change in [
+            |h: &mut ComboHeader| h.power_class = Some(0),
+            |h: &mut ComboHeader| h.bcs_nr = Some(0),
+            |h: &mut ComboHeader| h.bcs_intra_endc = Some(0),
+            |h: &mut ComboHeader| h.bcs_eutra = Some(0),
+            |h: &mut ComboHeader| h.intra_band_en_dc_support = Some(0),
+        ] {
+            let mut changed = base.clone();
+            change(&mut changed.header);
+            let (left, right) = (
+                RawNrPayloadKey::from(&base),
+                RawNrPayloadKey::from(&changed),
+            );
+            assert_ne!(left, right);
+            assert!(left < right);
+            assert_eq!(left.cmp(&right), left.partial_cmp(&right).unwrap());
+        }
+        let mut changed = base.clone();
+        changed.sub_blocks.push(nr_cc(78).into());
+        assert!(RawNrPayloadKey::from(&base) < RawNrPayloadKey::from(&changed));
+        let same = RawNrPayloadKey::from(&changed);
+        assert_eq!(same.cmp(&same), std::cmp::Ordering::Equal);
     }
 
     #[test]

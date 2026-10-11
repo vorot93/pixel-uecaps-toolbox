@@ -376,6 +376,9 @@ the drift that consolidation removed.
   already know the kind use `render_known_component` or the method directly. An LTE fallback
   band ≥10000 must remain LTE even though that raw value would mean NR in a carrier message.
 - **Fingerprint ↔ (family, tier).** `model::FINGERPRINTS` is the table; `fingerprint_info` (inverse), `fingerprint_for` (forward), `tier_fingerprints`, and the compiler's `modern_fingerprint` wrapper all derive from it.
+- **Combo header identity.** Reuse `proto::ComboHeader` in source and raw payloads, but preserve
+  `RawNrPayloadKey`'s explicit power-class-first comparator. Proto declaration order differs;
+  a derived payload-key `Ord` changes canonical output even though all fields are present.
 - **Per-tier eligibility and counts (16/14).** `model::tier_profile_count` +
   `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its
   16/14 from these. The shared report carrier-context validator uses the same anchor set
