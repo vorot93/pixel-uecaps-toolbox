@@ -9,14 +9,19 @@ use crate::{
     proto::{LteCaps, LteCombo, LteComponent},
     raw_nr::{BandLabel, SubBlockKind},
 };
-use std::fmt::Write;
+use std::fmt::{self, Display, Formatter};
 
-/// A Shannon class/MIMO value -> (carrier class index `A=1..F=6`, MIMO branches 2/4).
-/// `value == 0` -> `(None, 0)` (that direction disabled). An out-of-table nonzero base
-/// yields `(None, mimo)`; callers render that defensively as `[value]`.
-const fn lte_class(value: i32) -> (Option<i32>, i32) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LteClass {
+    Disabled,
+    Known { class: i32, mimo: i32 },
+    Unknown { raw: i32, mimo: i32 },
+}
+
+/// Preserve disabled directions and unknown bitfields separately from known class/MIMO pairs.
+const fn lte_class(value: i32) -> LteClass {
     if value == 0 {
-        return (None, 0);
+        return LteClass::Disabled;
     }
     let idx = match value & !1 {
         32768 => Some(1),
@@ -28,34 +33,39 @@ const fn lte_class(value: i32) -> (Option<i32>, i32) {
         _ => None,
     };
     let mimo = if value & 1 != 0 { 4 } else { 2 };
-    (idx, mimo)
+    match idx {
+        Some(class) => LteClass::Known { class, mimo },
+        None => LteClass::Unknown { raw: value, mimo },
+    }
 }
 
 /// This module is statically single-kind, so every band it prints is an E-UTRA band — including
 /// one at or above `NR_BAND_OFFSET`, which is an out-of-range E-UTRA band rather than an NR one.
-/// Going through the kind-known method keeps that true everywhere here; the inferring free
-/// The raw-band `render_component` helper would render such a band as NR.
+/// Going through the kind-known method keeps that true everywhere here; the raw-band
+/// `render_component` helper would render such a band as NR.
 fn eutra(band: i32) -> BandLabel {
     SubBlockKind::Lte.band_label(band)
 }
 
-/// True when a nonzero class value has no entry in the bandwidth-class table —
-/// it fell outside the known set and should render defensively.
-const fn out_of_table(value: i32, idx: Option<i32>) -> bool {
-    value != 0 && idx.is_none()
+impl LteClass {
+    fn class(self) -> Option<i32> {
+        match self {
+            Self::Known { class, .. } => Some(class),
+            _ => None,
+        }
+    }
 }
 
 /// One component as the house-style band+class label, e.g. `B1A↓`, `B5A`, `B1A/C`.
 /// An out-of-table DL value renders defensively as `B{band}[{value}]`.
 fn component_label(c: &LteComponent) -> String {
-    let ul = c.ul_bw_class_mimo.unwrap_or(0);
-    let (dl_idx, _) = lte_class(c.dl_bw_class_mimo);
-    if out_of_table(c.dl_bw_class_mimo, dl_idx) {
-        return format!("{}[{}]", eutra(c.band), c.dl_bw_class_mimo);
+    let dl = lte_class(c.dl_bw_class_mimo);
+    let ul = lte_class(c.ul_bw_class_mimo.unwrap_or(0));
+    if let LteClass::Unknown { raw, .. } = dl {
+        return format!("{}[{raw}]", eutra(c.band));
     }
-    let (ul_idx, _) = lte_class(ul);
-    if out_of_table(ul, ul_idx) {
-        return format!("{}{}/[{}]", eutra(c.band), bw_letter(dl_idx), ul);
+    if let LteClass::Unknown { raw, .. } = ul {
+        return format!("{}{}/[{raw}]", eutra(c.band), bw_letter(dl.class()));
     }
     // The kind is statically E-UTRA here, so the label comes from `SubBlockKind::Lte`, not from
     // the raw-band `render_component`, which *infers* the kind from the raw band. That
@@ -63,7 +73,7 @@ fn component_label(c: &LteComponent) -> String {
     // band 10078 rendered as `n78A↓` on the combo line while the `--full` per-CC line below
     // printed `B10078` — two contradictory labels for one component in one report. This module
     // exists to render foreign files defensively, so that is exactly its case.
-    render_known_component(SubBlockKind::Lte, c.band, dl_idx, ul_idx)
+    render_known_component(SubBlockKind::Lte, c.band, dl.class(), ul.class()).to_string()
 }
 
 /// A combo's components joined ` + `, e.g. `B1A↓ + B5A`.
@@ -78,9 +88,9 @@ fn combo_bands(combo: &LteCombo) -> String {
 
 fn direction_detail(value: i32) -> String {
     match lte_class(value) {
-        (None, 0) => "—".into(),
-        (None, _) => format!("[{value}]"),
-        (class, mimo) => format!("{} {mimo}x{mimo}", bw_letter(class)),
+        LteClass::Disabled => "—".into(),
+        LteClass::Unknown { raw, .. } => format!("[{raw}]"),
+        LteClass::Known { class, mimo } => format!("{} {mimo}x{mimo}", bw_letter(Some(class))),
     }
 }
 
@@ -121,31 +131,41 @@ pub(crate) fn config_block(id: u64) -> Vec<String> {
 }
 
 /// Print every LTE combo in the carrier house style (no trimming).
-pub(crate) fn render_lte_combos(caps: &LteCaps, detail: Detail) -> String {
-    let mut out = format!("LTE band combinations ({})\n", caps.combos.len());
-    for (i, combo) in caps.combos.iter().enumerate() {
-        let _ = writeln!(out, "  {:<6} {}", format!("g{}", i + 1), combo_bands(combo));
-        if detail.is_full() {
-            for c in &combo.components {
-                let _ = writeln!(
+pub(super) fn render_lte_combos(caps: &LteCaps, detail: Detail) -> LteCombosView<'_> {
+    LteCombosView { caps, detail }
+}
+
+pub(super) struct LteCombosView<'a> {
+    caps: &'a LteCaps,
+    detail: Detail,
+}
+impl Display for LteCombosView<'_> {
+    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(out, "LTE band combinations ({})", self.caps.combos.len())?;
+        for (i, combo) in self.caps.combos.iter().enumerate() {
+            writeln!(out, "  {:<6} {}", format!("g{}", i + 1), combo_bands(combo))?;
+            if self.detail.is_full() {
+                for c in &combo.components {
+                    writeln!(
+                        out,
+                        "       {:<5} {}  dl_bw_class_mimo={} ul_bw_class_mimo={}",
+                        eutra(c.band),
+                        cc_detail(c),
+                        c.dl_bw_class_mimo,
+                        Optional(c.ul_bw_class_mimo)
+                    )?;
+                }
+                writeln!(
                     out,
-                    "       {:<5} {}  dl_bw_class_mimo={} ul_bw_class_mimo={}",
-                    eutra(c.band),
-                    cc_detail(c),
-                    c.dl_bw_class_mimo,
-                    Optional(c.ul_bw_class_mimo)
-                );
+                    "       bcs={} unknown1={} unknown2={}",
+                    Optional(combo.bcs),
+                    Optional(combo.unknown1),
+                    Optional(combo.unknown2)
+                )?;
             }
-            let _ = writeln!(
-                out,
-                "       bcs={} unknown1={} unknown2={}",
-                Optional(combo.bcs),
-                Optional(combo.unknown1),
-                Optional(combo.unknown2)
-            );
         }
+        Ok(())
     }
-    out
 }
 
 #[cfg(test)]
@@ -201,12 +221,12 @@ mod tests {
 
     #[test]
     fn lte_class_decodes_class_and_mimo() {
-        assert_eq!(lte_class(32768), (Some(1), 2)); // A 2x2
-        assert_eq!(lte_class(32769), (Some(1), 4)); // A 4x4
-        assert_eq!(lte_class(16384), (Some(2), 2)); // B
-        assert_eq!(lte_class(1024), (Some(6), 2)); // F
-        assert_eq!(lte_class(0), (None, 0)); // disabled
-        assert_eq!(lte_class(999), (None, 4)); // out-of-table base; 999 is odd -> 4x4
+        assert_eq!(lte_class(32768), LteClass::Known { class: 1, mimo: 2 });
+        assert_eq!(lte_class(32769), LteClass::Known { class: 1, mimo: 4 });
+        assert_eq!(lte_class(16384), LteClass::Known { class: 2, mimo: 2 });
+        assert_eq!(lte_class(1024), LteClass::Known { class: 6, mimo: 2 });
+        assert_eq!(lte_class(0), LteClass::Disabled);
+        assert_eq!(lte_class(999), LteClass::Unknown { raw: 999, mimo: 4 });
     }
 
     #[test]
@@ -227,22 +247,20 @@ mod tests {
     /// module renders crafted/foreign files defensively, so the case is reachable.
     #[test]
     fn an_out_of_range_eutra_band_still_renders_as_eutra() {
-        let combo = LteCombo {
-            components: vec![comp(10_078, 32768, 0)],
-            bcs: Some(0),
-            unknown1: Some(0),
-            unknown2: Some(0),
+        let caps = LteCaps {
+            combos: vec![LteCombo {
+                components: vec![comp(10_001, 32768, 0)],
+                ..Default::default()
+            }],
+            ..Default::default()
         };
-
-        let label = combo_bands(&combo);
-
-        assert_eq!(label, "B10078A↓");
+        let text = render_lte_combos(&caps, Detail::Full).to_string();
+        assert!(text.contains("B10001A↓"), "{text}");
+        assert!(text.contains("B10001 DL A 2x2  UL —"), "{text}");
         assert!(
-            !label.contains('n'),
-            "an E-UTRA component must not read as NR"
+            !text.split_whitespace().any(|token| token.starts_with("n1")),
+            "{text}"
         );
-        // The `--full` per-CC line agrees, which is the contradiction that existed before.
-        assert!(format!("B{}", combo.components[0].band).starts_with("B10078"));
     }
 
     #[test]

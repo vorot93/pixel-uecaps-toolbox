@@ -1,7 +1,7 @@
 //! Typed capability set comparison; rendering and differences never determine success.
 use super::{
     Report,
-    combos::{render_key, render_shape},
+    combos::{KeyView, ShapeView},
     detail::{Common, Detail},
     identity::{CombinationKey, ShapeKey, project_combinations, shape},
 };
@@ -26,7 +26,7 @@ fn render_variants(
     variants: &BTreeSet<CombinationKey>,
 ) -> std::fmt::Result {
     for (i, variant) in variants.iter().enumerate() {
-        writeln!(out, "    {label}[{}]:\n{}", i + 1, render_key(variant))?;
+        writeln!(out, "    {label}[{}]:\n{}", i + 1, KeyView(variant))?;
     }
     Ok(())
 }
@@ -117,7 +117,7 @@ pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Re
         if !keys.is_empty() {
             writeln!(out, "\nonly in {label} ({}):", keys.len())?;
             for key in keys {
-                writeln!(out, "  {marker} {}", render_shape(key))?;
+                writeln!(out, "  {marker} {}", ShapeView(key))?;
                 if detail.is_full() {
                     render_variants(&mut out, label, &index[key])?;
                 }
@@ -131,14 +131,14 @@ pub fn compare(a: &Path, b: &Path, detail: Detail, common: Common) -> anyhow::Re
                 out,
                 "  {} {}",
                 if left[key] == right[key] { '=' } else { '~' },
-                render_shape(key)
+                ShapeView(key)
             )?;
         }
     }
     if detail.is_full() && !changed.is_empty() {
         writeln!(out, "\ncaps changed ({}):", changed.len())?;
         for key in changed {
-            writeln!(out, "  ~ {}", render_shape(key))?;
+            writeln!(out, "  ~ {}", ShapeView(key))?;
             // Whole typed variants also handle repeated component labels without guessing pairing.
             for (label, index) in [('A', &left), ('B', &right)] {
                 render_variants(&mut out, label, &index[key])?;

@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     collections::BTreeMap,
-    fmt::Write,
+    fmt::{self, Display, Formatter},
     path::{Path, PathBuf},
 };
 
@@ -67,17 +67,24 @@ impl Issue {
     }
 }
 pub(super) fn diagnostics<'a>(issues: impl IntoIterator<Item = &'a Issue>) -> String {
-    let mut out = String::new();
-    for issue in issues {
-        let paths = issue
-            .paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(out, "error: {paths} [{}]: {}", issue.kind, issue.message);
+    Diagnostics(issues.into_iter().collect()).to_string()
+}
+
+struct Diagnostics<'a>(Vec<&'a Issue>);
+impl Display for Diagnostics<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for issue in &self.0 {
+            f.write_str("error: ")?;
+            for (i, path) in issue.paths.iter().enumerate() {
+                if i != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{}", path.display())?;
+            }
+            writeln!(f, " [{}]: {}", issue.kind, issue.message)?;
+        }
+        Ok(())
     }
-    out
 }
 pub(super) fn legend_issues(path: &Path, map: &PlmnMap) -> Vec<Issue> {
     let mut names = BTreeMap::new();

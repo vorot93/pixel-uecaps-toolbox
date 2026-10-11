@@ -6,149 +6,252 @@ use super::{
 use crate::{
     formatting::Optional,
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
-    raw_nr::{SubBlockKind, bw_class_letter},
+    raw_nr::{Direction, SubBlockKind, bw_class_letter},
 };
-use std::fmt::Write;
+use std::fmt::{self, Display, Formatter};
 
-pub(crate) fn bw_letter(c: Option<i32>) -> String {
-    match c {
-        Some(0) | None => String::new(),
-        Some(n) => u8::try_from(n)
-            .ok()
-            .and_then(bw_class_letter)
-            .map_or_else(|| format!("({n})"), |letter| letter.to_string()),
+pub(super) struct BwLetter(Option<i32>);
+impl Display for BwLetter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(0) | None => Ok(()),
+            Some(n) => match u8::try_from(n).ok().and_then(bw_class_letter) {
+                Some(letter) => write!(f, "{letter}"),
+                None => write!(f, "({n})"),
+            },
+        }
     }
 }
-fn cc_class(dl: Option<i32>, ul: Option<i32>) -> String {
-    let (d, u) = (bw_letter(dl), bw_letter(ul));
-    match (d.is_empty(), u.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => format!("{d}↓"),
-        (true, false) => format!("{u}↑"),
-        (false, false) if d == u => d,
-        _ => format!("{d}/{u}"),
+pub(super) fn bw_letter(c: Option<i32>) -> BwLetter {
+    BwLetter(c)
+}
+
+struct ClassView {
+    dl: Option<i32>,
+    ul: Option<i32>,
+}
+impl Display for ClassView {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let (dl, ul) = (self.dl.filter(|n| *n != 0), self.ul.filter(|n| *n != 0));
+        let (d, u) = (BwLetter(dl), BwLetter(ul));
+        match (dl, ul) {
+            (None, None) => Ok(()),
+            (Some(_), None) => write!(f, "{d}↓"),
+            (None, Some(_)) => write!(f, "{u}↑"),
+            _ if dl == ul => write!(f, "{d}"),
+            _ => write!(f, "{d}/{u}"),
+        }
     }
 }
-pub(crate) fn render_component(band: i32, dl: Option<i32>, ul: Option<i32>) -> String {
+pub(super) struct ComponentView {
+    kind: SubBlockKind,
+    band: i32,
+    class: ClassView,
+}
+impl Display for ComponentView {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.kind.band_label(self.band), self.class)
+    }
+}
+pub(super) fn render_component(band: i32, dl: Option<i32>, ul: Option<i32>) -> ComponentView {
     let (kind, plain) = SubBlockKind::split_raw_band(band);
     render_known_component(kind, plain, dl, ul)
 }
-pub(crate) fn render_known_component(
+pub(super) fn render_known_component(
     kind: SubBlockKind,
     band: i32,
     dl: Option<i32>,
     ul: Option<i32>,
-) -> String {
-    format!("{}{}", kind.band_label(band), cc_class(dl, ul))
+) -> ComponentView {
+    ComponentView {
+        kind,
+        band,
+        class: ClassView { dl, ul },
+    }
 }
 
-pub(super) fn render_shape(key: &ShapeKey) -> String {
-    key.iter()
-        .map(|component| render_component(component.band, component.dl, component.ul))
-        .collect::<Vec<_>>()
-        .join(" + ")
+pub(super) struct ShapeView<'a>(pub &'a ShapeKey);
+impl Display for ShapeView<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for (i, c) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(" + ")?;
+            }
+            write!(f, "{}", render_component(c.band, c.dl, c.ul))?;
+        }
+        Ok(())
+    }
 }
-fn dl_record(r: &ShannonFeatureSetDlPerCcNr) -> String {
-    format!(
-        "max_scs={} max_mimo={} max_bw={} max_mod_order={} bw_90mhz_supported={}",
-        Optional(r.max_scs),
-        Optional(r.max_mimo),
-        Optional(r.max_bw),
-        Optional(r.max_mod_order),
-        Optional(r.bw_90mhz_supported)
-    )
+struct DlRecord<'a>(&'a ShannonFeatureSetDlPerCcNr);
+impl Display for DlRecord<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let r = self.0;
+        write!(
+            f,
+            "max_scs={} max_mimo={} max_bw={} max_mod_order={} bw_90mhz_supported={}",
+            Optional(r.max_scs),
+            Optional(r.max_mimo),
+            Optional(r.max_bw),
+            Optional(r.max_mod_order),
+            Optional(r.bw_90mhz_supported)
+        )
+    }
 }
-fn ul_record(r: &ShannonFeatureSetUlPerCcNr) -> String {
-    format!(
-        "max_scs={} max_mimo_cb={} max_bw={} max_mod_order={} bw_90mhz_supported={} max_mimo_non_cb={}",
-        Optional(r.max_scs),
-        Optional(r.max_mimo_cb),
-        Optional(r.max_bw),
-        Optional(r.max_mod_order),
-        Optional(r.bw_90mhz_supported),
-        Optional(r.max_mimo_non_cb)
-    )
+struct UlRecord<'a>(&'a ShannonFeatureSetUlPerCcNr);
+impl Display for UlRecord<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let r = self.0;
+        write!(
+            f,
+            "max_scs={} max_mimo_cb={} max_bw={} max_mod_order={} bw_90mhz_supported={} max_mimo_non_cb={}",
+            Optional(r.max_scs),
+            Optional(r.max_mimo_cb),
+            Optional(r.max_bw),
+            Optional(r.max_mod_order),
+            Optional(r.bw_90mhz_supported),
+            Optional(r.max_mimo_non_cb)
+        )
+    }
 }
-fn render_selector<T>(
-    out: &mut String,
-    direction: &str,
-    selector: &Selector<T>,
-    record: impl Fn(&T) -> String,
-) {
+fn write_selector<'a, T, V: Display>(
+    out: &mut Formatter<'_>,
+    direction: Direction,
+    selector: &'a Selector<T>,
+    record: impl Fn(&'a T) -> V,
+) -> fmt::Result {
     match selector {
         Selector::Resolved(records) => {
             for (i, r) in records.iter().enumerate() {
-                let _ = writeln!(out, "        {direction}[{}] {}", i + 1, record(r));
+                writeln!(out, "        {direction}[{}] {}", i + 1, record(r))?;
             }
         }
         Selector::Absent => {
-            let _ = writeln!(out, "        {direction}: absent");
+            writeln!(out, "        {direction}: absent")?;
         }
         Selector::Empty => {
-            let _ = writeln!(out, "        {direction}: present empty selector");
+            writeln!(out, "        {direction}: present empty selector")?;
         }
         Selector::Placeholder(n) => {
-            let _ = writeln!(out, "        {direction}: zero placeholder ({n} bytes)");
+            writeln!(out, "        {direction}: zero placeholder ({n} bytes)")?;
         }
         Selector::Eutra(raw) => {
-            let _ = writeln!(out, "        {direction}: E-UTRA raw selector {raw:?}");
+            writeln!(out, "        {direction}: E-UTRA raw selector {raw:?}")?;
         }
     }
+    Ok(())
 }
-pub(super) fn render_key(key: &CombinationKey) -> String {
-    let mut out = String::new();
-    match key.header {
-        None => out.push_str("      header=absent\n"),
-        Some(h) => {
-            let _ = writeln!(
+pub(super) struct KeyView<'a>(pub &'a CombinationKey);
+impl Display for KeyView<'_> {
+    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
+        let key = self.0;
+        match key.header {
+            None => out.write_str("      header=absent\n")?,
+            Some(h) => {
+                writeln!(
+                    out,
+                    "      header=present power_class={} bcs_nr={} bcs_intra_endc={} bcs_eutra={} intra_band_en_dc_support={}",
+                    Optional(h.power_class),
+                    Optional(h.bcs_nr),
+                    Optional(h.bcs_intra_endc),
+                    Optional(h.bcs_eutra),
+                    Optional(h.intra_band_en_dc_support)
+                )?;
+            }
+        }
+        writeln!(out, "      bitmask={}", Optional(key.bitmask))?;
+        for c in &key.components {
+            writeln!(
                 out,
-                "      header=present power_class={} bcs_nr={} bcs_intra_endc={} bcs_eutra={} intra_band_en_dc_support={}",
-                Optional(h.power_class),
-                Optional(h.bcs_nr),
-                Optional(h.bcs_intra_endc),
-                Optional(h.bcs_eutra),
-                Optional(h.intra_band_en_dc_support)
-            );
+                "      {} band={} dl_bw_class={} ul_bw_class={} dl_feature_index={} ul_feature_index={} srstxswitch={}",
+                render_component(c.band, c.dl_bw_class, c.ul_bw_class),
+                c.band,
+                Optional(c.dl_bw_class),
+                Optional(c.ul_bw_class),
+                Optional(c.dl_feature_index),
+                Optional(c.ul_feature_index),
+                Optional(c.srstxswitch)
+            )?;
+            write_selector(out, Direction::Dl, &c.dl, DlRecord)?;
+            write_selector(out, Direction::Ul, &c.ul, UlRecord)?;
         }
+        Ok(())
     }
-    let _ = writeln!(out, "      bitmask={}", Optional(key.bitmask));
-    for c in &key.components {
-        let _ = writeln!(
-            out,
-            "      {} band={} dl_bw_class={} ul_bw_class={} dl_feature_index={} ul_feature_index={} srstxswitch={}",
-            render_component(c.band, c.dl_bw_class, c.ul_bw_class),
-            c.band,
-            Optional(c.dl_bw_class),
-            Optional(c.ul_bw_class),
-            Optional(c.dl_feature_index),
-            Optional(c.ul_feature_index),
-            Optional(c.srstxswitch)
-        );
-        render_selector(&mut out, "DL", &c.dl, dl_record);
-        render_selector(&mut out, "UL", &c.ul, ul_record);
-    }
-    out
 }
-pub(super) fn render_combos(combos: &[LocatedCombination], detail: Detail) -> String {
-    let mut out = format!("Band combinations ({})\n", combos.len());
-    for c in combos {
-        let _ = writeln!(
-            out,
-            "  g{}.{} {}",
-            c.group,
-            c.index,
-            render_shape(&shape(&c.key))
-        );
-        if detail.is_full() {
-            out.push_str(&render_key(&c.key));
+pub(super) struct CombosView<'a> {
+    pub combos: &'a [LocatedCombination],
+    pub detail: Detail,
+}
+impl Display for CombosView<'_> {
+    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(out, "Band combinations ({})", self.combos.len())?;
+        for c in self.combos {
+            writeln!(
+                out,
+                "  g{}.{} {}",
+                c.group,
+                c.index,
+                ShapeView(&shape(&c.key))
+            )?;
+            if self.detail.is_full() {
+                write!(out, "{}", KeyView(&c.key))?;
+            }
         }
+        Ok(())
     }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_views_propagate_sink_errors() {
+        struct Closed;
+        impl fmt::Write for Closed {
+            fn write_str(&mut self, _: &str) -> fmt::Result {
+                Err(fmt::Error)
+            }
+        }
+        use fmt::Write;
+        let key = CombinationKey {
+            header: None,
+            bitmask: None,
+            components: vec![],
+        };
+        let shape = vec![super::super::identity::ShapeComponent {
+            band: 10078,
+            dl: Some(1),
+            ul: None,
+        }];
+        assert!(write!(Closed, "{}", ShapeView(&shape)).is_err());
+        assert!(write!(Closed, "{}", KeyView(&key)).is_err());
+        assert!(
+            write!(
+                Closed,
+                "{}",
+                CombosView {
+                    combos: &[],
+                    detail: Detail::Full
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            write!(
+                Closed,
+                "{}",
+                DlRecord(&ShannonFeatureSetDlPerCcNr::default())
+            )
+            .is_err()
+        );
+        assert!(
+            write!(
+                Closed,
+                "{}",
+                UlRecord(&ShannonFeatureSetUlPerCcNr::default())
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn bandwidth_classes_and_kind_known_bands() {
         for (class, label) in [
@@ -160,14 +263,38 @@ mod tests {
             (13, "M"),
             (27, "(27)"),
         ] {
-            assert_eq!(bw_letter(Some(class)), label);
+            assert_eq!(bw_letter(Some(class)).to_string(), label);
         }
-        assert_eq!(cc_class(Some(1), Some(2)), "A/B");
-        assert_eq!(cc_class(Some(1), None), "A↓");
-        assert_eq!(cc_class(None, Some(1)), "A↑");
-        assert_eq!(render_component(10078, Some(1), Some(1)), "n78A");
         assert_eq!(
-            render_known_component(SubBlockKind::Lte, 10078, None, None),
+            ClassView {
+                dl: Some(1),
+                ul: Some(2)
+            }
+            .to_string(),
+            "A/B"
+        );
+        assert_eq!(
+            ClassView {
+                dl: Some(1),
+                ul: None
+            }
+            .to_string(),
+            "A↓"
+        );
+        assert_eq!(
+            ClassView {
+                dl: None,
+                ul: Some(1)
+            }
+            .to_string(),
+            "A↑"
+        );
+        assert_eq!(
+            render_component(10078, Some(1), Some(1)).to_string(),
+            "n78A"
+        );
+        assert_eq!(
+            render_known_component(SubBlockKind::Lte, 10078, None, None).to_string(),
             "B10078"
         );
     }

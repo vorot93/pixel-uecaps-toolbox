@@ -1,7 +1,7 @@
 //! Single-file observation with contextual validation and useful partial output.
 use super::{
     Report,
-    combos::render_combos,
+    combos::CombosView,
     detail::Detail,
     identity::project_combinations,
     input::{FileEvidence, Observation, load_validated, read_optional_legend},
@@ -24,7 +24,7 @@ fn plmn_label(value: u64) -> String {
         |(mcc, mnc)| format!("{mcc}-{mnc}"),
     )
 }
-fn render_entry(out: &mut String, index: usize, c: &Carrier) {
+fn render_entry(out: &mut String, index: usize, c: &Carrier) -> std::fmt::Result {
     let plmns = c
         .plmns
         .iter()
@@ -41,7 +41,7 @@ fn render_entry(out: &mut String, index: usize, c: &Carrier) {
                 .unwrap_or_else(|| format!("MCC{mcc}"))
         })
         .collect();
-    let _ = writeln!(
+    writeln!(
         out,
         "  entry {}: {:?} index={} PLMNs ({}) [{plmns}] countries: {}",
         index + 1,
@@ -49,17 +49,18 @@ fn render_entry(out: &mut String, index: usize, c: &Carrier) {
         c.index,
         c.plmns.len(),
         countries.into_iter().collect::<Vec<_>>().join(", ")
-    );
+    )
 }
-fn render_legend(map: &PlmnMap) -> String {
-    let mut out = format!(
-        "PLMN -> carrier legend\nCarriers : {} (original entries)\n",
+fn render_legend(out: &mut String, map: &PlmnMap) -> std::fmt::Result {
+    writeln!(
+        out,
+        "PLMN -> carrier legend\nCarriers : {} (original entries)",
         map.carriers.len()
-    );
+    )?;
     for (i, c) in map.carriers.iter().enumerate() {
-        render_entry(&mut out, i, c);
+        render_entry(out, i, c)?;
     }
-    out
+    Ok(())
 }
 fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> anyhow::Result<(u64, usize)> {
     let mut nums = Vec::new();
@@ -76,7 +77,12 @@ fn carrier_signature(dir: &Path, carrier: &str, fallback: u64) -> anyhow::Result
     }
     Ok((nums.iter().fold(0, |a, &n| gcd(a, n)), nums.len()))
 }
-fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carrier: &str) {
+fn carrier_identity(
+    out: &mut String,
+    issues: &mut Vec<Issue>,
+    dir: &Path,
+    carrier: &str,
+) -> std::fmt::Result {
     match read_optional_legend(dir) {
         Err(error) => {
             issues.push(Issue::input(error));
@@ -109,10 +115,11 @@ fn carrier_identity(out: &mut String, issues: &mut Vec<Issue>, dir: &Path, carri
                 }
             }
             for (i, c) in matches {
-                render_entry(out, i, c);
+                render_entry(out, i, c)?;
             }
         }
     }
+    Ok(())
 }
 pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Report> {
     let base = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -133,7 +140,7 @@ pub fn inspect(path: &Path, detail: Detail) -> anyhow::Result<Report> {
             observation.issues
         }
         FileEvidence::Legend(observation) => {
-            render_legend_file(&mut out, &observation);
+            render_legend_file(&mut out, &observation)?;
             observation.issues
         }
     };
@@ -167,7 +174,7 @@ fn render_carrier_file(
         out,
         "Carrier UE-capability profile\nCarrier: {carrier}\nNumber: {number}"
     )?;
-    carrier_identity(out, &mut observation.issues, dir, carrier);
+    carrier_identity(out, &mut observation.issues, dir, carrier)?;
     for profile in matching_anchors(number) {
         writeln!(
             out,
@@ -204,7 +211,14 @@ fn render_carrier_file(
         if caps.combo_groups.is_empty() {
             out.push_str("Band combinations: none (reference stub)\n");
         } else if let Ok(combos) = project_combinations(caps) {
-            out.push_str(&render_combos(&combos, detail));
+            write!(
+                out,
+                "{}",
+                CombosView {
+                    combos: &combos,
+                    detail
+                }
+            )?;
         } else {
             out.push_str(
                 "Band combinations unavailable: invalid NR references (see diagnostics)\n",
@@ -231,14 +245,15 @@ fn render_lte_file(
             "In-file fingerprint: {}\nbitmask: {}",
             caps.fingerprint, caps.bitmask
         )?;
-        out.push_str(&super::lte::render_lte_combos(caps, detail));
+        write!(out, "{}", super::lte::render_lte_combos(caps, detail))?;
     }
     Ok(())
 }
 
-fn render_legend_file(out: &mut String, observation: &Observation<PlmnMap>) {
+fn render_legend_file(out: &mut String, observation: &Observation<PlmnMap>) -> std::fmt::Result {
     note_unavailable(out, observation);
     if let Some(map) = &observation.value {
-        out.push_str(&render_legend(map));
+        render_legend(out, map)?;
     }
+    Ok(())
 }
