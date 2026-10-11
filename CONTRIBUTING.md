@@ -468,7 +468,7 @@ Measured over the full opt-in corpus (1487 files, 80 MB, 3.46M sub-blocks) with 
 scanners. These numbers justify several fail-closed guards, and re-deriving them costs a corpus
 pass each — so they live here rather than in a commit message.
 
-**Nothing real violates any of these**, which is why `wire::scan` can enforce all of them:
+**Nothing real violates any of these**, which is why strict wire decoding can enforce all of them:
 
 | property | occurrences in the corpus |
 |---|---|

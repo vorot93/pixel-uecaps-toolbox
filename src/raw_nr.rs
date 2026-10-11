@@ -835,9 +835,8 @@ impl RawNrPayload {
 
 /// Full ordered form of one raw component. Resolved feature values win over
 /// selector bytes; selector-only values retain exact `Option<Vec<u8>>` presence.
-/// An empty `dl_features`/`ul_features` vec IS the "no feature set" identity (mirrors
-/// the old `dl_feature_set_present` bool: a resolved-but-all-absent wrapper is a
-/// one-element vec of all-`None` fields, distinct from a zero-element vec).
+/// An empty feature vector is the "no feature set" identity. A resolved-but-all-absent
+/// wrapper is a one-element vector of all-`None` fields, distinct from an empty vector.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RawSubBlockKey {
     kind: SubBlockKind,
@@ -854,26 +853,24 @@ pub(crate) struct RawSubBlockKey {
 }
 
 impl From<&RawSubBlock> for RawSubBlockKey {
-    fn from(cc: &RawSubBlock) -> Self {
+    fn from(component: &RawSubBlock) -> Self {
         Self {
-            kind: cc.kind(),
-            band: cc.band(),
-            dl_bw_class: cc.bw_class(Direction::Dl),
-            ul_bw_class: cc.bw_class(Direction::Ul),
+            kind: component.kind(),
+            band: component.band(),
+            dl_bw_class: component.bw_class(Direction::Dl),
+            ul_bw_class: component.bw_class(Direction::Ul),
             // Materialized, not raw: identity must reflect the value that will actually land
             // in the binary (an NR component derives its index), or a key built from source
             // disagrees with the same combo's key rebuilt after decoding the materialized
             // output.
-            dl_feature_index: cc.feature_index(Direction::Dl),
-            ul_feature_index: cc.feature_index(Direction::Ul),
-            // `PerCc` yields selector bytes only for a direction that did not resolve, so
-            // the old explicit "mask the selector once the feature set is present" step is
-            // now structural.
-            dl_cc_ids: cc.selector(Direction::Dl).map(<[u8]>::to_vec),
-            ul_cc_ids: cc.selector(Direction::Ul).map(<[u8]>::to_vec),
-            srs_tx_switch: cc.srs_tx_switch(),
-            dl_features: cc.dl_features().to_vec(),
-            ul_features: cc.ul_features().to_vec(),
+            dl_feature_index: component.feature_index(Direction::Dl),
+            ul_feature_index: component.feature_index(Direction::Ul),
+            // `PerCc` yields selector bytes only for a direction that did not resolve.
+            dl_cc_ids: component.selector(Direction::Dl).map(<[u8]>::to_vec),
+            ul_cc_ids: component.selector(Direction::Ul).map(<[u8]>::to_vec),
+            srs_tx_switch: component.srs_tx_switch(),
+            dl_features: component.dl_features().to_vec(),
+            ul_features: component.ul_features().to_vec(),
         }
     }
 }
