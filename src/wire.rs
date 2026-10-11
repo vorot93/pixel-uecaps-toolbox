@@ -5,7 +5,7 @@ use anyhow::{Context, ensure};
 
 /// Top-level protobuf message encoded by a capability or mapping file.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum RootMessage {
+enum RootMessage {
     UeCaps,
     LteCaps,
     PlmnMap,
@@ -58,6 +58,12 @@ impl ModeledMessage {
     }
 }
 
+impl std::fmt::Display for ModeledMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// The declared integer width of a varint field, as written in `src/proto.rs`. prost decodes
 /// a varint into the declared Rust type and re-encodes from it, so a wire value the type
 /// cannot hold comes back as a *different number* — the width is what makes that detectable.
@@ -87,7 +93,7 @@ impl IntWidth {
             // so the test is not a magnitude bound: re-truncate and re-widen, and require the
             // original bytes back. This accepts `-1` as `u64::MAX` while rejecting a bare
             // `0xFFFF_FFFF`, which prost would read as `-1` and re-emit sign-extended.
-            Self::I32 => (value as u32 as i32 as i64) as u64 == value,
+            Self::I32 => ((value as u32).cast_signed() as i64).cast_unsigned() == value,
             Self::U64 => true,
             // Any nonzero decodes to `true` and re-encodes as exactly 1.
             Self::Bool => value <= 1,
@@ -104,10 +110,10 @@ enum ModeledField {
 }
 
 impl ModeledField {
-    const fn wire_type(self) -> u64 {
+    const fn wire_type(self) -> WireType {
         match self {
-            Self::Varint(_) => 0,
-            Self::Bytes | Self::Message(_) => 2,
+            Self::Varint(_) => WireType::Varint,
+            Self::Bytes | Self::Message(_) => WireType::LengthDelimited,
         }
     }
 }
@@ -178,37 +184,90 @@ const fn repeated_field(message: ModeledMessage, field: u64) -> bool {
     )
 }
 
-/// Read one varint, also reporting whether it was encoded in more bytes than its value needs.
+#[derive(Debug, thiserror::Error)]
+enum VarintError {
+    #[error("truncated varint")]
+    Truncated,
+    #[error("varint overflows u64")]
+    Overflow,
+    #[error("varint too long")]
+    TooLong,
+    #[error("non-minimally encoded varint")]
+    NonMinimal,
+}
+
+/// Read one minimally encoded varint.
 /// prost always emits the minimal form, so an overlong encoding decodes to the right number but
 /// re-encodes to different bytes — indistinguishable from corruption at value level, and fatal
 /// to byte-identity.
-fn read_varint(bytes: &[u8], offset: &mut usize) -> anyhow::Result<(u64, bool)> {
+fn read_varint(bytes: &[u8], offset: &mut usize) -> Result<u64, VarintError> {
     let start = *offset;
     let mut shift = 0u32;
     let mut value = 0u64;
     loop {
-        let byte = *bytes.get(*offset).context("truncated varint")?;
+        let byte = *bytes.get(*offset).ok_or(VarintError::Truncated)?;
         *offset += 1;
-        ensure!(shift < 63 || byte & 0x7f <= 1, "varint overflows u64");
+        if shift >= 63 && byte & 0x7f > 1 {
+            return Err(VarintError::Overflow);
+        }
         value |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             let minimal = (u64::BITS - value.leading_zeros()).div_ceil(7).max(1) as usize;
-            return Ok((value, *offset - start > minimal));
+            if *offset - start > minimal {
+                return Err(VarintError::NonMinimal);
+            }
+            return Ok(value);
         }
         shift += 7;
-        ensure!(shift < 64, "varint too long");
+        if shift >= 64 {
+            return Err(VarintError::TooLong);
+        }
     }
 }
 
-const fn wire_name(wire_type: u64) -> &'static str {
-    match wire_type {
-        0 => "varint",
-        1 => "64-bit",
-        2 => "length-delimited",
-        3 => "start-group",
-        4 => "end-group",
-        5 => "32-bit",
-        _ => "invalid",
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum WireType {
+    Varint = 0,
+    Fixed64 = 1,
+    LengthDelimited = 2,
+    StartGroup = 3,
+    EndGroup = 4,
+    Fixed32 = 5,
+}
+
+impl TryFrom<u64> for WireType {
+    type Error = u64;
+
+    fn try_from(code: u64) -> Result<Self, Self::Error> {
+        match code {
+            0 => Ok(Self::Varint),
+            1 => Ok(Self::Fixed64),
+            2 => Ok(Self::LengthDelimited),
+            3 => Ok(Self::StartGroup),
+            4 => Ok(Self::EndGroup),
+            5 => Ok(Self::Fixed32),
+            other => Err(other),
+        }
+    }
+}
+
+impl From<WireType> for u64 {
+    fn from(wire: WireType) -> Self {
+        wire as Self
+    }
+}
+
+impl std::fmt::Display for WireType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Varint => "varint",
+            Self::Fixed64 => "64-bit",
+            Self::LengthDelimited => "length-delimited",
+            Self::StartGroup => "start-group",
+            Self::EndGroup => "end-group",
+            Self::Fixed32 => "32-bit",
+        })
     }
 }
 
@@ -222,25 +281,22 @@ fn scan_length_delimited(
     field_number: u64,
     modeled: ModeledField,
 ) -> anyhow::Result<()> {
-    let (len, overlong) = read_varint(bytes, offset).with_context(|| {
-        format!(
-            "reading the length of {} field #{field_number}",
-            message.name()
-        )
+    let len = read_varint(bytes, offset).map_err(|error| match error {
+        VarintError::NonMinimal => anyhow::anyhow!(
+            "{message} field #{field_number} has a non-minimally encoded length prefix"
+        ),
+        error => anyhow::Error::new(error).context(format!(
+            "reading the length of {message} field #{field_number}"
+        )),
     })?;
-    ensure!(
-        !overlong,
-        "{} field #{field_number} has a non-minimally encoded length prefix",
-        message.name(),
-    );
     let len = usize::try_from(len)
-        .with_context(|| format!("{} field #{field_number} is too large", message.name()))?;
+        .with_context(|| format!("{message} field #{field_number} is too large"))?;
     let end = offset
         .checked_add(len)
-        .with_context(|| format!("{} field #{field_number} length overflows", message.name()))?;
+        .with_context(|| format!("{message} field #{field_number} length overflows"))?;
     let payload = bytes
         .get(*offset..end)
-        .with_context(|| format!("truncated {} field #{field_number}", message.name()))?;
+        .with_context(|| format!("truncated {message} field #{field_number}"))?;
     *offset = end;
     if let ModeledField::Message(child) = modeled {
         scan(payload, child)?;
@@ -259,29 +315,26 @@ fn scan(bytes: &[u8], message: ModeledMessage) -> anyhow::Result<()> {
     let mut seen = std::collections::BTreeSet::<u64>::new();
     let mut last_field: Option<u64> = None;
     while offset < bytes.len() {
-        let (key, overlong) = read_varint(bytes, &mut offset)
-            .with_context(|| format!("reading a field key in {}", message.name()))?;
-        ensure!(
-            !overlong,
-            "{} has a non-minimally encoded field key",
-            message.name(),
-        );
+        let key = read_varint(bytes, &mut offset).map_err(|error| match error {
+            VarintError::NonMinimal => {
+                anyhow::anyhow!("{message} has a non-minimally encoded field key")
+            }
+            error => anyhow::Error::new(error).context(format!("reading a field key in {message}")),
+        })?;
         let field_number = key >> 3;
         let actual_wire = key & 7;
         let modeled = modeled_field(message, field_number).with_context(|| {
             format!(
-                "{} field #{field_number} is not modeled; cannot guarantee a \
-                 value-preserving round-trip",
-                message.name()
+                "{message} field #{field_number} is not modeled; cannot guarantee a \
+                 value-preserving round-trip"
             )
         })?;
 
         if let Some(previous) = last_field {
             ensure!(
                 field_number >= previous,
-                "{} field #{field_number} appears after field #{previous}; encoding emits fields \
-                 in ascending tag order, so this order cannot be reproduced",
-                message.name(),
+                "{message} field #{field_number} appears after field #{previous}; encoding emits fields \
+                 in ascending tag order, so this order cannot be reproduced"
             );
         }
         last_field = Some(field_number);
@@ -289,36 +342,36 @@ fn scan(bytes: &[u8], message: ModeledMessage) -> anyhow::Result<()> {
         if !repeated_field(message, field_number) {
             ensure!(
                 seen.insert(field_number),
-                "{} field #{field_number} appears more than once but is singular; decoding keeps \
-                 only the last value and discards the rest",
-                message.name(),
+                "{message} field #{field_number} appears more than once but is singular; decoding keeps \
+                 only the last value and discards the rest"
             );
         }
 
         let expected_wire = modeled.wire_type();
-        ensure!(
-            actual_wire == expected_wire,
-            "{} field #{field_number} expects {} (wire type {expected_wire}), found {} (wire \
-             type {actual_wire})",
-            message.name(),
-            wire_name(expected_wire),
-            wire_name(actual_wire),
-        );
+        // Interpret unsupported codes only after field identity, order, and duplication.
+        let actual_type = WireType::try_from(actual_wire);
+        if actual_type != Ok(expected_wire) {
+            let actual_name =
+                actual_type.map_or_else(|_| "invalid".into(), |wire| wire.to_string());
+            anyhow::bail!(
+                "{message} field #{field_number} expects {expected_wire} (wire type {}), found {actual_name} (wire type {actual_wire})",
+                u64::from(expected_wire)
+            );
+        }
 
         match modeled {
             ModeledField::Varint(width) => {
-                let (value, overlong) = read_varint(bytes, &mut offset)
-                    .with_context(|| format!("reading {} field #{field_number}", message.name()))?;
-                ensure!(
-                    !overlong,
-                    "{} field #{field_number} is not minimally encoded",
-                    message.name(),
-                );
+                let value = read_varint(bytes, &mut offset).map_err(|error| match error {
+                    VarintError::NonMinimal => {
+                        anyhow::anyhow!("{message} field #{field_number} is not minimally encoded")
+                    }
+                    error => anyhow::Error::new(error)
+                        .context(format!("reading {message} field #{field_number}")),
+                })?;
                 ensure!(
                     width.round_trips(value),
-                    "{} field #{field_number} value {value} does not fit its modeled {}; \
+                    "{message} field #{field_number} value {value} does not fit its modeled {}; \
                      decoding would alter it",
-                    message.name(),
                     width.name(),
                 );
             }
@@ -332,7 +385,7 @@ fn scan(bytes: &[u8], message: ModeledMessage) -> anyhow::Result<()> {
 
 /// Reject any field that the selected root schema cannot preserve exactly at value
 /// level, including unknown fields nested inside modeled messages.
-pub(crate) fn ensure_modeled(bytes: &[u8], root: RootMessage) -> anyhow::Result<()> {
+fn ensure_modeled(bytes: &[u8], root: RootMessage) -> anyhow::Result<()> {
     scan(bytes, root.modeled())
 }
 
@@ -363,6 +416,26 @@ pub(crate) fn decode_plmn_map(bytes: &[u8], label: &str) -> anyhow::Result<PlmnM
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_tokens_preserve_failure_phase_and_label() {
+        for (bytes, fragment) in [
+            (&[0x88, 0x00, 0x01][..], "non-minimally encoded field key"),
+            (&[0x08, 0x81, 0x00][..], "not minimally encoded"),
+            (
+                &[0x1a, 0x80, 0x00][..],
+                "non-minimally encoded length prefix",
+            ),
+            (&[0x08, 0x01, 0x0e][..], "appears more than once"),
+            (&[0x7e][..], "field #15 is not modeled"),
+        ] {
+            let error = format!("{:#}", decode_uecaps(bytes, "fixture").unwrap_err());
+            assert!(
+                error.contains(fragment) && error.contains("validating fixture"),
+                "{error}"
+            );
+        }
+    }
+
     /// The test fixtures hang off the production enum rather than a copy of it, so a message
     /// added to [`ModeledMessage`] is a compile error here until it is covered, instead of
     /// silently dropping out of the sweeps below.
@@ -519,7 +592,7 @@ mod tests {
             let modeled = modeled_field(message, field)
                 .unwrap_or_else(|| panic!("{message:?} field #{field} is not modeled"));
             assert_eq!(
-                modeled.wire_type(),
+                u64::from(modeled.wire_type()),
                 u64::from(wire),
                 "{message:?} field #{field} wire type"
             );

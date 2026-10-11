@@ -384,6 +384,11 @@ the drift that consolidation removed.
   are borrowed while reconstructing sub-blocks and moved into generated capabilities afterward.
   Palette Cartesian axes come only from observed records; exact additions are appended afterward,
   never fed back into axes. Reserve checked product-plus-addition capacity before enumerating rows.
+- **Strict-wire failure precedence.** Call the typed `decode_uecaps`/`decode_lte_caps`/
+  `decode_plmn_map` boundaries. The scanner validates minimal field keys, modeled field identity,
+  tag order and singular duplicates before interpreting wire types (including invalid codes 6/7).
+  Varint errors retain distinct key/value/length context; changing that order hides the more
+  useful first failure on multiply-invalid input.
 - **Per-tier eligibility and counts (16/14).** `model::tier_profile_count` +
   `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its
   16/14 from these. The shared report carrier-context validator uses the same anchor set

@@ -620,7 +620,7 @@ mod tests {
         let original = vec![0x08, 0x01, 0x18, 0x00];
         assert_eq!(LteCaps::decode(original.as_slice()).unwrap(), caps);
         assert_eq!(caps.encode_to_vec(), vec![0x08, 0x01]);
-        crate::wire::ensure_modeled(&original, crate::wire::RootMessage::LteCaps)
+        crate::wire::decode_lte_caps(&original, "explicit-zero fixture")
             .expect("the strict scanner cannot reject an explicit zero");
 
         let error = ingest_lte(vec![DecodedLteFile {
