@@ -1,7 +1,3 @@
-use std::{collections::BTreeSet, fs, path::Path, str};
-
-use anyhow::{Context, ensure};
-
 use super::{
     GeneratedFile,
     decompose::{validate_bitmask_carrier_basename, validate_profiled_carrier_basename},
@@ -18,6 +14,8 @@ use crate::{
     outcome::Outcome,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
 };
+use anyhow::{Context, ensure};
+use std::{collections::BTreeSet, fs, path::Path, str};
 
 const MAPPING_BASENAME: &str = "ap_plmn_mapping.binarypb";
 
@@ -213,11 +211,6 @@ fn verify_generated_files(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, io::Read};
-
-    use prost::Message;
-    use tempfile::{NamedTempFile, tempdir};
-
     use super::{finalize_files, generate_files, load_and_generate, load_sources, provision};
     use crate::{
         compiler::{
@@ -238,6 +231,9 @@ mod tests {
         proto::{LteComponent, PlmnMap, ShannonFeatureSetDlPerCcNr},
         wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
     };
+    use prost::Message;
+    use std::{collections::BTreeMap, fs, io::Read};
+    use tempfile::{NamedTempFile, tempdir};
     use zip::{CompressionMethod, DateTime, ZipArchive};
 
     const TARGET_ANCHOR: u64 = 66_813_533;

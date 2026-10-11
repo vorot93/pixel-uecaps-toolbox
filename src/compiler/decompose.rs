@@ -1,13 +1,3 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
-    fs,
-    path::{Path, PathBuf},
-};
-
-use anyhow::{Context, ensure};
-use prost::Message;
-
 use super::{
     lte::{DecodedLteFile, generate_lte_file, ingest_lte},
     nr::{LegacyNrFile, NrTarget, ProfiledNrFile, generate_nr_files, ingest_nr},
@@ -25,6 +15,14 @@ use crate::{
     outcome::Outcome,
     proto::PlmnMap,
     wire::{decode_lte_caps, decode_plmn_map, decode_uecaps},
+};
+use anyhow::{Context, ensure};
+use prost::Message;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -580,11 +578,6 @@ fn rebuild_mapping(sources: &ValidatedSources) -> anyhow::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
-
-    use prost::Message;
-    use tempfile::{NamedTempFile, tempdir};
-
     use super::{decode_documents, decompose};
     use crate::{
         compiler::{
@@ -602,6 +595,9 @@ mod tests {
             ShannonFeatureSetUlPerCcNr,
         },
     };
+    use prost::Message;
+    use std::{collections::BTreeMap, fs};
+    use tempfile::{NamedTempFile, tempdir};
 
     fn profile_name(carrier: &str, signature: u64, anchor: u64) -> String {
         format!("{carrier}_{}.binarypb", signature * anchor)

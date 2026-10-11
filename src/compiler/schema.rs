@@ -883,14 +883,12 @@ fn parse_decimal_key(value: &str, description: &str) -> anyhow::Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
+    use super::{LteSourceCombo, parse_sources, to_kdl};
     use crate::{
         compiler::{selection::Sku, source_from_kdl},
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
     };
-
-    use super::{LteSourceCombo, parse_sources, to_kdl};
+    use std::collections::BTreeSet;
 
     /// Join an NR body and an LTE body into one source document. The constants and helpers below
     /// are *bodies*, not documents: a merged document carries exactly one `version` marker, so

@@ -1,14 +1,12 @@
+use crate::proto::{
+    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap, SubBlock,
+    UeCaps,
+};
+use prost::Message;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
-};
-
-use prost::Message;
-
-use crate::proto::{
-    Carrier, Combo, ComboGroup, ComboHeader, LteCaps, LteCombo, LteComponent, PlmnMap, SubBlock,
-    UeCaps,
 };
 
 pub(crate) const REGISTERED_ANCHOR: u64 = 66_813_533;

@@ -1,8 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use anyhow::{Context, bail, ensure};
-use prost::Message;
-
 use super::{
     GeneratedFile,
     schema::{LteDocument, LteFileSource, LteSourceCombo, ValidatedLte, ValidatedLteCombo},
@@ -13,6 +8,9 @@ use crate::{
     proto::{LteCaps, LteCombo, LteComponent},
     wire::decode_lte_caps,
 };
+use anyhow::{Context, bail, ensure};
+use prost::Message;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// An LTE combo's identity: everything but its `selection`. Field order is load-bearing — the
 /// derived `Ord` drives `topological_order`'s `BTreeSet::pop_first`, which fixes the source
@@ -348,10 +346,6 @@ fn topological_order(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use prost::Message;
-
     use super::{DecodedLteFile, RawLteCombo, generate_lte_file, ingest_lte};
     use crate::{
         compiler::{
@@ -364,6 +358,8 @@ mod tests {
         model::lte_model_codes,
         proto::{LteCaps, LteCombo, LteComponent},
     };
+    use prost::Message;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn component(band: i32) -> LteComponent {
         LteComponent {

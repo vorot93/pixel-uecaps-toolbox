@@ -1,12 +1,10 @@
 //! Crate-level KDL toolkit: strict `NodeReader` combinator + writer helpers,
 //! shared by the compiler's (de)serializers.
 
-use std::collections::BTreeSet;
-
+use crate::compiler::kdl_keys::{carrier, plmn as plmn_keys};
 use anyhow::{Result, anyhow, bail};
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
-
-use crate::compiler::kdl_keys::{carrier, plmn as plmn_keys};
+use std::collections::BTreeSet;
 
 // ---- writer helpers ----
 /// Generic over the integer width so call sites pass their natural type (`i32`/`u32`/`u64`)

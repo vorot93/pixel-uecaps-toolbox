@@ -363,6 +363,10 @@ pub(crate) fn decode_plmn_map(bytes: &[u8], label: &str) -> anyhow::Result<PlmnM
 
 #[cfg(test)]
 mod tests {
+    /// The test fixtures hang off the production enum rather than a copy of it, so a message
+    /// added to [`ModeledMessage`] is a compile error here until it is covered, instead of
+    /// silently dropping out of the sweeps below.
+    use super::ModeledMessage as TestMessage;
     use super::{
         ModeledField, RootMessage, decode_lte_caps, decode_plmn_map, decode_uecaps, ensure_modeled,
         modeled_field,
@@ -372,11 +376,6 @@ mod tests {
         ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock, UeCaps,
     };
     use prost::Message;
-
-    /// The test fixtures hang off the production enum rather than a copy of it, so a message
-    /// added to [`ModeledMessage`] is a compile error here until it is covered, instead of
-    /// silently dropping out of the sweeps below.
-    use super::ModeledMessage as TestMessage;
 
     impl TestMessage {
         fn valid_bytes(self) -> Vec<u8> {

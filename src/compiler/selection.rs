@@ -1,9 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
-
+use crate::model::PHONE_MODELS;
 use anyhow::{Context, Result, bail, ensure};
 use compact_str::CompactString;
-
-use crate::model::PHONE_MODELS;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Sku {
@@ -500,9 +498,8 @@ fn parse_shortest_decimal(token: &str, decimal: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
     use super::{CompactString, LteDomain, LteRelation, NrDomain, NrRelation, SelectionRect, Sku};
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn rect(carriers: Option<&[&str]>, skus: Option<&[&str]>) -> SelectionRect {
         SelectionRect {

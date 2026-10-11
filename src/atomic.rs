@@ -1,9 +1,8 @@
+use anyhow::{Context, Result};
 use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-
-use anyhow::{Context, Result};
 use tempfile::NamedTempFile;
 
 /// The mode `File::create` yields here, i.e. `0o666 & !umask` — what `fs::write` would have
@@ -151,11 +150,9 @@ fn write_sibling_atomic(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use anyhow::bail;
-
     use super::{prepare_sibling_atomic, write_bytes_atomic, write_sibling_atomic};
+    use anyhow::bail;
+    use std::fs;
 
     #[test]
     fn preparation_does_not_replace_output_until_explicit_persist() {

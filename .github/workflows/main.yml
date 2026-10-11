@@ -16,7 +16,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - run: cargo fmt --all --check -- --config=imports_granularity=Crate
+      - run: cargo fmt-ci --check
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack

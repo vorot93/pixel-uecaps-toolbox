@@ -66,11 +66,16 @@ compiled rows.
 
 CI (`.github/workflows/main.yml`, on PR and push to `master`) runs, in order:
 
-1. `cargo fmt --all --check -- --config=imports_granularity=Crate` — **non-default fmt config** (imports grouped and alphabetized per crate). Match it locally or the gate fails; plain `cargo fmt` does **not** match.
+1. `cargo fmt-ci --check` — the alias in `.cargo/config.toml` groups and alphabetizes imports per crate in one contiguous group. Format locally with `cargo +stable fmt-ci`; plain `cargo fmt` does **not** match.
 2. `cargo hack clippy --workspace --each-feature -- -D warnings` — needs `cargo-hack`; note it is **not** `--all-targets`. (With no `[features]` table, `--each-feature` is one pass, so `cargo clippy --workspace -- -D warnings` is an equivalent local proxy.)
 3. `cargo hack test --workspace --each-feature`.
 
 Also run `cargo run -- self-test` (subcommand is `self-test`): data-independent checks (factorizer, fingerprint→tier, a protobuf decode) that print `ALL TESTS PASSED` and return non-zero on failure.
+
+For editor rustfmt integration, pass the extra argument
+`--config=imports_granularity=Crate,group_imports=One`. Stable rustfmt honors these CLI options;
+putting them in `rustfmt.toml` instead would leave them ignored as unstable settings. The project
+Cargo config contains only the alias and inherits the system-wide Cargo target directory.
 
 **Tests are hermetic by default** — fixtures are built in-code or under a temp dir, and
 `pixel-bands` is compile-time data, so real codes like `GUL82` work with no external

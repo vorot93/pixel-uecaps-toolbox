@@ -1,7 +1,3 @@
-use std::collections::BTreeSet;
-
-use anyhow::{Context, ensure};
-
 use crate::{
     compiler::feature_palette::FeaturePalette,
     proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, SubBlock as ProtoSubBlock},
@@ -10,6 +6,8 @@ use crate::{
         RawSubBlock, SubBlockKind, cc_count,
     },
 };
+use anyhow::{Context, ensure};
+use std::collections::BTreeSet;
 
 /// One sub-block as the KDL source spells it: proto field 6/7 as 1-based *references* into
 /// the source document's global feature catalogs rather than resolved values, and no raw

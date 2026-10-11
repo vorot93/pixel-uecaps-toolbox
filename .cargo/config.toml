@@ -1,0 +1,2 @@
+[alias]
+fmt-ci = "fmt --all -- --config=imports_granularity=Crate,group_imports=One"
