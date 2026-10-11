@@ -67,10 +67,37 @@ compiled rows.
 CI (`.github/workflows/main.yml`, on PR and push to `master`) runs, in order:
 
 1. `cargo fmt-ci --check` — the alias in `.cargo/config.toml` groups and alphabetizes imports per crate in one contiguous group. Format locally with `cargo +stable fmt-ci`; plain `cargo fmt` does **not** match.
-2. `cargo hack clippy --workspace --each-feature -- -D warnings` — needs `cargo-hack`; note it is **not** `--all-targets`. (With no `[features]` table, `--each-feature` is one pass, so `cargo clippy --workspace -- -D warnings` is an equivalent local proxy.)
-3. `cargo hack test --workspace --each-feature`.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — includes unit and integration tests.
+3. `cargo test --workspace`.
+4. `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --document-private-items`.
+5. `cargo run -- self-test` — data-independent checks print `ALL TESTS PASSED` and return nonzero on failure.
 
-Also run `cargo run -- self-test` (subcommand is `self-test`): data-independent checks (factorizer, fingerprint→tier, a protobuf decode) that print `ALL TESTS PASSED` and return non-zero on failure.
+There is no feature matrix or `cargo-hack` dependency. Manifest lints forbid unsafe code and
+check unreachable public items, informative empty assertions, formatting allocations, needless
+ownership, borrowed options, inline format arguments, and unnecessary wrappers. Use focused
+`expect(..., reason = "...")` only for a genuine intentional exception, never a blanket allow.
+CI follows supported moving action majors (`checkout@v7`, `rust-cache@v2`) and stable Rust;
+these refs are not immutable. Checkout's Node 24 runtime requires Actions runner 2.327.1 or
+newer (2.329.0 for authenticated Git in Docker actions); GitHub's hosted Ubuntu runner meets it.
+
+Locally, refresh dependencies once with beta Cargo, then keep that lock for the task:
+
+```sh
+rustup update beta
+rustup run beta cargo update
+export TMPDIR="$HOME/.superpowers/pixel-uecaps-toolbox/runtime"
+mkdir -p "$TMPDIR"
+cargo +stable fmt-ci --check
+cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+cargo +stable test --locked --workspace
+RUSTDOCFLAGS='-D warnings' cargo +stable doc --locked --workspace --no-deps --document-private-items
+cargo +stable run --locked -- self-test
+```
+
+`Cargo.lock` stays uncommitted. Beta honors the configured minimum crate publication age;
+stable compilation with `--locked` keeps verification on the resolved task snapshot. CI creates
+its runtime under `$HOME/.superpowers/pixel-uecaps-toolbox/ci-runtime` and leaves corpus variables
+unset. All local builds inherit the single system-wide Cargo target; do not override it.
 
 For editor rustfmt integration, pass the extra argument
 `--config=imports_granularity=Crate,group_imports=One`. Stable rustfmt honors these CLI options;

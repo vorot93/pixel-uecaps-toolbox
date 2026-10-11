@@ -6,19 +6,28 @@ on:
 
 name: CI
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@main
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare hermetic runtime
+        run: |
+          runtime="$HOME/.superpowers/pixel-uecaps-toolbox/ci-runtime"
+          mkdir -p "$runtime"
+          echo "TMPDIR=$runtime" >> "$GITHUB_ENV"
       - run: cargo fmt-ci --check
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hack
-      - run: cargo hack clippy --workspace --each-feature -- -D warnings
-      - run: cargo hack test --workspace --each-feature
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - run: cargo run -- self-test
