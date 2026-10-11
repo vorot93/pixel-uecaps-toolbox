@@ -379,6 +379,11 @@ the drift that consolidation removed.
 - **Combo header identity.** Reuse `proto::ComboHeader` in source and raw payloads, but preserve
   `RawNrPayloadKey`'s explicit power-class-first comparator. Proto declaration order differs;
   a derived payload-key `Ord` changes canonical output even though all fields are present.
+- **Feature-catalog validation order.** `LocalFeaturePlan` checks DL absence, UL absence,
+  DL size, then UL size. A missing UL record must beat simultaneous DL overflow. Its vectors
+  are borrowed while reconstructing sub-blocks and moved into generated capabilities afterward.
+  Palette Cartesian axes come only from observed records; exact additions are appended afterward,
+  never fed back into axes. Reserve checked product-plus-addition capacity before enumerating rows.
 - **Per-tier eligibility and counts (16/14).** `model::tier_profile_count` +
   `MAIN_ONLY_ANCHORS` (the Alt tier lacks anchors `2912407`/`3539`); `check` derives its
   16/14 from these. The shared report carrier-context validator uses the same anchor set

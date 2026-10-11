@@ -23,6 +23,7 @@
 //! single-bit value here, because index 0 is the most significant bit. Zero is `""`. See
 //! [`tests::the_empty_set_and_set_zero_stay_distinct`].
 
+use crate::formatting::Separated;
 use anyhow::{Context, Result, ensure};
 
 /// Keeps the value a bare KDL identifier — see the module doc.
@@ -34,19 +35,16 @@ pub(crate) fn format_bcs(bits: u32) -> String {
     if bits == 0 {
         return String::new();
     }
-    let mut out = String::with_capacity(8);
-    out.push(PREFIX);
-    let mut first = true;
-    for index in 0..32u32 {
-        if bits & (1u32 << (31 - index)) != 0 {
-            if !first {
-                out.push(',');
-            }
-            first = false;
-            out.push_str(&index.to_string());
+    let indices: Vec<_> = (0..32u32)
+        .filter(|index| bits & (1u32 << (31 - index)) != 0)
+        .collect();
+    format!(
+        "{PREFIX}{}",
+        Separated {
+            values: &indices,
+            separator: ","
         }
-    }
-    out
+    )
 }
 
 /// The inverse of [`format_bcs`]. `label` names the property in diagnostics — a descriptive

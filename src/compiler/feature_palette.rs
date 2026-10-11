@@ -1,4 +1,7 @@
-use crate::proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps};
+use crate::{
+    proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+    raw_nr::Direction,
+};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 
@@ -86,8 +89,8 @@ impl DlFeatureDomains {
         self,
         additions: &[ShannonFeatureSetDlPerCcNr],
     ) -> Result<Vec<ShannonFeatureSetDlPerCcNr>> {
-        let row_count = checked_row_count(
-            "DL",
+        let cardinality = checked_cardinality(
+            Direction::Dl,
             &[
                 self.max_scs.len(),
                 self.max_mimo.len(),
@@ -95,32 +98,32 @@ impl DlFeatureDomains {
                 self.max_mod_order.len(),
                 self.bw_90mhz_supported.len(),
             ],
-            additions.len(),
         )?;
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(row_count)
-            .context("DL feature palette allocation failed")?;
-        for max_scs in self.max_scs {
-            for max_mimo in &self.max_mimo {
-                for max_bw in &self.max_bw {
-                    for max_mod_order in &self.max_mod_order {
-                        for bw_90mhz_supported in &self.bw_90mhz_supported {
-                            rows.push(ShannonFeatureSetDlPerCcNr {
+        let Self {
+            max_scs,
+            max_mimo,
+            max_bw,
+            max_mod_order,
+            bw_90mhz_supported,
+        } = &self;
+        let rows = max_scs.iter().flat_map(|&max_scs| {
+            max_mimo.iter().flat_map(move |&max_mimo| {
+                max_bw.iter().flat_map(move |&max_bw| {
+                    max_mod_order.iter().flat_map(move |&max_mod_order| {
+                        bw_90mhz_supported.iter().map(move |&bw_90mhz_supported| {
+                            ShannonFeatureSetDlPerCcNr {
                                 max_scs,
-                                max_mimo: *max_mimo,
-                                max_bw: *max_bw,
-                                max_mod_order: *max_mod_order,
-                                bw_90mhz_supported: *bw_90mhz_supported,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        rows.extend_from_slice(additions);
-        rows.sort_unstable();
-        rows.dedup();
-        Ok(rows)
+                                max_mimo,
+                                max_bw,
+                                max_mod_order,
+                                bw_90mhz_supported,
+                            }
+                        })
+                    })
+                })
+            })
+        });
+        finish_rows(Direction::Dl, cardinality, rows, additions)
     }
 }
 
@@ -129,8 +132,8 @@ impl UlFeatureDomains {
         self,
         additions: &[ShannonFeatureSetUlPerCcNr],
     ) -> Result<Vec<ShannonFeatureSetUlPerCcNr>> {
-        let row_count = checked_row_count(
-            "UL",
+        let cardinality = checked_cardinality(
+            Direction::Ul,
             &[
                 self.max_scs.len(),
                 self.max_mimo_cb.len(),
@@ -139,39 +142,42 @@ impl UlFeatureDomains {
                 self.bw_90mhz_supported.len(),
                 self.max_mimo_non_cb.len(),
             ],
-            additions.len(),
         )?;
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(row_count)
-            .context("UL feature palette allocation failed")?;
-        for max_scs in self.max_scs {
-            for max_mimo_cb in &self.max_mimo_cb {
-                for max_bw in &self.max_bw {
-                    for max_mod_order in &self.max_mod_order {
-                        for bw_90mhz_supported in &self.bw_90mhz_supported {
-                            for max_mimo_non_cb in &self.max_mimo_non_cb {
-                                rows.push(ShannonFeatureSetUlPerCcNr {
-                                    max_scs,
-                                    max_mimo_cb: *max_mimo_cb,
-                                    max_bw: *max_bw,
-                                    max_mod_order: *max_mod_order,
-                                    bw_90mhz_supported: *bw_90mhz_supported,
-                                    max_mimo_non_cb: *max_mimo_non_cb,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        rows.extend_from_slice(additions);
-        rows.sort_unstable();
-        rows.dedup();
-        Ok(rows)
+        let Self {
+            max_scs,
+            max_mimo_cb,
+            max_bw,
+            max_mod_order,
+            bw_90mhz_supported,
+            max_mimo_non_cb,
+        } = &self;
+        let rows = max_scs.iter().flat_map(|&max_scs| {
+            max_mimo_cb.iter().flat_map(move |&max_mimo_cb| {
+                max_bw.iter().flat_map(move |&max_bw| {
+                    max_mod_order.iter().flat_map(move |&max_mod_order| {
+                        bw_90mhz_supported
+                            .iter()
+                            .flat_map(move |&bw_90mhz_supported| {
+                                max_mimo_non_cb.iter().map(move |&max_mimo_non_cb| {
+                                    ShannonFeatureSetUlPerCcNr {
+                                        max_scs,
+                                        max_mimo_cb,
+                                        max_bw,
+                                        max_mod_order,
+                                        bw_90mhz_supported,
+                                        max_mimo_non_cb,
+                                    }
+                                })
+                            })
+                    })
+                })
+            })
+        });
+        finish_rows(Direction::Ul, cardinality, rows, additions)
     }
 }
 
-fn checked_cardinality(direction: &str, lengths: &[usize]) -> Result<usize> {
+fn checked_cardinality(direction: Direction, lengths: &[usize]) -> Result<usize> {
     lengths.iter().try_fold(1usize, |product, &length| {
         product
             .checked_mul(length)
@@ -179,18 +185,37 @@ fn checked_cardinality(direction: &str, lengths: &[usize]) -> Result<usize> {
     })
 }
 
-fn checked_row_count(direction: &str, lengths: &[usize], additions: usize) -> Result<usize> {
-    checked_cardinality(direction, lengths)?
+fn checked_row_count(direction: Direction, cardinality: usize, additions: usize) -> Result<usize> {
+    cardinality
         .checked_add(additions)
         .with_context(|| format!("{direction} feature row count overflow after additions"))
 }
 
+fn finish_rows<T: Ord + Clone>(
+    direction: Direction,
+    cardinality: usize,
+    rows: impl IntoIterator<Item = T>,
+    additions: &[T],
+) -> Result<Vec<T>> {
+    let count = checked_row_count(direction, cardinality, additions.len())?;
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(count)
+        .with_context(|| format!("{direction} feature palette allocation failed"))?;
+    result.extend(rows);
+    result.extend_from_slice(additions);
+    result.sort_unstable();
+    result.dedup();
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FeaturePalette, ObservedFeatureDomains, checked_row_count};
+    use super::{FeaturePalette, ObservedFeatureDomains, checked_cardinality, checked_row_count};
     use crate::{
         compiler::additional_features::{ADDITIONAL_DL_FEATURES, ADDITIONAL_UL_FEATURES},
         proto::{ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr, UeCaps},
+        raw_nr::Direction,
     };
 
     #[test]
@@ -424,14 +449,14 @@ mod tests {
 
     #[test]
     fn cardinality_and_addition_count_overflow_before_reservation() {
-        let cardinality = checked_row_count("DL", &[usize::MAX, 2], 0).unwrap_err();
+        let cardinality = checked_cardinality(Direction::Dl, &[usize::MAX, 2]).unwrap_err();
         assert!(
             cardinality
                 .to_string()
                 .contains("DL feature Cartesian-product cardinality overflow")
         );
 
-        let additions = checked_row_count("UL", &[1], usize::MAX).unwrap_err();
+        let additions = checked_row_count(Direction::Ul, 1, usize::MAX).unwrap_err();
         assert!(
             additions
                 .to_string()

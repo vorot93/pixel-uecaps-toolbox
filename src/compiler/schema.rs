@@ -1,7 +1,7 @@
 use super::{
     decimal_key_entries,
     feature_palette::FeaturePalette,
-    features::NrSourceSubBlock,
+    features::SourceSubBlock,
     selection::{
         CarrierId, LteDomain, LteRelation, NrDomain, NrRelation, SelectionRect, Sku, SkuId,
     },
@@ -56,7 +56,7 @@ pub(crate) struct CarrierSource {
 pub(crate) struct NrSourceCombo {
     pub(crate) selection: Option<Vec<SelectionRect>>,
     pub(crate) header: ComboHeader,
-    pub(crate) sub_blocks: Vec<NrSourceSubBlock>,
+    pub(crate) sub_blocks: Vec<SourceSubBlock>,
 }
 
 /// One source document: the NR and LTE halves it carries.
@@ -83,7 +83,7 @@ pub(crate) struct NrDocument {
     pub(crate) carriers: BTreeMap<String, CarrierSource>,
     pub(crate) dl_features: Vec<ShannonFeatureSetDlPerCcNr>,
     pub(crate) ul_features: Vec<ShannonFeatureSetUlPerCcNr>,
-    pub(crate) combo: Vec<NrSourceCombo>,
+    pub(crate) combos: Vec<NrSourceCombo>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,7 +105,7 @@ pub(crate) struct LteSourceCombo {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LteDocument {
     pub(crate) files: BTreeMap<u64, LteFileSource>,
-    pub(crate) combo: Vec<LteSourceCombo>,
+    pub(crate) combos: Vec<LteSourceCombo>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +115,7 @@ pub(crate) struct ValidatedNr {
     pub(crate) carriers: BTreeMap<String, ValidatedCarrier>,
     pub(crate) domain: NrDomain,
     pub(crate) palette: FeaturePalette,
-    pub(crate) combo: Vec<ValidatedNrCombo>,
+    pub(crate) combos: Vec<ValidatedNrCombo>,
     pub(crate) selection_index: NrSelectionIndex,
 }
 
@@ -175,10 +175,10 @@ impl ValidatedNr {
         }
         self.palette = FeaturePalette::from_rows(dl, ul).canonicalized();
         self.selection_index = NrSelectionIndex::build(&combo);
-        self.combo = combo;
+        self.combos = combo;
         self.source.dl_features = self.palette.dl.clone();
         self.source.ul_features = self.palette.ul.clone();
-        self.source.combo = nr_source_combos(&self.combo, &self.domain, &self.palette)
+        self.source.combos = nr_source_combos(&self.combos, &self.domain, &self.palette)
             .expect("c surgery must produce serializable source combos");
     }
 }
@@ -227,7 +227,7 @@ pub(crate) struct ValidatedLte {
     pub(crate) source: LteDocument,
     pub(crate) files: BTreeMap<u64, LteFileSource>,
     pub(crate) domain: LteDomain,
-    pub(crate) combo: Vec<ValidatedLteCombo>,
+    pub(crate) combos: Vec<ValidatedLteCombo>,
 }
 
 #[derive(Clone, Debug)]
@@ -275,11 +275,11 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
     validate_mapping_projection(&carriers)?;
     let nr_domain = build_nr_domain(&nr, &carriers);
     let input_palette = FeaturePalette::from_rows(nr.dl_features.clone(), nr.ul_features.clone());
-    let nr_combo = validate_nr_combos(&nr.combo, &nr_domain, &input_palette)?;
+    let nr_combo = validate_nr_combos(&nr.combos, &nr_domain, &input_palette)?;
     let selection_index = NrSelectionIndex::build(&nr_combo);
     let palette = input_palette.canonicalized();
     let (lte_files, lte_domain) = validate_lte_files(&lte)?;
-    let lte_combo = validate_lte_combos(&lte.combo, &lte_domain)?;
+    let lte_combo = validate_lte_combos(&lte.combos, &lte_domain)?;
     let mut validated = ValidatedSources {
         nr: ValidatedNr {
             source: nr,
@@ -287,14 +287,14 @@ pub(crate) fn validate_documents(source: SourceDocument) -> anyhow::Result<Valid
             carriers,
             domain: nr_domain,
             palette,
-            combo: nr_combo,
+            combos: nr_combo,
             selection_index,
         },
         lte: ValidatedLte {
             source: lte,
             files: lte_files,
             domain: lte_domain,
-            combo: lte_combo,
+            combos: lte_combo,
         },
     };
     canonicalize_sources(&mut validated)?;
@@ -377,13 +377,13 @@ fn canonicalize_sources(validated: &mut ValidatedSources) -> anyhow::Result<()> 
 
     validated.nr.source.dl_features = validated.nr.palette.dl.clone();
     validated.nr.source.ul_features = validated.nr.palette.ul.clone();
-    validated.nr.source.combo = nr_source_combos(
-        &validated.nr.combo,
+    validated.nr.source.combos = nr_source_combos(
+        &validated.nr.combos,
         &validated.nr.domain,
         &validated.nr.palette,
     )?;
 
-    validated.lte.source.combo = lte_source_combos(&validated.lte.combo, &validated.lte.domain)?;
+    validated.lte.source.combos = lte_source_combos(&validated.lte.combos, &validated.lte.domain)?;
     Ok(())
 }
 
@@ -793,6 +793,7 @@ mod tests {
     use crate::{
         compiler::{selection::Sku, source_from_kdl},
         proto::{LteComponent, ShannonFeatureSetDlPerCcNr},
+        raw_nr::Direction,
     };
     use std::collections::BTreeSet;
 
@@ -1479,11 +1480,11 @@ c "MAPPING" mi=7 {
             sources
                 .nr
                 .domain
-                .denorm_relation(&sources.nr.combo[0].relation),
+                .denorm_relation(&sources.nr.combos[0].relation),
             BTreeSet::from([("PROFILED".into(), Sku::Model("G2YBB".into()))])
         );
         assert_eq!(
-            sources.lte.combo[0]
+            sources.lte.combos[0]
                 .relation
                 .iter()
                 .cloned()
@@ -1524,14 +1525,14 @@ c "MAPPING" mi=7 {
 
         let nr = format!("{MINIMAL_NR}\ndf s=3\nn {{\n    n78 A1\n    B1 A\n}}\n");
         let sources = parse_sources(&source(&nr, MINIMAL_LTE)).unwrap();
-        let cc = &sources.nr.combo[0].payload.sub_blocks;
+        let cc = &sources.nr.combos[0].payload.sub_blocks;
         assert_eq!(
             cc.iter()
                 .map(|cc| cc.band_label().to_string())
                 .collect::<Vec<_>>(),
             ["B1", "n78"]
         );
-        assert_eq!(cc[1].dl_selector(), None);
+        assert_eq!(cc[1].selector(Direction::Dl), None);
     }
 
     #[test]
@@ -1559,9 +1560,9 @@ c "MAPPING" mi=7 {
             "{MINIMAL_LTE}\nl {{\n    B1 A4\n    B3 A4\n}}\nl {{\n    B3 A4\n    B1 A4\n}}\n"
         );
         let sources = parse_sources(&source(MINIMAL_NR, &ordered)).unwrap();
-        assert_eq!(sources.lte.combo.len(), 2);
-        assert_eq!(sources.lte.combo[0].source.components[0].band, 1);
-        assert_eq!(sources.lte.combo[1].source.components[0].band, 3);
+        assert_eq!(sources.lte.combos.len(), 2);
+        assert_eq!(sources.lte.combos[0].source.components[0].band, 1);
+        assert_eq!(sources.lte.combos[1].source.components[0].band, 3);
 
         // `bcs` is the surviving optional-presence pair: absent `b` is `None`, `b=""` is
         // `Some(0)`. It is also what keeps these two combos distinct under `RawLteCombo`, now
@@ -1569,11 +1570,11 @@ c "MAPPING" mi=7 {
         let optional_presence =
             format!("{MINIMAL_LTE}\nl {{\n    B1 A4\n}}\nl b=\"\" {{\n    B1 A4\n}}\n");
         let sources = parse_sources(&source(MINIMAL_NR, &optional_presence)).unwrap();
-        assert_eq!(sources.lte.combo.len(), 2);
-        assert_eq!(sources.lte.combo[0].source.bcs, None);
-        assert_eq!(sources.lte.combo[1].source.bcs, Some(0));
+        assert_eq!(sources.lte.combos.len(), 2);
+        assert_eq!(sources.lte.combos[0].source.bcs, None);
+        assert_eq!(sources.lte.combos[1].source.bcs, Some(0));
         // An omitted UL argument is the explicit zero, not an absent field — in both combos.
-        for combo in &sources.lte.combo {
+        for combo in &sources.lte.combos {
             assert_eq!(combo.source.components[0].ul_bw_class_mimo, Some(0));
         }
     }
@@ -1595,7 +1596,7 @@ c "MAPPING" mi=7 {
         };
 
         let mut disabled_dl = base.clone();
-        disabled_dl.lte.combo.push(bad_combo(LteComponent {
+        disabled_dl.lte.combos.push(bad_combo(LteComponent {
             band: 7,
             dl_bw_class_mimo: 0,
             ul_bw_class_mimo: Some(0),
@@ -1607,7 +1608,7 @@ c "MAPPING" mi=7 {
         );
 
         let mut absent_ul = base;
-        absent_ul.lte.combo.push(bad_combo(LteComponent {
+        absent_ul.lte.combos.push(bad_combo(LteComponent {
             band: 7,
             dl_bw_class_mimo: 32_769,
             ul_bw_class_mimo: None,
@@ -1666,7 +1667,7 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
 
         let canonical = parse_sources(&text).unwrap();
         assert_eq!(
-            canonical.nr.combo[0]
+            canonical.nr.combos[0]
                 .payload
                 .sub_blocks
                 .iter()
@@ -1675,17 +1676,17 @@ c "PROFILED" pi=7 mi=7 sg=1 t="alt" {
             ["B1", "n78"]
         );
         assert_eq!(
-            canonical.nr.combo[0].payload.sub_blocks[1].dl_selector(),
+            canonical.nr.combos[0].payload.sub_blocks[1].selector(Direction::Dl),
             None
         );
         assert_eq!(
-            canonical.nr.combo[1].payload.sub_blocks[0]
+            canonical.nr.combos[1].payload.sub_blocks[0]
                 .band_label()
                 .to_string(),
             "B3"
         );
-        assert_eq!(canonical.lte.combo[0].source.components[0].band, 3);
-        assert_eq!(canonical.lte.combo[1].source.components[0].band, 7);
+        assert_eq!(canonical.lte.combos[0].source.components[0].band, 3);
+        assert_eq!(canonical.lte.combos[1].source.components[0].band, 7);
 
         assert_eq!(to_kdl(&source_from_kdl(&text).unwrap()).unwrap(), text);
     }

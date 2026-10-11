@@ -4,9 +4,11 @@
 use crate::{
     compiler::{
         decimal_key_entries,
-        features::{NrSourceSubBlock, SourceLteSubBlock, SourceNrSubBlock},
+        features::{SourceLteSubBlock, SourceNrSubBlock, SourceSubBlock},
         kdl_bcs::{format_bcs, parse_bcs},
-        kdl_direction::{format_class_mimo, format_direction, parse_class_mimo, parse_direction},
+        kdl_direction::{
+            DirectionArg, format_class_mimo, format_direction, parse_class_mimo, parse_direction,
+        },
         kdl_keys::{
             carrier, dl_catalog, doc, fingerprint, lte_combo, lte_file, nr_combo, profile,
             selection, sub_block, ul_catalog,
@@ -25,7 +27,7 @@ use crate::{
     mapping::Plmn,
     model::Tier,
     proto::{ComboHeader, LteComponent, ShannonFeatureSetDlPerCcNr, ShannonFeatureSetUlPerCcNr},
-    raw_nr::{SubBlockKind, bw_class_letter, cc_count},
+    raw_nr::{Direction, SubBlockKind, bw_class_letter, cc_count},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use kdl::{KdlDocument, KdlEntry, KdlNode};
@@ -87,7 +89,7 @@ fn selection_to_node(rect: &SelectionRect) -> KdlNode {
 ///     always-`Some` on LTE with `Some(0)` ⟺ no UL, so its zero is omitted (Task 8
 ///     omit-when-0) by dropping the whole UL argument, and the reader re-defaults it. LTE has
 ///     no `srs-tx-switch`.
-fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
+fn cc_to_node(cc: &SourceSubBlock) -> Result<KdlNode> {
     let prefix = match cc.kind() {
         SubBlockKind::Nr => nr_combo::NR_PREFIX,
         SubBlockKind::Lte => nr_combo::LTE_PREFIX,
@@ -97,18 +99,18 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
 
     let (dl_features, ul_features, srs_tx_switch): (Vec<usize>, Vec<usize>, Option<i32>) = match cc
     {
-        NrSourceSubBlock::Lte(cc) => (
-            cc.dl_feature.map(usize::from).into_iter().collect(),
-            cc.ul_feature
+        SourceSubBlock::Lte(cc) => (
+            cc.dl_feature_index.map(usize::from).into_iter().collect(),
+            cc.ul_feature_index
                 .filter(|&v| v != 0)
                 .map(usize::from)
                 .into_iter()
                 .collect(),
             None,
         ),
-        NrSourceSubBlock::Nr(cc) => (
-            cc.dl_feature.clone(),
-            cc.ul_feature.clone(),
+        SourceSubBlock::Nr(cc) => (
+            cc.dl_feature_indices.clone(),
+            cc.ul_feature_indices.clone(),
             cc.srs_tx_switch,
         ),
     };
@@ -121,7 +123,7 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
     // but their order, so an omitted DL would shift UL into first place and silently change
     // the sub-block's meaning. `Some(0)` already fails inside `format_direction`; this
     // catches the `None` that would otherwise vanish. Corpus: 0 of 93,679 sub-blocks.
-    let dl_class = cc.dl_bw_class().with_context(|| {
+    let dl_class = cc.bw_class(Direction::Dl).with_context(|| {
         format!(
             "sub-block band {} omits its DL bandwidth class; the source format spells DL as the \
              first positional argument and cannot represent its absence",
@@ -134,7 +136,7 @@ fn cc_to_node(cc: &NrSourceSubBlock) -> Result<KdlNode> {
     // `ul_bw_class` is corpus-verified always `Some` on a real sub-block, so `Some(0)` is
     // omitted here and re-defaulted to `Some(0)` by `read_sub_block` (omit-when-0) — a
     // value-faithful round trip, not a lossy one. An absent second argument means class 0.
-    if let Some(class) = cc.ul_bw_class().filter(|&v| v != 0) {
+    if let Some(class) = cc.bw_class(Direction::Ul).filter(|&v| v != 0) {
         node.push(KdlEntry::new(
             format_direction(class, &ul_features)?.as_str(),
         ));
@@ -260,7 +262,7 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
             combo
                 .sub_blocks
                 .iter()
-                .map(NrSourceSubBlock::band)
+                .map(SourceSubBlock::band)
                 .collect::<Vec<_>>()
         ),
     }
@@ -279,17 +281,12 @@ fn emit_nr_combo(combo: &NrSourceCombo) -> Result<KdlNode> {
         nr_combo::INTRA_BAND_EN_DC_SUPPORT,
         combo.header.intra_band_en_dc_support.filter(|&v| v != 0),
     );
-    if combo.selection.is_some() || !combo.sub_blocks.is_empty() {
-        let kids = node.ensure_children();
-        if let Some(sel) = &combo.selection {
-            for rect in sel {
-                kids.nodes_mut().push(selection_to_node(rect));
-            }
-        }
-        for cc in &combo.sub_blocks {
-            kids.nodes_mut().push(cc_to_node(cc)?);
-        }
-    }
+    append_combo_children(
+        &mut node,
+        combo.selection.as_deref(),
+        &combo.sub_blocks,
+        cc_to_node,
+    )?;
     Ok(node)
 }
 
@@ -311,18 +308,33 @@ fn emit_lte_combo(combo: &LteSourceCombo) -> Result<KdlNode> {
     }
     opt_int_prop(&mut node, lte_combo::UNKNOWN1, combo.unknown1);
     opt_int_prop(&mut node, lte_combo::UNKNOWN2, combo.unknown2);
-    if combo.selection.is_some() || !combo.components.is_empty() {
+    append_combo_children(
+        &mut node,
+        combo.selection.as_deref(),
+        &combo.components,
+        lte_cc_to_node,
+    )?;
+    Ok(node)
+}
+
+fn append_combo_children<T>(
+    node: &mut KdlNode,
+    selection: Option<&[SelectionRect]>,
+    components: &[T],
+    render: impl Fn(&T) -> Result<KdlNode>,
+) -> Result<()> {
+    if selection.is_some() || !components.is_empty() {
         let kids = node.ensure_children();
-        if let Some(sel) = &combo.selection {
+        if let Some(sel) = selection {
             for rect in sel {
                 kids.nodes_mut().push(selection_to_node(rect));
             }
         }
-        for comp in &combo.components {
-            kids.nodes_mut().push(lte_cc_to_node(comp)?);
+        for comp in components {
+            kids.nodes_mut().push(render(comp)?);
         }
     }
-    Ok(node)
+    Ok(())
 }
 
 /// One `bitmask-fingerprint N { carriers … }` node: which bitmask-folder carriers share a
@@ -436,11 +448,11 @@ pub(crate) fn source_to_kdl(nr: &NrDocument, lte: &LteDocument) -> Result<String
         document.nodes_mut().push(emit_ul_feature(f));
     }
 
-    for combo in &nr.combo {
+    for combo in &nr.combos {
         document.nodes_mut().push(emit_nr_combo(combo)?);
     }
 
-    for combo in &lte.combo {
+    for combo in &lte.combos {
         document.nodes_mut().push(emit_lte_combo(combo)?);
     }
 
@@ -571,37 +583,42 @@ fn read_selection(node: &KdlNode) -> Result<SelectionRect> {
     Ok(SelectionRect { carriers, skus })
 }
 
-fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
-    let name = node.name().value();
+fn sub_block_identity(name: &str) -> Result<(SubBlockKind, u16)> {
     // The band comes from the node name, so there is no positional argument to read.
-    let (kind, band) = if let Some(band) = parse_sub_block_name(name, nr_combo::NR_PREFIX) {
-        (SubBlockKind::Nr, band)
+    if let Some(band) = parse_sub_block_name(name, nr_combo::NR_PREFIX) {
+        Ok((SubBlockKind::Nr, band))
     } else if let Some(band) = parse_sub_block_name(name, nr_combo::LTE_PREFIX) {
-        (SubBlockKind::Lte, band)
+        Ok((SubBlockKind::Lte, band))
     } else {
         bail!(
             "`{name}` is not a sub-block node name (expected `{}<band>` or `{}<band>`)",
             nr_combo::NR_PREFIX,
             nr_combo::LTE_PREFIX
         )
-    };
-    let mut r = NodeReader::new(node);
+    }
+}
+
+fn read_directions(
+    r: &mut NodeReader<'_>,
+    name: &str,
+    kind: SubBlockKind,
+) -> Result<(DirectionArg, Option<DirectionArg>)> {
     // DL then UL, positional. `key_str` errors when the argument is missing, which is what
     // makes an argument-free sub-block a hard failure rather than a silently classless one.
-    let dl = Some(parse_direction(
+    let dl = parse_direction(
         &r.key_str()
             .with_context(|| format!("`{name}` is missing its DL bandwidth class"))?,
-        "DL",
-    )?);
+        Direction::Dl,
+    )?;
     let ul = r
         .opt_arg_str()?
-        .map(|raw| parse_direction(&raw, "UL"))
+        .map(|raw| parse_direction(&raw, Direction::Ul))
         .transpose()?;
 
     // Arity depends on the kind. NR indices are one per CC and must match `cc_count`; an
     // E-UTRA sub-block carries a single `parseLteFeatureIndex` value regardless of class. An
     // empty list is the all-zero placeholder and is checked by neither.
-    for (label, parsed) in [("DL", dl.as_ref()), ("UL", ul.as_ref())] {
+    for (label, parsed) in [(Direction::Dl, Some(&dl)), (Direction::Ul, ul.as_ref())] {
         let Some(parsed) = parsed else { continue };
         if parsed.indices.is_empty() {
             continue;
@@ -633,51 +650,70 @@ fn read_sub_block(node: &KdlNode) -> Result<NrSourceSubBlock> {
         }
     }
 
-    let dl_bw_class = dl.as_ref().map(|d| d.bw_class);
-    // Absent `ul` is the writer's omitted zero, not a genuine absence.
-    let ul_bw_class = ul.as_ref().map_or(Some(0), |d| Some(d.bw_class));
-    let cc: NrSourceSubBlock = match kind {
-        SubBlockKind::Lte => SourceLteSubBlock {
-            band,
-            dl_bw_class,
-            ul_bw_class,
-            dl_feature: dl
-                .as_ref()
-                .and_then(|d| d.indices.first().copied())
-                .map(|index| {
-                    u16::try_from(index).with_context(|| {
-                        format!("`{name}` LTE DL feature index {index} does not fit u16")
-                    })
-                })
-                .transpose()?,
-            // An absent E-UTRA index re-defaults to `Some(0)` (omit-when-0, LTE-only).
-            ul_feature: Some(
-                ul.as_ref()
-                    .and_then(|d| d.indices.first().copied())
-                    .map(|index| {
-                        u16::try_from(index).with_context(|| {
-                            format!("`{name}` LTE UL feature index {index} does not fit u16")
-                        })
-                    })
-                    .transpose()?
-                    .unwrap_or(0),
-            ),
-        }
-        .into(),
-        SubBlockKind::Nr => SourceNrSubBlock {
-            band,
-            dl_bw_class,
-            ul_bw_class,
-            dl_feature: dl.as_ref().map(|d| d.indices.clone()).unwrap_or_default(),
-            ul_feature: ul.as_ref().map(|d| d.indices.clone()).unwrap_or_default(),
-            srs_tx_switch: r.opt_int(sub_block::SRS_TX_SWITCH)?,
-        }
-        .into(),
+    Ok((dl, ul))
+}
+
+fn lte_feature_index(
+    argument: Option<&DirectionArg>,
+    name: &str,
+    direction: Direction,
+) -> Result<Option<u16>> {
+    argument
+        .and_then(|d| d.indices.first().copied())
+        .map(|index| {
+            u16::try_from(index).with_context(|| {
+                format!("`{name}` LTE {direction} feature index {index} does not fit u16")
+            })
+        })
+        .transpose()
+}
+
+fn source_lte_sub_block(
+    name: &str,
+    band: u16,
+    dl: DirectionArg,
+    ul: Option<DirectionArg>,
+) -> Result<SourceLteSubBlock> {
+    Ok(SourceLteSubBlock {
+        band,
+        dl_bw_class: Some(dl.bw_class),
+        // Absent UL is the writer's omitted zero, not a genuine absence.
+        ul_bw_class: Some(ul.as_ref().map_or(0, |d| d.bw_class)),
+        dl_feature_index: lte_feature_index(Some(&dl), name, Direction::Dl)?,
+        // An absent E-UTRA UL index re-defaults to Some(0), including a bare UL class.
+        ul_feature_index: Some(lte_feature_index(ul.as_ref(), name, Direction::Ul)?.unwrap_or(0)),
+    })
+}
+
+fn source_nr_sub_block(
+    r: &mut NodeReader<'_>,
+    band: u16,
+    dl: DirectionArg,
+    ul: Option<DirectionArg>,
+) -> Result<SourceNrSubBlock> {
+    Ok(SourceNrSubBlock {
+        band,
+        dl_bw_class: Some(dl.bw_class),
+        ul_bw_class: Some(ul.as_ref().map_or(0, |d| d.bw_class)),
+        dl_feature_indices: dl.indices,
+        ul_feature_indices: ul.map(|d| d.indices).unwrap_or_default(),
+        srs_tx_switch: r.opt_int(sub_block::SRS_TX_SWITCH)?,
+    })
+}
+
+fn read_sub_block(node: &KdlNode) -> Result<SourceSubBlock> {
+    let name = node.name().value();
+    let (kind, band) = sub_block_identity(name)?;
+    let mut r = NodeReader::new(node);
+    let (dl, ul) = read_directions(&mut r, name, kind)?;
+    let cc = match kind {
+        SubBlockKind::Lte => source_lte_sub_block(name, band, dl, ul)?.into(),
+        SubBlockKind::Nr => source_nr_sub_block(&mut r, band, dl, ul)?.into(),
     };
     r.finish()?; // now rejects any stray dl-cc-id / *-feature-index as unknown properties
     // The raw selector bytes are NOT reconstructed here. An unresolved direction only ever
     // carries the all-zero placeholder, which is a pure function of kind + `bw_class`, so
-    // `cc_to_node` omits it and `NrSourceSubBlock::resolve` (the single provision-path boundary
+    // `cc_to_node` omits it and `SourceSubBlock::resolve` (the single provision-path boundary
     // that needs the bytes) re-derives it.
     Ok(cc)
 }
@@ -877,13 +913,13 @@ fn read_lte_cc(node: &KdlNode) -> Result<LteComponent> {
     let dl_bw_class_mimo = parse_class_mimo(
         &r.key_str()
             .with_context(|| format!("`{name}` is missing its DL class+MIMO value"))?,
-        "DL",
+        Direction::Dl,
     )?;
     // Omit-when-0: an absent UL argument is UL disabled. `parse_class_mimo` never returns 0,
     // so this is the sole route to one and the value-to-spelling mapping stays one-to-one.
     let ul_bw_class_mimo = Some(
         r.opt_arg_str()?
-            .map(|raw| parse_class_mimo(&raw, "UL"))
+            .map(|raw| parse_class_mimo(&raw, Direction::Ul))
             .transpose()?
             .unwrap_or(0),
     );
@@ -982,11 +1018,11 @@ pub(crate) fn source_from_kdl(text: &str) -> Result<SourceDocument> {
             carriers,
             dl_features,
             ul_features,
-            combo: nr_combo,
+            combos: nr_combo,
         },
         lte: LteDocument {
             files,
-            combo: lte_combo,
+            combos: lte_combo,
         },
     })
 }
@@ -1190,7 +1226,7 @@ mod numeric_key_tests {
 mod nr_tests {
     use super::*;
     use crate::compiler::{
-        features::{NrSourceSubBlock, SourceNrSubBlock},
+        features::{SourceNrSubBlock, SourceSubBlock},
         schema::{BitmaskFingerprint, CarrierSource, NrDocument, NrSourceCombo, ProfileSource},
         selection::SelectionRect,
     };
@@ -1249,7 +1285,7 @@ mod nr_tests {
                 bw_90mhz_supported: None,
                 max_mimo_non_cb: None,
             }],
-            combo: vec![NrSourceCombo {
+            combos: vec![NrSourceCombo {
                 selection: Some(vec![SelectionRect {
                     carriers: Some(vec!["VZW".into()]),
                     skus: Some(vec!["legacy".into()]),
@@ -1266,7 +1302,7 @@ mod nr_tests {
                         // 1-based: the sole catalog entry. (This was `vec![0]`, an invalid
                         // reference the old format round-tripped without noticing because
                         // nothing checked it until `validate_documents`.)
-                        dl_feature: vec![1],
+                        dl_feature_indices: vec![1],
                         ..Default::default()
                     }
                     .into(),
@@ -1301,19 +1337,19 @@ mod nr_tests {
         // Two-CC NR sub-block: the comma-separated per-CC list in the DL positional argument
         // (`B5,8`) reads back as one usize per CC. LTE sub-block: no per-CC references at all.
         // The all-zero placeholder selector that the binary carries for it is NOT part of the
-        // source model — the reader leaves it out entirely (`NrSourceSubBlock::resolve`
+        // source model — the reader leaves it out entirely (`SourceSubBlock::resolve`
         // derives it from the DL positional argument's class, here `A` (class 1), on the
         // provision path; see `resolve_derives_the_omitted_placeholder` in
         // `compiler::features`) — and re-emitting must stay a byte-identical fixed point.
         let text = "version 1\nbc ATT\nn {\n    n48 B5,8\n    B66 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        let cc = &doc.combo[0].sub_blocks;
-        let NrSourceSubBlock::Nr(nr) = &cc[0] else {
+        let cc = &doc.combos[0].sub_blocks;
+        let SourceSubBlock::Nr(nr) = &cc[0] else {
             panic!("first sub-block is an `nr` node, got {:?}", cc[0])
         };
-        assert_eq!(nr.dl_feature, vec![5, 8], "repeated dl_feature");
+        assert_eq!(nr.dl_feature_indices, vec![5, 8], "repeated dl_feature");
         // The `lte` variant has no per-CC feature list to be empty — that is the point.
-        assert!(matches!(cc[1], NrSourceSubBlock::Lte(_)));
+        assert!(matches!(cc[1], SourceSubBlock::Lte(_)));
         assert_eq!(
             nr_only(&doc).unwrap(),
             text,
@@ -1325,13 +1361,16 @@ mod nr_tests {
     fn nr_sized_indices_preserve_values_above_u16_and_lte_rejects_them() {
         let nr_text = "version 1\nbc ATT\nn {\n    n78 A65536\n}\n";
         let nr = nr_from(nr_text).expect("NR index above u16 parses");
-        let [NrSourceSubBlock::Nr(component)] = &nr.combo[0].sub_blocks[..] else {
+        let [SourceSubBlock::Nr(component)] = &nr.combos[0].sub_blocks[..] else {
             panic!(
                 "expected one NR sub-block, got {:?}",
-                nr.combo[0].sub_blocks
+                nr.combos[0].sub_blocks
             )
         };
-        assert_eq!(component.dl_feature, vec![usize::from(u16::MAX) + 1]);
+        assert_eq!(
+            component.dl_feature_indices,
+            vec![usize::from(u16::MAX) + 1]
+        );
         assert_eq!(
             nr_only(&nr).unwrap(),
             nr_text,
@@ -1353,17 +1392,17 @@ mod nr_tests {
         // point.
         let text = "version 1\nbc ATT\nn {\n    B7 B1 A2\n    B66 A3\n}\n";
         let doc = nr_from(text).expect("parse");
-        let cc = &doc.combo[0].sub_blocks;
+        let cc = &doc.combos[0].sub_blocks;
         // Both are `lte` nodes, so neither can carry a per-CC feature list at all — the
         // variant simply has no such field.
-        let [NrSourceSubBlock::Lte(first), NrSourceSubBlock::Lte(second)] = &cc[..] else {
+        let [SourceSubBlock::Lte(first), SourceSubBlock::Lte(second)] = &cc[..] else {
             panic!("both sub-blocks are `lte` nodes, got {cc:?}")
         };
-        assert_eq!(first.dl_feature, Some(1));
-        assert_eq!(first.ul_feature, Some(2));
-        assert_eq!(second.dl_feature, Some(3));
+        assert_eq!(first.dl_feature_index, Some(1));
+        assert_eq!(first.ul_feature_index, Some(2));
+        assert_eq!(second.dl_feature_index, Some(3));
         assert_eq!(
-            second.ul_feature,
+            second.ul_feature_index,
             Some(0),
             "absent ul_feature on an lte node defaults to Some(0)"
         );
@@ -1465,7 +1504,7 @@ mod nr_tests {
         let text = "version 1\nbc ATT\nn {\n    n257 G1,1 A1\n    B66 A2\n}\n";
 
         let doc = nr_from(text).expect("bands parse out of the node name");
-        let combo = &doc.combo[0];
+        let combo = &doc.combos[0];
 
         assert_eq!(combo.sub_blocks[0].band(), 257);
         assert_eq!(combo.sub_blocks[0].kind(), SubBlockKind::Nr);
@@ -1648,8 +1687,8 @@ mod nr_tests {
     fn bcs_nr_and_eutra_round_trip_as_index_lists() {
         let text = "version 1\nbc ATT\nn bn=b0,1 be=b0 {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].header.bcs_nr, Some(3_221_225_472));
-        assert_eq!(doc.combo[0].header.bcs_eutra, Some(2_147_483_648));
+        assert_eq!(doc.combos[0].header.bcs_nr, Some(3_221_225_472));
+        assert_eq!(doc.combos[0].header.bcs_eutra, Some(2_147_483_648));
         assert_eq!(
             nr_only(&doc).unwrap(),
             text,
@@ -1659,7 +1698,7 @@ mod nr_tests {
         // An omitted property is the zero, and stays omitted on the way back out.
         let zero = "version 1\nbc ATT\nn {\n    n78 A\n}\n";
         let doc = nr_from(zero).expect("parse");
-        assert_eq!(doc.combo[0].header.bcs_nr, Some(0));
+        assert_eq!(doc.combos[0].header.bcs_nr, Some(0));
         assert_eq!(nr_only(&doc).unwrap(), zero);
 
         for key in ["bn", "be"] {
@@ -1676,14 +1715,14 @@ mod nr_tests {
         // Nonzero, written explicitly.
         let text = "version 1\nbc ATT\nn bi=b0,1 ie=1 {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].header.bcs_intra_endc, Some(3_221_225_472));
+        assert_eq!(doc.combos[0].header.bcs_intra_endc, Some(3_221_225_472));
         assert_eq!(nr_only(&doc).unwrap(), text);
 
         // The exceptional zero: `ie` is not 1, so `Some(0)` is NOT derivable and must be
         // spelled. The empty set is `""`.
         let text = "version 1\nbc ATT\nn bi=\"\" {\n    n78 A\n}\n";
         let doc = nr_from(text).expect("parse");
-        assert_eq!(doc.combo[0].header.bcs_intra_endc, Some(0));
+        assert_eq!(doc.combos[0].header.bcs_intra_endc, Some(0));
         assert_eq!(nr_only(&doc).unwrap(), text);
     }
 
@@ -1790,7 +1829,7 @@ mod lte_tests {
                     bitmask: 1,
                 },
             )]),
-            combo: vec![LteSourceCombo {
+            combos: vec![LteSourceCombo {
                 selection: Some(vec![SelectionRect {
                     carriers: None,
                     skus: Some(vec!["legacy".into()]),
@@ -1833,17 +1872,20 @@ mod lte_tests {
     fn lte_bcs_round_trips_as_an_index_list_and_keeps_absent_distinct() {
         let text = "version 1\nbc\nl b=b0,1 u1=0 u2=0 {\n    B1 A4\n}\n";
         let doc = lte_from(text).expect("parse");
-        assert_eq!(doc.combo[0].bcs, Some(3_221_225_472));
+        assert_eq!(doc.combos[0].bcs, Some(3_221_225_472));
         assert_eq!(lte_only(&doc).unwrap(), text);
 
         let explicit_zero = "version 1\nbc\nl b=\"\" u1=0 u2=0 {\n    B1 A4\n}\n";
         let doc = lte_from(explicit_zero).expect("parse");
-        assert_eq!(doc.combo[0].bcs, Some(0));
+        assert_eq!(doc.combos[0].bcs, Some(0));
         assert_eq!(lte_only(&doc).unwrap(), explicit_zero);
 
         let absent = "version 1\nbc\nl u1=0 u2=0 {\n    B1 A4\n}\n";
         let doc = lte_from(absent).expect("parse");
-        assert_eq!(doc.combo[0].bcs, None, "an absent `b` is None, not Some(0)");
+        assert_eq!(
+            doc.combos[0].bcs, None,
+            "an absent `b` is None, not Some(0)"
+        );
         assert_eq!(lte_only(&doc).unwrap(), absent);
     }
 
@@ -1852,7 +1894,7 @@ mod lte_tests {
     #[test]
     fn an_lte_bcs_wider_than_32_bits_fails_closed() {
         let mut doc = lte_from("version 1\nbc\nl u1=0 u2=0 {\n    B1 A4\n}\n").expect("parse");
-        doc.combo[0].bcs = Some(u64::from(u32::MAX) + 1);
+        doc.combos[0].bcs = Some(u64::from(u32::MAX) + 1);
         let error = lte_only(&doc).unwrap_err().to_string();
         assert!(error.contains("32-bit"), "{error}");
     }
@@ -2059,19 +2101,19 @@ mod source_tests {
         let parsed = source_from_kdl(text).expect("the source document parses");
 
         // Under `n`: `C2` is bandwidth class C (3) plus per-CC feature index 2. A `B66` node
-        // always parses to the `Lte` variant of `NrSourceSubBlock`.
-        let NrSourceSubBlock::Lte(sub_block) = &parsed.nr.combo[0].sub_blocks[0] else {
+        // always parses to the `Lte` variant of `SourceSubBlock`.
+        let SourceSubBlock::Lte(sub_block) = &parsed.nr.combos[0].sub_blocks[0] else {
             panic!(
                 "a `B66` node parses to the `Lte` variant, got {:?}",
-                parsed.nr.combo[0].sub_blocks[0]
+                parsed.nr.combos[0].sub_blocks[0]
             )
         };
         assert_eq!(sub_block.band, 66);
         assert_eq!(sub_block.dl_bw_class, Some(3));
-        assert_eq!(sub_block.dl_feature, Some(2));
+        assert_eq!(sub_block.dl_feature_index, Some(2));
 
         // Under `l`: the identical text `C2` is class C + 2x2 MIMO, the bitfield 8192.
-        let component = &parsed.lte.combo[0].components[0];
+        let component = &parsed.lte.combos[0].components[0];
         assert_eq!(component.band, 66);
         assert_eq!(component.dl_bw_class_mimo, 8192);
 
@@ -2080,7 +2122,7 @@ mod source_tests {
         // LTE one a bitfield. If the two positional codecs were ever unified, this is the
         // assertion that would catch it.
         assert_ne!(
-            i64::from(sub_block.dl_feature.unwrap()),
+            i64::from(sub_block.dl_feature_index.unwrap()),
             i64::from(component.dl_bw_class_mimo),
             "the per-CC feature index and the class+MIMO bitfield must stay disjoint decodings \
              of the same `C2` text — if they ever match, the two codecs have merged"
@@ -2091,7 +2133,7 @@ mod source_tests {
         // `dl_feature` is incidental to this test's point and deliberately not pinned here.
         let placeholder = source_from_kdl("version 1\nbc ATT\nn {\n    B66 A\n}\n")
             .expect("`A` parses as a class with no per-CC list");
-        let NrSourceSubBlock::Lte(placeholder_sub_block) = &placeholder.nr.combo[0].sub_blocks[0]
+        let SourceSubBlock::Lte(placeholder_sub_block) = &placeholder.nr.combos[0].sub_blocks[0]
         else {
             panic!("still a `B66`/`Lte` sub-block")
         };

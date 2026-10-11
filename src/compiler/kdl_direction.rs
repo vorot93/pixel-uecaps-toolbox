@@ -28,13 +28,13 @@
 
 use crate::{
     formatting::Separated,
-    raw_nr::{bw_class_index, bw_class_letter},
+    raw_nr::{Direction, bw_class_index, bw_class_letter},
 };
 use anyhow::{Context, Result, bail, ensure};
 
 /// A parsed DL or UL positional direction argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Direction {
+pub(crate) struct DirectionArg {
     pub(crate) bw_class: u8,
     /// One 1-based reference per CC. Empty means the all-zero placeholder, which the source
     /// omits and `resolve` re-materialises.
@@ -60,7 +60,7 @@ pub(crate) fn format_direction(bw_class: u8, indices: &[usize]) -> Result<String
 
 /// Parse a class plus its per-CC list. `label` names the positional direction argument
 /// (`DL`/`UL`) in diagnostics.
-pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
+pub(crate) fn parse_direction(raw: &str, label: Direction) -> Result<DirectionArg> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
@@ -70,7 +70,7 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
 
     let rest: String = chars.collect();
     if rest.is_empty() {
-        return Ok(Direction {
+        return Ok(DirectionArg {
             bw_class,
             indices: Vec::new(),
         });
@@ -103,7 +103,7 @@ pub(crate) fn parse_direction(raw: &str, label: &str) -> Result<Direction> {
         // reader owns it — this codec only parses the syntax.
         indices.push(index);
     }
-    Ok(Direction { bw_class, indices })
+    Ok(DirectionArg { bw_class, indices })
 }
 
 /// An LTE component's class+MIMO bitfield, highest bit first: 32768→A … 1024→F, low bit
@@ -143,7 +143,7 @@ pub(crate) fn format_class_mimo(value: i32) -> Result<String> {
 /// Never returns 0: every result is `base + low` with `base >= 1024`. The only route to a zero UL
 /// class is an omitted argument, which the reader defaults — so the source format has exactly one
 /// spelling per value and the round trip stays byte-stable without a uniqueness check.
-pub(crate) fn parse_class_mimo(raw: &str, label: &str) -> Result<i32> {
+pub(crate) fn parse_class_mimo(raw: &str, label: Direction) -> Result<i32> {
     let mut chars = raw.chars();
     let letter = chars
         .next()
@@ -174,6 +174,7 @@ pub(crate) fn parse_class_mimo(raw: &str, label: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::{format_class_mimo, format_direction, parse_class_mimo, parse_direction};
+    use crate::raw_nr::Direction;
 
     #[test]
     fn round_trips_every_shape() {
@@ -185,7 +186,7 @@ mod tests {
             (13, vec![1, 2, 3, 4, 5, 6, 7, 8], "M1,2,3,4,5,6,7,8"),
         ] {
             assert_eq!(format_direction(class, &indices).unwrap(), text);
-            let parsed = parse_direction(text, "DL").unwrap();
+            let parsed = parse_direction(text, Direction::Dl).unwrap();
             assert_eq!(parsed.bw_class, class);
             assert_eq!(parsed.indices, indices);
         }
@@ -196,13 +197,18 @@ mod tests {
         let index = usize::from(u16::MAX) + 1;
         let text = format_direction(1, &[index]).unwrap();
         assert_eq!(text, "A65536");
-        assert_eq!(parse_direction(&text, "DL").unwrap().indices, vec![index]);
+        assert_eq!(
+            parse_direction(&text, Direction::Dl).unwrap().indices,
+            vec![index]
+        );
     }
 
     #[test]
     fn rejects_usize_overflow_without_accepting_an_alias() {
         let too_large = format!("A{}0", usize::MAX);
-        let error = parse_direction(&too_large, "DL").unwrap_err().to_string();
+        let error = parse_direction(&too_large, Direction::Dl)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("out of range"), "{error}");
     }
 
@@ -210,7 +216,7 @@ mod tests {
     /// and its absence means one number.
     #[test]
     fn a_multi_digit_index_is_one_index() {
-        let parsed = parse_direction("A12", "DL").unwrap();
+        let parsed = parse_direction("A12", Direction::Dl).unwrap();
         assert_eq!(parsed.indices, vec![12]);
     }
 
@@ -218,7 +224,7 @@ mod tests {
     /// satisfy a length check on a uniform one.
     #[test]
     fn distinct_per_cc_indices_survive() {
-        let parsed = parse_direction("G22,23", "DL").unwrap();
+        let parsed = parse_direction("G22,23", Direction::Dl).unwrap();
         assert_eq!(parsed.indices, vec![22, 23]);
         assert_ne!(parsed.indices[0], parsed.indices[1]);
     }
@@ -233,7 +239,7 @@ mod tests {
             ("A,3", "empty index"),
             ("A3,x", "decimal"),
         ] {
-            let error = parse_direction(bad, "DL").unwrap_err().to_string();
+            let error = parse_direction(bad, Direction::Dl).unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -245,7 +251,10 @@ mod tests {
     /// `parseLteFeatureIndex` value, so only the reader — which knows the kind — can judge it.
     #[test]
     fn index_zero_parses_and_is_left_to_the_reader() {
-        assert_eq!(parse_direction("A0", "DL").unwrap().indices, vec![0]);
+        assert_eq!(
+            parse_direction("A0", Direction::Dl).unwrap().indices,
+            vec![0]
+        );
     }
 
     /// `A03` and `A3` must not both parse to the same index, or the round trip stops being
@@ -258,7 +267,7 @@ mod tests {
             ("A01", "leading zero"),
             ("G22,023", "leading zero"),
         ] {
-            let error = parse_direction(bad, "DL").unwrap_err().to_string();
+            let error = parse_direction(bad, Direction::Dl).unwrap_err().to_string();
             assert!(
                 error.contains(expect),
                 "`{bad}` should mention `{expect}`, got: {error}"
@@ -291,7 +300,7 @@ mod tests {
             (1025, "F4"),
         ] {
             assert_eq!(format_class_mimo(value).unwrap(), text);
-            assert_eq!(parse_class_mimo(text, "DL").unwrap(), value);
+            assert_eq!(parse_class_mimo(text, Direction::Dl).unwrap(), value);
         }
     }
 
@@ -300,10 +309,10 @@ mod tests {
         assert!(format_class_mimo(999).is_err());
         // 0 is UL-disabled. It has no letter and no spelling: the source omits the argument.
         assert!(format_class_mimo(0).is_err());
-        assert!(parse_class_mimo("Z2", "DL").is_err());
-        assert!(parse_class_mimo("A3", "DL").is_err());
-        assert!(parse_class_mimo("A", "DL").is_err());
+        assert!(parse_class_mimo("Z2", Direction::Dl).is_err());
+        assert!(parse_class_mimo("A3", Direction::Dl).is_err());
+        assert!(parse_class_mimo("A", Direction::Dl).is_err());
         // The superseded `off` spelling is not accepted back.
-        assert!(parse_class_mimo("off", "UL").is_err());
+        assert!(parse_class_mimo("off", Direction::Ul).is_err());
     }
 }

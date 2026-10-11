@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 /// A closed sum over the two node kinds, mirroring [`RawSubBlock`] one layer down. The two
 /// kinds carry genuinely different data — an `lte` node has the scalar `dl_feature_index`
 /// (proto 4/5, `parseLteFeatureIndex`) and never a catalog list; an `nr` node has the per-CC
-/// `dl_feature` list, never an index (NR derives proto 4/5 from its feature set on provision),
+/// `dl_feature_indices` list, never a scalar index (NR derives proto 4/5 from its feature set on provision),
 /// and is the only kind with `srs_tx_switch`. As a flat kind-tagged struct this needed two
 /// runtime `ensure!`s to reject the illegal mixtures; neither variant can express them.
 ///
@@ -25,39 +25,39 @@ use std::collections::BTreeSet;
 /// materializes it via [`placeholder_ids`]. Keeping it would let a component hold a catalog
 /// reference *and* a raw selector for one direction — a state the source format cannot spell.
 #[derive(Clone, Debug)]
-pub(crate) enum NrSourceSubBlock {
+pub(crate) enum SourceSubBlock {
     Lte(SourceLteSubBlock),
     Nr(SourceNrSubBlock),
 }
 
-/// The `lte` half of [`NrSourceSubBlock`] — an E-UTRA component inside an EN-DC combo.
+/// The `lte` half of [`SourceSubBlock`] — an E-UTRA component inside an EN-DC combo.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceLteSubBlock {
     pub(crate) band: u16,
     pub(crate) dl_bw_class: Option<u8>,
     pub(crate) ul_bw_class: Option<u8>,
-    pub(crate) dl_feature: Option<u16>,
-    pub(crate) ul_feature: Option<u16>,
+    pub(crate) dl_feature_index: Option<u16>,
+    pub(crate) ul_feature_index: Option<u16>,
 }
 
-/// The `nr` half of [`NrSourceSubBlock`].
+/// The `nr` half of [`SourceSubBlock`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceNrSubBlock {
     pub(crate) band: u16,
     pub(crate) dl_bw_class: Option<u8>,
     pub(crate) ul_bw_class: Option<u8>,
-    pub(crate) dl_feature: Vec<usize>,
-    pub(crate) ul_feature: Vec<usize>,
+    pub(crate) dl_feature_indices: Vec<usize>,
+    pub(crate) ul_feature_indices: Vec<usize>,
     pub(crate) srs_tx_switch: Option<i32>,
 }
 
-impl From<SourceLteSubBlock> for NrSourceSubBlock {
+impl From<SourceLteSubBlock> for SourceSubBlock {
     fn from(cc: SourceLteSubBlock) -> Self {
         Self::Lte(cc)
     }
 }
 
-impl From<SourceNrSubBlock> for NrSourceSubBlock {
+impl From<SourceNrSubBlock> for SourceSubBlock {
     fn from(cc: SourceNrSubBlock) -> Self {
         Self::Nr(cc)
     }
@@ -65,7 +65,7 @@ impl From<SourceNrSubBlock> for NrSourceSubBlock {
 
 /// The shared read surface for code that treats both kinds alike (the KDL emitter, and
 /// the NR band-collection pass). Anything that *builds* a sub-block matches on the variant.
-impl NrSourceSubBlock {
+impl SourceSubBlock {
     pub(crate) const fn kind(&self) -> SubBlockKind {
         match self {
             Self::Lte(_) => SubBlockKind::Lte,
@@ -80,27 +80,20 @@ impl NrSourceSubBlock {
         }
     }
 
-    pub(crate) const fn dl_bw_class(&self) -> Option<u8> {
-        match self {
-            Self::Lte(cc) => cc.dl_bw_class,
-            Self::Nr(cc) => cc.dl_bw_class,
-        }
-    }
-
-    pub(crate) const fn ul_bw_class(&self) -> Option<u8> {
-        match self {
-            Self::Lte(cc) => cc.ul_bw_class,
-            Self::Nr(cc) => cc.ul_bw_class,
+    pub(crate) const fn bw_class(&self, direction: Direction) -> Option<u8> {
+        match (self, direction) {
+            (Self::Lte(cc), Direction::Dl) => cc.dl_bw_class,
+            (Self::Lte(cc), Direction::Ul) => cc.ul_bw_class,
+            (Self::Nr(cc), Direction::Dl) => cc.dl_bw_class,
+            (Self::Nr(cc), Direction::Ul) => cc.ul_bw_class,
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct LocalFeaturePlan {
-    dl_source: Vec<ShannonFeatureSetDlPerCcNr>,
-    ul_source: Vec<ShannonFeatureSetUlPerCcNr>,
-    pub(crate) dl: Vec<ShannonFeatureSetDlPerCcNr>,
-    pub(crate) ul: Vec<ShannonFeatureSetUlPerCcNr>,
+    dl: Vec<ShannonFeatureSetDlPerCcNr>,
+    ul: Vec<ShannonFeatureSetUlPerCcNr>,
 }
 
 /// Every distinct DL/UL feature record actually referenced by a carrier's payloads, scanning
@@ -134,19 +127,14 @@ impl UsedFeatures {
 }
 
 /// The 1-based index of each resolved feature record in `catalog`, one per CC.
-///
-fn catalog_indices<T: Ord>(
-    features: &[T],
-    catalog: &[T],
-    which: &'static str,
-) -> anyhow::Result<Vec<usize>> {
+fn catalog_indices<T: Ord>(features: &[T], catalog: &[T]) -> anyhow::Result<Vec<usize>> {
     features
         .iter()
         .map(|feature| {
             catalog
                 .binary_search(feature)
                 .map(|index| index + 1)
-                .map_err(|_| anyhow::anyhow!("{which} is missing a resolved feature record"))
+                .map_err(|_| anyhow::anyhow!("catalog is missing a resolved feature record"))
         })
         .collect()
 }
@@ -173,8 +161,8 @@ impl LocalFeaturePlan {
         sku: &str,
     ) -> anyhow::Result<Self> {
         let used = UsedFeatures::scan(payloads.iter().copied());
-        let dl_source = local_catalog(&palette.dl, &used.dl);
-        let ul_source = local_catalog(&palette.ul, &used.ul);
+        let dl = local_catalog(&palette.dl, &used.dl);
+        let ul = local_catalog(&palette.ul, &used.ul);
 
         // Check order is DL-absent, UL-absent, DL-limit, UL-limit. Both directions' filtered
         // vectors resolve above before any check runs, so a DL-only over-limit input can no
@@ -184,32 +172,26 @@ impl LocalFeaturePlan {
         // "absent" = a payload referenced a record the global catalog never saw; "limit" =
         // the local plan would overflow its 1-based `u8` index space.
         for (direction, local, used) in [
-            (Direction::Dl, dl_source.len(), used.dl.len()),
-            (Direction::Ul, ul_source.len(), used.ul.len()),
+            (Direction::Dl, dl.len(), used.dl.len()),
+            (Direction::Ul, ul.len(), used.ul.len()),
         ] {
             ensure!(
                 local == used,
                 "{basename} ({sku}) uses a {direction} feature absent from the global catalog"
             );
         }
-        for (direction, local) in [
-            (Direction::Dl, dl_source.len()),
-            (Direction::Ul, ul_source.len()),
-        ] {
+        for (direction, local) in [(Direction::Dl, dl.len()), (Direction::Ul, ul.len())] {
             ensure!(
                 local <= usize::from(u8::MAX),
                 "{basename} ({sku}) uses {local} distinct {direction} feature records; local limit is 255"
             );
         }
 
-        let dl = dl_source.to_vec();
-        let ul = ul_source.to_vec();
-        Ok(Self {
-            dl_source,
-            ul_source,
-            dl,
-            ul,
-        })
+        Ok(Self { dl, ul })
+    }
+
+    pub(crate) fn into_catalogs(self) -> FeaturePalette {
+        FeaturePalette::from_rows(self.dl, self.ul)
     }
 
     pub(crate) fn reconstruct_sub_block(
@@ -222,43 +204,49 @@ impl LocalFeaturePlan {
         // above: every per-CC record referenced here was inserted there, so `binary_search`
         // finds it directly. Falls back to the raw selector bytes when the sub-block
         // carries no resolved feature sets at all.
-        let dl_feature_per_cc_ids = if component.dl_features().is_empty() {
-            component.dl_selector().map(<[u8]>::to_vec)
-        } else {
-            Some(
-                catalog_indices(component.dl_features(), &self.dl_source, "local DL plan")
-                    .context("reconstructing local DL feature selectors")?
-                    .into_iter()
-                    .map(|index| {
-                        u8::try_from(index).context("local DL feature selector exceeds u8")
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?,
-            )
-        };
-        let ul_feature_per_cc_ids = if component.ul_features().is_empty() {
-            component.ul_selector().map(<[u8]>::to_vec)
-        } else {
-            Some(
-                catalog_indices(component.ul_features(), &self.ul_source, "local UL plan")
-                    .context("reconstructing local UL feature selectors")?
-                    .into_iter()
-                    .map(|index| {
-                        u8::try_from(index).context("local UL feature selector exceeds u8")
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?,
-            )
-        };
+        let dl_feature_per_cc_ids = local_selector(
+            component.dl_features(),
+            &self.dl,
+            component.selector(Direction::Dl),
+            Direction::Dl,
+        )?;
+        let ul_feature_per_cc_ids = local_selector(
+            component.ul_features(),
+            &self.ul,
+            component.selector(Direction::Ul),
+            Direction::Ul,
+        )?;
         Ok(ProtoSubBlock {
             band: component.raw_band(),
-            dl_bw_class: component.dl_bw_class().map(i32::from),
-            ul_bw_class: component.ul_bw_class().map(i32::from),
-            dl_feature_index: component.dl_feature_index(),
-            ul_feature_index: component.ul_feature_index(),
+            dl_bw_class: component.bw_class(Direction::Dl).map(i32::from),
+            ul_bw_class: component.bw_class(Direction::Ul).map(i32::from),
+            dl_feature_index: component.feature_index(Direction::Dl),
+            ul_feature_index: component.feature_index(Direction::Ul),
             dl_feature_per_cc_ids,
             ul_feature_per_cc_ids,
             srstxswitch: component.srs_tx_switch(),
         })
     }
+}
+
+fn local_selector<T: Ord>(
+    features: &[T],
+    catalog: &[T],
+    raw: Option<&[u8]>,
+    direction: Direction,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if features.is_empty() {
+        return Ok(raw.map(<[u8]>::to_vec));
+    }
+    catalog_indices(features, catalog)
+        .with_context(|| format!("reconstructing local {direction} feature selectors"))?
+        .into_iter()
+        .map(|index| {
+            u8::try_from(index)
+                .with_context(|| format!("local {direction} feature selector exceeds u8"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(Some)
 }
 
 impl FeaturePalette {
@@ -267,7 +255,7 @@ impl FeaturePalette {
     pub(crate) fn source_sub_block(
         &self,
         component: &RawSubBlock,
-    ) -> anyhow::Result<NrSourceSubBlock> {
+    ) -> anyhow::Result<SourceSubBlock> {
         // The raw selectors are intentionally dropped: an unresolved direction only ever
         // carries the all-zero placeholder, which the source omits and `resolve` re-derives
         // from `bw_class`.
@@ -276,24 +264,18 @@ impl FeaturePalette {
                 band: cc.band,
                 dl_bw_class: cc.dl.bw_class,
                 ul_bw_class: cc.ul.bw_class,
-                dl_feature: cc.dl.feature_index,
-                ul_feature: cc.ul.feature_index,
+                dl_feature_index: cc.dl.feature_index,
+                ul_feature_index: cc.ul.feature_index,
             }
             .into(),
             RawSubBlock::Nr(cc) => SourceNrSubBlock {
                 band: cc.band,
                 dl_bw_class: cc.dl.bw_class,
                 ul_bw_class: cc.ul.bw_class,
-                dl_feature: catalog_indices(
-                    component.dl_features(),
-                    &self.dl,
-                    "source DL palette",
-                )?,
-                ul_feature: catalog_indices(
-                    component.ul_features(),
-                    &self.ul,
-                    "source UL palette",
-                )?,
+                dl_feature_indices: catalog_indices(component.dl_features(), &self.dl)
+                    .context("source DL palette")?,
+                ul_feature_indices: catalog_indices(component.ul_features(), &self.ul)
+                    .context("source UL palette")?,
                 srs_tx_switch: cc.srs_tx_switch,
             }
             .into(),
@@ -318,7 +300,7 @@ fn resolve_index<T: Clone>(index: usize, records: &[T], direction: Direction) ->
 /// The all-zero placeholder selector a direction carries when it references no catalog
 /// record: `bw_class` supplies the CC count to fill with zero bytes. KDL omits these bytes
 /// because they are fully derivable, so the provision path materializes them here instead of
-/// storing them on [`NrSourceSubBlock`]. `None` when there is no bandwidth class to derive a
+/// storing them on [`SourceSubBlock`]. `None` when there is no bandwidth class to derive a
 /// count from — an absent DL class, or UL disabled (the caller filters `ul_bw_class == 0`),
 /// both of which mean the direction carries no proto field 6/7 at all.
 fn placeholder_ids(kind: SubBlockKind, bw_class: Option<u8>) -> anyhow::Result<Option<Vec<u8>>> {
@@ -336,12 +318,12 @@ fn resolve_lte(cc: &SourceLteSubBlock, ul_bw_class: Option<u8>) -> anyhow::Resul
         band: cc.band,
         dl: LteDirection {
             bw_class: cc.dl_bw_class,
-            feature_index: cc.dl_feature,
+            feature_index: cc.dl_feature_index,
             selector: placeholder_ids(SubBlockKind::Lte, cc.dl_bw_class)?,
         },
         ul: LteDirection {
             bw_class: cc.ul_bw_class,
-            feature_index: cc.ul_feature,
+            feature_index: cc.ul_feature_index,
             // The stored `bw_class` field above keeps the raw value; only the placeholder
             // derivation needs the disabled-aware `ul_bw_class` (`Some(0)` -> `None`).
             selector: placeholder_ids(SubBlockKind::Lte, ul_bw_class)?,
@@ -376,21 +358,21 @@ fn resolve_nr(
     .into())
 }
 
-impl NrSourceSubBlock {
+impl SourceSubBlock {
     pub(crate) fn resolve(&self, palette: &FeaturePalette) -> anyhow::Result<RawSubBlock> {
         // `ul_bw_class == 0` means UL disabled: no per-CC data at all, hence no placeholder
         // (DL has no such "disabled" class).
-        let ul_bw_class = self.ul_bw_class().filter(|&bw| bw >= 1);
+        let ul_bw_class = self.bw_class(Direction::Ul).filter(|&bw| bw >= 1);
         let component = match self {
             Self::Lte(cc) => resolve_lte(cc, ul_bw_class)?,
             Self::Nr(cc) => {
                 let dl = cc
-                    .dl_feature
+                    .dl_feature_indices
                     .iter()
                     .map(|&index| resolve_index(index, &palette.dl, Direction::Dl))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let ul = cc
-                    .ul_feature
+                    .ul_feature_indices
                     .iter()
                     .map(|&index| resolve_index(index, &palette.ul, Direction::Ul))
                     .collect::<anyhow::Result<Vec<_>>>()?;
@@ -423,14 +405,7 @@ mod tests {
     fn referenced_palette<'a>(
         payloads: impl IntoIterator<Item = &'a RawNrPayload>,
     ) -> FeaturePalette {
-        let mut dl = BTreeSet::new();
-        let mut ul = BTreeSet::new();
-        for payload in payloads {
-            for component in &payload.sub_blocks {
-                dl.extend(component.dl_features().iter().copied());
-                ul.extend(component.ul_features().iter().copied());
-            }
-        }
+        let UsedFeatures { dl, ul } = UsedFeatures::scan(payloads);
         FeaturePalette::from_rows(dl.into_iter().collect(), ul.into_iter().collect())
     }
 
@@ -496,7 +471,6 @@ mod tests {
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
-        assert_eq!(plan.dl_source, vec![high]);
         assert_eq!(plan.dl.len(), 1);
         assert_eq!(
             plan.reconstruct_sub_block(&component)
@@ -555,9 +529,8 @@ mod tests {
             sub_blocks: vec![component.clone()],
         };
         let plan = LocalFeaturePlan::new(&palette, &[&payload], "A.binarypb", "legacy").unwrap();
-        assert_eq!(plan.ul_source, vec![high]);
         assert_eq!(plan.ul, vec![high]);
-        assert!(plan.dl_source.is_empty());
+        assert!(plan.dl.is_empty());
         assert!(plan.dl.is_empty());
         let reconstructed = plan.reconstruct_sub_block(&component).unwrap();
         assert_eq!(reconstructed.ul_feature_per_cc_ids, Some(vec![1]));
@@ -660,6 +633,11 @@ mod tests {
             !error.contains("256 distinct"),
             "DL's over-limit check must not win the race ahead of UL's absent-check: {error}"
         );
+        let complete_palette = FeaturePalette::from_rows(palette.dl, vec![missing_ul]);
+        let limit = LocalFeaturePlan::new(&complete_palette, &[&payload], "A.binarypb", "legacy")
+            .unwrap_err()
+            .to_string();
+        assert!(limit.contains("256 distinct DL feature records"), "{limit}");
     }
 
     #[test]
@@ -746,10 +724,10 @@ mod tests {
         // set" gate on top. So it must key differently from a component with no DL data.
         let palette =
             FeaturePalette::from_rows(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
-        let source = NrSourceSubBlock::from(SourceNrSubBlock {
+        let source = SourceSubBlock::from(SourceNrSubBlock {
             band: 78,
             dl_bw_class: Some(1),
-            dl_feature: vec![1],
+            dl_feature_indices: vec![1],
             ..Default::default()
         });
         let resolved = source.resolve(&palette).unwrap();
@@ -757,7 +735,7 @@ mod tests {
             resolved.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
-        assert_eq!(resolved.dl_selector(), None);
+        assert_eq!(resolved.selector(Direction::Dl), None);
         assert_ne!(
             RawSubBlockKey::from(&resolved),
             RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
@@ -768,7 +746,7 @@ mod tests {
 
         // A resolved direction has no selector bytes left to disturb identity: `PerCc` holds
         // one encoding or the other, never both, so identity follows from the resolution.
-        assert_eq!(resolved.dl_selector(), None);
+        assert_eq!(resolved.selector(Direction::Dl), None);
     }
 
     #[test]
@@ -785,8 +763,8 @@ mod tests {
         .into();
         let error = FeaturePalette::from_rows(vec![], vec![])
             .source_sub_block(&component)
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        let error = format!("{error:#}");
 
         assert!(error.contains("source DL palette"), "{error}");
         assert!(
@@ -804,24 +782,24 @@ mod tests {
             FeaturePalette::from_rows(vec![ShannonFeatureSetDlPerCcNr::default()], vec![]);
 
         // LTE never carries per-CC references; `cc_count(Lte, 1) == 1`.
-        let lte = NrSourceSubBlock::from(SourceLteSubBlock {
+        let lte = SourceSubBlock::from(SourceLteSubBlock {
             band: 66,
             dl_bw_class: Some(1),
-            dl_feature: Some(3),
+            dl_feature_index: Some(3),
             ..Default::default()
         })
         .resolve(&palette)
         .unwrap();
-        assert_eq!(lte.dl_selector(), Some([0].as_slice()));
+        assert_eq!(lte.selector(Direction::Dl), Some([0].as_slice()));
         assert_eq!(
-            lte.ul_selector(),
+            lte.selector(Direction::Ul),
             None,
             "no ul_bw_class means no UL data at all"
         );
 
         // NR class 2 aggregates 2 CCs, so the placeholder is two bytes wide. `ul_bw_class`
         // 0 is UL-disabled — the one case that must stay absent rather than placeholdered.
-        let nr = NrSourceSubBlock::from(SourceNrSubBlock {
+        let nr = SourceSubBlock::from(SourceNrSubBlock {
             band: 48,
             dl_bw_class: Some(2),
             ul_bw_class: Some(0),
@@ -829,19 +807,23 @@ mod tests {
         })
         .resolve(&palette)
         .unwrap();
-        assert_eq!(nr.dl_selector(), Some([0, 0].as_slice()));
-        assert_eq!(nr.ul_selector(), None, "ul_bw_class 0 means UL disabled");
+        assert_eq!(nr.selector(Direction::Dl), Some([0, 0].as_slice()));
+        assert_eq!(
+            nr.selector(Direction::Ul),
+            None,
+            "ul_bw_class 0 means UL disabled"
+        );
 
         // A direction that does resolve carries values and no placeholder.
-        let resolved = NrSourceSubBlock::from(SourceNrSubBlock {
+        let resolved = SourceSubBlock::from(SourceNrSubBlock {
             band: 78,
             dl_bw_class: Some(1),
-            dl_feature: vec![1],
+            dl_feature_indices: vec![1],
             ..Default::default()
         })
         .resolve(&palette)
         .unwrap();
-        assert_eq!(resolved.dl_selector(), None);
+        assert_eq!(resolved.selector(Direction::Dl), None);
         assert_eq!(resolved.dl_features().len(), 1);
     }
 
@@ -849,7 +831,7 @@ mod tests {
     fn resolve_rejects_a_bw_class_with_no_known_cc_count() {
         // Fail closed rather than mis-derive a placeholder length: the derivation is only
         // as safe as `cc_count`, so an unobserved class must error here too.
-        let error = NrSourceSubBlock::from(SourceNrSubBlock {
+        let error = SourceSubBlock::from(SourceNrSubBlock {
             band: 78,
             dl_bw_class: Some(99),
             ..Default::default()

@@ -213,7 +213,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
 
     let source = LteDocument {
         files: scan.file_sources,
-        combo: source_combos,
+        combos: source_combos,
     };
     let parsed_files = files_by_id
         .iter()
@@ -231,7 +231,7 @@ pub(crate) fn ingest_lte(files: Vec<DecodedLteFile>) -> anyhow::Result<LteDocume
         source: source.clone(),
         files: parsed_files,
         domain,
-        combo: validated_combos,
+        combos: validated_combos,
     };
 
     verify_lte_ingest(&files_by_id, &validated)?;
@@ -255,7 +255,7 @@ pub(crate) fn generate_lte_file(
         .get(&id)
         .with_context(|| format!("LTE file ID {id} is absent from the source whitelist"))?;
     let combos = lte
-        .combo
+        .combos
         .iter()
         .filter(|combo| combo.relation.iter().any(|selected| selected == sku))
         .map(|combo| LteCombo::from(&combo.source))
@@ -394,7 +394,7 @@ mod tests {
             carriers: BTreeMap::new(),
             dl_features: vec![],
             ul_features: vec![],
-            combo: Vec::new(),
+            combos: Vec::new(),
         }
     }
 
@@ -409,7 +409,7 @@ mod tests {
 
     fn bands(document: &LteDocument) -> Vec<i32> {
         document
-            .combo
+            .combos
             .iter()
             .map(|combo| combo.components[0].band)
             .collect()
@@ -460,8 +460,8 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(document.combo.len(), 1);
-        assert_eq!(document.combo[0].selection, None);
+        assert_eq!(document.combos.len(), 1);
+        assert_eq!(document.combos[0].selection, None);
     }
 
     #[test]
@@ -515,8 +515,13 @@ mod tests {
         let second_original = second.original.clone();
         let document = ingest_lte(vec![first, second]).unwrap();
 
-        assert_eq!(document.combo.len(), 3);
-        assert!(document.combo.iter().all(|combo| combo.selection.is_none()));
+        assert_eq!(document.combos.len(), 3);
+        assert!(
+            document
+                .combos
+                .iter()
+                .all(|combo| combo.selection.is_none())
+        );
         let lte = validated(&document);
         assert_eq!(
             generate_lte_file(&lte, 91, &Sku::Lte(91)).unwrap().bytes,
@@ -558,11 +563,11 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(
-            document.combo[0].selection.as_ref().unwrap()[0].skus,
+            document.combos[0].selection.as_ref().unwrap()[0].skus,
             Some(expected_registered)
         );
         assert_eq!(
-            document.combo[1].selection.as_ref().unwrap()[0].skus,
+            document.combos[1].selection.as_ref().unwrap()[0].skus,
             Some(vec!["lte:91".into()])
         );
     }

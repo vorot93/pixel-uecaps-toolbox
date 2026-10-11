@@ -217,7 +217,7 @@ mod tests {
         compiler::{
             GeneratedFile,
             decompose::decompose,
-            features::{NrSourceSubBlock, SourceNrSubBlock},
+            features::{SourceNrSubBlock, SourceSubBlock},
             schema::{
                 BitmaskFingerprint, CarrierSource, LteDocument, LteFileSource, LteSourceCombo,
                 NrDocument, NrSourceCombo, ProfileSource, SourceDocument, ValidatedSources,
@@ -353,7 +353,7 @@ mod tests {
             ]),
             dl_features: vec![],
             ul_features: vec![],
-            combo: vec![
+            combos: vec![
                 nr_combo(1, &["ALPHA", "BETA"], &["legacy"]),
                 nr_combo(2, &["ALPHA"], &[TARGET_MODEL]),
                 nr_combo(3, &["BETA"], &["prime:8969"]),
@@ -367,7 +367,7 @@ mod tests {
                     bitmask: 456,
                 },
             )]),
-            combo: vec![LteSourceCombo {
+            combos: vec![LteSourceCombo {
                 selection: selection(&[], &[TARGET_MODEL]).map(|mut rectangles| {
                     rectangles[0].carriers = None;
                     rectangles
@@ -441,7 +441,7 @@ mod tests {
         }
         let source = nr.carriers.remove(old).unwrap();
         nr.carriers.insert(new.into(), source);
-        for combo in &mut nr.combo {
+        for combo in &mut nr.combos {
             for rectangle in combo.selection.iter_mut().flatten() {
                 for carrier in rectangle.carriers.iter_mut().flatten() {
                     if carrier == old {
@@ -959,7 +959,7 @@ mod tests {
                 bitmask: 202,
             },
         )]);
-        missing_lte.lte.combo.clear();
+        missing_lte.lte.combos.clear();
         assert_provision_prewrite_failure(
             to_kdl(&missing_lte).unwrap(),
             TARGET_MODEL,
@@ -997,13 +997,13 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        too_many_features.nr.combo = (1..=256)
+        too_many_features.nr.combos = (1..=256)
             .map(|max_scs| {
                 let mut combo = nr_combo(1, &["ALPHA"], &["legacy"]);
-                let NrSourceSubBlock::Nr(cc) = &mut combo.sub_blocks[0] else {
+                let SourceSubBlock::Nr(cc) = &mut combo.sub_blocks[0] else {
                     panic!("nr_combo builds an `nr` sub-block")
                 };
-                cc.dl_feature = vec![max_scs as usize];
+                cc.dl_feature_indices = vec![max_scs as usize];
                 combo
             })
             .collect();

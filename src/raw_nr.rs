@@ -246,6 +246,15 @@ pub(crate) struct RawLteSubBlock {
     pub(crate) ul: LteDirection,
 }
 
+impl RawLteSubBlock {
+    fn direction(&self, direction: Direction) -> &LteDirection {
+        match direction {
+            Direction::Dl => &self.dl,
+            Direction::Ul => &self.ul,
+        }
+    }
+}
+
 /// An NR component. Its `dl/ul_feature_index` (proto 4/5) is deliberately **not** a field: it
 /// is a pure function of the resolved per-CC feature set (`derive_nr_dl_index` /
 /// `derive_nr_ul_index`), re-derived wherever the binary needs it, and a decoded value that
@@ -308,17 +317,11 @@ impl RawSubBlock {
         self.kind().raw_band(self.band())
     }
 
-    pub(crate) const fn dl_bw_class(&self) -> Option<u8> {
-        match self {
-            Self::Lte(component) => component.dl.bw_class,
-            Self::Nr(component) => component.dl.bw_class,
-        }
-    }
-
-    pub(crate) const fn ul_bw_class(&self) -> Option<u8> {
-        match self {
-            Self::Lte(component) => component.ul.bw_class,
-            Self::Nr(component) => component.ul.bw_class,
+    pub(crate) fn bw_class(&self, direction: Direction) -> Option<u8> {
+        match (self, direction) {
+            (Self::Lte(component), direction) => component.direction(direction).bw_class,
+            (Self::Nr(component), Direction::Dl) => component.dl.bw_class,
+            (Self::Nr(component), Direction::Ul) => component.ul.bw_class,
         }
     }
 
@@ -351,19 +354,12 @@ impl RawSubBlock {
         }
     }
 
-    /// Raw DL selector bytes, or `None` once resolved (or when absent).
-    pub(crate) fn dl_selector(&self) -> Option<&[u8]> {
-        match self {
-            Self::Lte(component) => component.dl.selector.as_deref(),
-            Self::Nr(component) => component.dl.selector(),
-        }
-    }
-
-    /// See [`dl_selector`](Self::dl_selector).
-    pub(crate) fn ul_selector(&self) -> Option<&[u8]> {
-        match self {
-            Self::Lte(component) => component.ul.selector.as_deref(),
-            Self::Nr(component) => component.ul.selector(),
+    /// Raw selector bytes, or `None` once resolved (or when absent).
+    pub(crate) fn selector(&self, direction: Direction) -> Option<&[u8]> {
+        match (self, direction) {
+            (Self::Lte(component), direction) => component.direction(direction).selector.as_deref(),
+            (Self::Nr(component), Direction::Dl) => component.dl.selector(),
+            (Self::Nr(component), Direction::Ul) => component.ul.selector(),
         }
     }
 }
@@ -511,20 +507,15 @@ fn narrow_opt_field<T: TryFrom<i32>>(value: Option<i32>, field: &str) -> anyhow:
 }
 
 impl RawSubBlock {
-    /// The `dl_feature_index` to write into the binary: the stored `parseLteFeatureIndex`
+    /// The feature index to write into the binary: the stored `parseLteFeatureIndex`
     /// value for LTE, the value derived from the per-CC feature set for NR.
-    pub(crate) fn dl_feature_index(&self) -> Option<i32> {
-        match self {
-            Self::Lte(component) => component.dl.feature_index.map(i32::from),
-            Self::Nr(component) => Some(component.derived_dl_feature_index()),
-        }
-    }
-
-    /// The `ul_feature_index` to write into the binary; see [`dl_feature_index`](Self::dl_feature_index).
-    pub(crate) fn ul_feature_index(&self) -> Option<i32> {
-        match self {
-            Self::Lte(component) => component.ul.feature_index.map(i32::from),
-            Self::Nr(component) => Some(component.derived_ul_feature_index()),
+    pub(crate) fn feature_index(&self, direction: Direction) -> Option<i32> {
+        match (self, direction) {
+            (Self::Lte(component), direction) => {
+                component.direction(direction).feature_index.map(i32::from)
+            }
+            (Self::Nr(component), Direction::Dl) => Some(component.derived_dl_feature_index()),
+            (Self::Nr(component), Direction::Ul) => Some(component.derived_ul_feature_index()),
         }
     }
 
@@ -667,10 +658,7 @@ impl RawSubBlock {
     /// (LTE UL 1 032 142, NR UL 687 438), with no absent classes and no zero-length selectors.
     /// So enforcing it rejects nothing real while making the data loss unrepresentable.
     fn validate_cc_count(&self, direction: Direction) -> anyhow::Result<()> {
-        let (len, bw_class) = match direction {
-            Direction::Dl => (self.dl_per_cc_len(), self.dl_bw_class()),
-            Direction::Ul => (self.ul_per_cc_len(), self.ul_bw_class()),
-        };
+        let (len, bw_class) = (self.per_cc_len(direction), self.bw_class(direction));
         let lower = direction.lowercase();
         match (len, bw_class) {
             // Direction off: the explicit "disabled" class 0 (or none at all), and no data.
@@ -700,19 +688,16 @@ impl RawSubBlock {
         }
     }
 
-    /// The DL per-CC list length, or `None` when the direction carries no per-CC data at all.
-    fn dl_per_cc_len(&self) -> Option<usize> {
-        match self {
-            Self::Lte(component) => component.dl.selector.as_ref().map(Vec::len),
-            Self::Nr(component) => component.dl.per_cc_len(),
-        }
-    }
-
-    /// See [`dl_per_cc_len`](Self::dl_per_cc_len).
-    fn ul_per_cc_len(&self) -> Option<usize> {
-        match self {
-            Self::Lte(component) => component.ul.selector.as_ref().map(Vec::len),
-            Self::Nr(component) => component.ul.per_cc_len(),
+    /// Per-CC list length, or `None` when the direction carries no per-CC data at all.
+    pub(crate) fn per_cc_len(&self, direction: Direction) -> Option<usize> {
+        match (self, direction) {
+            (Self::Lte(component), direction) => component
+                .direction(direction)
+                .selector
+                .as_ref()
+                .map(Vec::len),
+            (Self::Nr(component), Direction::Dl) => component.dl.per_cc_len(),
+            (Self::Nr(component), Direction::Ul) => component.ul.per_cc_len(),
         }
     }
 
@@ -727,32 +712,39 @@ impl RawNrSubBlock {
     /// presence) into one band's combo entry. LTE never derives a feature index, so this
     /// is NR-only, which the type now states directly.
     fn validate_cross_cc_feature_index_agreement(&self) -> anyhow::Result<()> {
-        let dl = self.dl.resolved();
-        if let Some(first) = dl.first() {
-            let want = derive_nr_dl_index(Some(first.max_scs.unwrap_or(0)));
-            for feature in &dl[1..] {
-                let got = derive_nr_dl_index(Some(feature.max_scs.unwrap_or(0)));
-                anyhow::ensure!(
-                    got == want,
-                    "component {} CCs disagree on derived DL feature index ({want} vs {got}); cannot aggregate FR1+FR2 in one band",
-                    self.band_label()
-                );
-            }
-        }
-        let ul = self.ul.resolved();
-        if let Some(first) = ul.first() {
-            let want = derive_nr_ul_index(Some(first.max_mimo_cb.unwrap_or(0)));
-            for feature in &ul[1..] {
-                let got = derive_nr_ul_index(Some(feature.max_mimo_cb.unwrap_or(0)));
-                anyhow::ensure!(
-                    got == want,
-                    "component {} CCs disagree on derived UL feature index ({want} vs {got})",
-                    self.band_label()
-                );
-            }
-        }
-        Ok(())
+        ensure_index_agreement(
+            self.dl.resolved(),
+            |row| derive_nr_dl_index(Some(row.max_scs.unwrap_or(0))),
+            Direction::Dl,
+            self.band_label(),
+        )?;
+        ensure_index_agreement(
+            self.ul.resolved(),
+            |row| derive_nr_ul_index(Some(row.max_mimo_cb.unwrap_or(0))),
+            Direction::Ul,
+            self.band_label(),
+        )
     }
+}
+
+fn ensure_index_agreement<T>(
+    features: &[T],
+    derive: impl Fn(&T) -> i32,
+    direction: Direction,
+    band: BandLabel,
+) -> anyhow::Result<()> {
+    for pair in features.windows(2) {
+        let (want, got) = (derive(&pair[0]), derive(&pair[1]));
+        let suffix = match direction {
+            Direction::Dl => "; cannot aggregate FR1+FR2 in one band",
+            Direction::Ul => "",
+        };
+        anyhow::ensure!(
+            got == want,
+            "component {band} CCs disagree on derived {direction} feature index ({want} vs {got}){suffix}"
+        );
+    }
+    Ok(())
 }
 
 /// Header and component fields that make up one NR combo payload. Source
@@ -856,19 +848,19 @@ impl From<&RawSubBlock> for RawSubBlockKey {
         Self {
             kind: cc.kind(),
             band: cc.band(),
-            dl_bw_class: cc.dl_bw_class(),
-            ul_bw_class: cc.ul_bw_class(),
+            dl_bw_class: cc.bw_class(Direction::Dl),
+            ul_bw_class: cc.bw_class(Direction::Ul),
             // Materialized, not raw: identity must reflect the value that will actually land
             // in the binary (an NR component derives its index), or a key built from source
             // disagrees with the same combo's key rebuilt after decoding the materialized
             // output.
-            dl_feature_index: cc.dl_feature_index(),
-            ul_feature_index: cc.ul_feature_index(),
+            dl_feature_index: cc.feature_index(Direction::Dl),
+            ul_feature_index: cc.feature_index(Direction::Ul),
             // `PerCc` yields selector bytes only for a direction that did not resolve, so
             // the old explicit "mask the selector once the feature set is present" step is
             // now structural.
-            dl_cc_ids: cc.dl_selector().map(<[u8]>::to_vec),
-            ul_cc_ids: cc.ul_selector().map(<[u8]>::to_vec),
+            dl_cc_ids: cc.selector(Direction::Dl).map(<[u8]>::to_vec),
+            ul_cc_ids: cc.selector(Direction::Ul).map(<[u8]>::to_vec),
             srs_tx_switch: cc.srs_tx_switch(),
             dl_features: cc.dl_features().to_vec(),
             ul_features: cc.ul_features().to_vec(),
@@ -1213,19 +1205,19 @@ mod tests {
         let n78 = by_band("n78");
         assert_eq!(n78.dl_features(), &caps.dl_feature_per_cc_list[..]);
         assert_eq!(n78.ul_features(), &caps.ul_feature_per_cc_list[..]);
-        assert_eq!(n78.dl_selector(), None);
-        assert_eq!(n78.ul_selector(), None);
+        assert_eq!(n78.selector(Direction::Dl), None);
+        assert_eq!(n78.selector(Direction::Ul), None);
 
         // n41: the all-zero placeholder resolves to nothing, so the bytes survive verbatim.
         let n41 = by_band("n41");
         assert!(n41.dl_features().is_empty());
-        assert_eq!(n41.dl_selector(), Some(&[0][..]));
+        assert_eq!(n41.selector(Direction::Dl), Some(&[0][..]));
 
         // B3: an E-UTRA component references no per-CC catalog at all.
         let b3 = by_band("B3");
         assert_eq!(b3.kind(), SubBlockKind::Lte);
         assert!(b3.dl_features().is_empty());
-        assert_eq!(b3.dl_bw_class(), Some(4));
+        assert_eq!(b3.bw_class(Direction::Dl), Some(4));
     }
 
     #[test]
@@ -1364,8 +1356,8 @@ mod tests {
                 ..Default::default()
             };
             let raw = RawSubBlock::from_proto_sub_block(&proto, &dl, &ul).unwrap();
-            assert_eq!(raw.dl_feature_index(), Some(index));
-            assert_eq!(raw.ul_feature_index(), Some(index));
+            assert_eq!(raw.feature_index(Direction::Dl), Some(index));
+            assert_eq!(raw.feature_index(Direction::Ul), Some(index));
 
             match direction {
                 Direction::Dl => proto.dl_feature_index = None,
@@ -1435,12 +1427,12 @@ mod tests {
             "placeholder resolves to no feature set"
         );
         assert_eq!(
-            raw.dl_selector(),
+            raw.selector(Direction::Dl),
             Some([0].as_slice()),
             "placeholder bytes are kept verbatim"
         );
-        assert_eq!(raw.dl_feature_index(), Some(0));
-        assert_eq!(raw.ul_feature_index(), Some(0));
+        assert_eq!(raw.feature_index(Direction::Dl), Some(0));
+        assert_eq!(raw.feature_index(Direction::Ul), Some(0));
     }
 
     #[test]
@@ -1463,7 +1455,7 @@ mod tests {
 
         let raw = RawSubBlock::from_proto_sub_block(&proto, &list, &[]).unwrap();
 
-        assert_eq!(raw.dl_feature_index(), Some(1));
+        assert_eq!(raw.feature_index(Direction::Dl), Some(1));
         assert_eq!(raw.dl_features().len(), 1);
     }
 
@@ -1483,7 +1475,7 @@ mod tests {
         let raw = RawSubBlock::from_proto_sub_block(&proto, &[], &[]).unwrap();
 
         assert_eq!(raw.kind(), SubBlockKind::Lte);
-        assert_eq!(raw.dl_feature_index(), Some(99));
+        assert_eq!(raw.feature_index(Direction::Dl), Some(99));
     }
 
     #[test]
@@ -1760,8 +1752,8 @@ mod tests {
         // There is no stored NR index to prefer, so the binary-bound value IS the derivation.
         // (There is no source-bound counterpart to check: `SourceNrSubBlock` has no index
         // field at all, so the source document cannot spell one.)
-        assert_eq!(nr.dl_feature_index(), Some(2));
-        assert_eq!(nr.ul_feature_index(), Some(2));
+        assert_eq!(nr.feature_index(Direction::Dl), Some(2));
+        assert_eq!(nr.feature_index(Direction::Ul), Some(2));
 
         // NR with no feature set derives 0.
         let bare: RawSubBlock = RawNrSubBlock {
@@ -1769,7 +1761,7 @@ mod tests {
             ..Default::default()
         }
         .into();
-        assert_eq!(bare.dl_feature_index(), Some(0));
+        assert_eq!(bare.feature_index(Direction::Dl), Some(0));
 
         // LTE is never derived: the stored value is used as-is, and `None` stays `None`.
         let lte: RawSubBlock = RawLteSubBlock {
@@ -1781,13 +1773,13 @@ mod tests {
             ul: LteDirection::default(),
         }
         .into();
-        assert_eq!(lte.dl_feature_index(), Some(3));
+        assert_eq!(lte.feature_index(Direction::Dl), Some(3));
         let lte_none: RawSubBlock = RawLteSubBlock {
             band: 66,
             ..Default::default()
         }
         .into();
-        assert_eq!(lte_none.dl_feature_index(), None);
+        assert_eq!(lte_none.feature_index(Direction::Dl), None);
     }
 
     #[test]

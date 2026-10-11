@@ -146,7 +146,7 @@ fn selected_payloads<'a>(nr: &'a ValidatedNr, carrier: &str, sku: &Sku) -> Vec<&
     nr.selection_index
         .payload_indices(&target)
         .iter()
-        .map(|&combo_index| &nr.combo[combo_index as usize].payload)
+        .map(|&combo_index| &nr.combos[combo_index as usize].payload)
         .collect()
 }
 
@@ -208,12 +208,13 @@ fn build_generated_file(
             }],
         });
     }
+    let catalogs = plan.into_catalogs();
     let caps = UeCaps {
         version,
         id,
         combo_groups,
-        dl_feature_per_cc_list: plan.dl.clone(),
-        ul_feature_per_cc_list: plan.ul.clone(),
+        dl_feature_per_cc_list: catalogs.dl,
+        ul_feature_per_cc_list: catalogs.ul,
         unknown,
     };
     let bytes = caps.encode_to_vec();
@@ -224,20 +225,20 @@ fn build_generated_file(
 /// `entries` yields `(raw_band, bw_class, selector)` per component — `dl_bw_class`/DL or
 /// `ul_bw_class`/UL depending on `direction`. A selector counts as a resolved catalog
 /// reference (checked against `cc_count`, and its bytes fold into the coverage set) only
-/// when its FIRST byte resolves against `records` — the same leading-byte gate the report path
-/// uses. By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
+/// when its FIRST byte resolves against `records`. Unlike report resolution, this checks
+/// compiler-generated selectors. By construction (`LocalFeaturePlan::reconstruct_sub_block`), a
 /// resolved reference's bytes are ALL catalog indices, never a mix with raw selector-only
 /// data, so it is enough to gate on the first byte and then trust every byte.
-fn verify_compact_feature_list<T>(
+fn verify_compact_feature_list<'a, T>(
     records: &[T],
-    entries: impl IntoIterator<Item = (i32, Option<i32>, Option<Vec<u8>>)>,
+    entries: impl IntoIterator<Item = (i32, Option<i32>, Option<&'a [u8]>)>,
     direction: Direction,
     basename: &str,
 ) -> anyhow::Result<()> {
     let mut referenced = BTreeSet::new();
     for (raw_band, bw_class, ids) in entries {
         let Some(ids) = ids else { continue };
-        if feature_index(Some(&ids), records.len()).is_none() {
+        if feature_index(Some(ids), records.len()).is_none() {
             continue;
         }
         let (kind, _) = SubBlockKind::split_raw_band(raw_band);
@@ -269,7 +270,7 @@ fn verify_compact_feature_list<T>(
             "generated {basename} resolved {direction} selector has {} byte(s), expected {expected} for {kind:?} bw_class {bw_class}",
             ids.len()
         );
-        for &b in &ids {
+        for &b in ids {
             let k = b as usize;
             ensure!(
                 (1..=records.len()).contains(&k),
@@ -300,7 +301,7 @@ fn verify_compact_feature_lists(
             (
                 component.band,
                 component.dl_bw_class,
-                component.dl_feature_per_cc_ids.clone(),
+                component.dl_feature_per_cc_ids.as_deref(),
             )
         }),
         Direction::Dl,
@@ -312,7 +313,7 @@ fn verify_compact_feature_lists(
             (
                 component.band,
                 component.ul_bw_class,
-                component.ul_feature_per_cc_ids.clone(),
+                component.ul_feature_per_cc_ids.as_deref(),
             )
         }),
         Direction::Ul,
@@ -686,7 +687,7 @@ fn finish_nr_document(
         })
         .collect();
     let domain = NrDomain::new(domain_members);
-    let combo = payloads
+    let combos = payloads
         .into_values()
         .enumerate()
         .map(|(combo_index, (payload, relation))| {
@@ -711,7 +712,7 @@ fn finish_nr_document(
         carriers,
         dl_features: palette.dl,
         ul_features: palette.ul,
-        combo,
+        combos,
     })
 }
 
@@ -866,7 +867,7 @@ mod tests {
     use super::*;
     use crate::{
         compiler::{
-            features::NrSourceSubBlock,
+            features::SourceSubBlock,
             schema::{
                 LteDocument, LteFileSource, SourceDocument, ValidatedNr, ValidatedNrCombo,
                 parse_sources, to_kdl,
@@ -988,7 +989,7 @@ mod tests {
                     bitmask: 0,
                 },
             )]),
-            combo: vec![],
+            combos: vec![],
         };
         let text = to_kdl(&SourceDocument { nr: document, lte }).unwrap();
         parse_sources(&text).unwrap().nr
@@ -1152,11 +1153,11 @@ mod tests {
         assert_eq!(component.dl_features()[0].max_scs, Some(0));
         assert_eq!(component.dl_features()[0].bw_90mhz_supported, Some(false));
         assert_eq!(
-            component.dl_selector(),
+            component.selector(Direction::Dl),
             None,
             "resolved raw values must suppress the source selector"
         );
-        assert_eq!(component.ul_selector(), Some([0].as_slice()));
+        assert_eq!(component.selector(Direction::Ul), Some([0].as_slice()));
     }
 
     /// The realistic explicit-zero class: UL disabled. `ul_bw_class = 0` occurs 687 438 times
@@ -1184,8 +1185,8 @@ mod tests {
         let payload = raw_payloads(&caps).pop().unwrap();
         let component = &payload.sub_blocks[0];
 
-        assert_eq!(component.ul_bw_class(), Some(0));
-        assert_eq!(component.ul_selector(), None);
+        assert_eq!(component.bw_class(Direction::Ul), Some(0));
+        assert_eq!(component.selector(Direction::Ul), None);
     }
 
     // The former `raw_conversion_preserves_every_selector_only_presence_shape` lived here. It
@@ -1227,7 +1228,7 @@ mod tests {
             component.dl_features().first().copied(),
             Some(ShannonFeatureSetDlPerCcNr::default())
         );
-        assert_eq!(component.dl_selector(), None);
+        assert_eq!(component.selector(Direction::Dl), None);
         assert_ne!(
             RawSubBlockKey::from(component),
             RawSubBlockKey::from(&RawSubBlock::from(RawNrSubBlock {
@@ -1318,11 +1319,11 @@ mod tests {
             bw_90mhz_supported: Some(false),
             ..Default::default()
         }));
-        let NrSourceSubBlock::Nr(cc) = &nr.combo[0].sub_blocks[0] else {
+        let SourceSubBlock::Nr(cc) = &nr.combos[0].sub_blocks[0] else {
             panic!("expected an `nr` sub-block")
         };
-        assert_eq!(cc.dl_feature, vec![9]);
-        assert_eq!(cc.ul_feature, vec![11]);
+        assert_eq!(cc.dl_feature_indices, vec![9]);
+        assert_eq!(cc.ul_feature_indices, vec![11]);
     }
 
     #[test]
@@ -1363,8 +1364,8 @@ mod tests {
         assert_eq!(nr.carriers["EMPTY"].bitmask_id, Some(-1));
         assert_eq!(nr.carriers["KDDI"].bitmask_id, None);
         assert_eq!(nr.carriers["VZW"].bitmask_id, Some(7));
-        assert_eq!(nr.combo.len(), 3);
-        assert!(nr.combo.iter().all(|combo| combo.selection.is_some()));
+        assert_eq!(nr.combos.len(), 3);
+        assert!(nr.combos.iter().all(|combo| combo.selection.is_some()));
     }
 
     #[test]
@@ -1390,7 +1391,7 @@ mod tests {
         duplicate.combo[0].bitmask = Some(6_144);
         legacy.combo_groups.push(duplicate);
         let nr = ingest_nr(vec![legacy_file("DISH", legacy)], vec![], &empty_mapping()).unwrap();
-        assert_eq!(nr.combo.len(), 1);
+        assert_eq!(nr.combos.len(), 1);
 
         let legacy_stub = legacy_file(
             "LEGACY",
@@ -1456,10 +1457,10 @@ mod tests {
         assert_eq!(mapping_only.mapping_id, Some(99));
         assert_eq!(mapping_only.plmns, Some(vec![]));
         assert!(mapping_only.profiles.is_empty());
-        assert_eq!(nr.combo.len(), 3);
+        assert_eq!(nr.combos.len(), 3);
 
         let real = nr
-            .combo
+            .combos
             .iter()
             .find(|combo| combo.sub_blocks[0].band() == 77)
             .unwrap();
@@ -1468,7 +1469,7 @@ mod tests {
             Some(&["G2YBB".into()][..])
         );
         let synthetic = nr
-            .combo
+            .combos
             .iter()
             .find(|combo| combo.sub_blocks[0].band() == 41)
             .unwrap();
@@ -1707,7 +1708,10 @@ mod tests {
         );
     }
 
-    fn feature_payload(values: std::ops::RangeInclusive<u16>, direction: &str) -> RawNrPayload {
+    fn feature_payload(
+        values: std::ops::RangeInclusive<u16>,
+        direction: Direction,
+    ) -> RawNrPayload {
         RawNrPayload {
             header: full_header().unwrap(),
             sub_blocks: values
@@ -1721,7 +1725,7 @@ mod tests {
                     // and `RawSubBlock::validate` now rejects.
                     RawNrSubBlock {
                         band: value,
-                        dl: if direction == "DL" {
+                        dl: if direction == Direction::Dl {
                             NrDirection::with_features(
                                 1,
                                 vec![ShannonFeatureSetDlPerCcNr {
@@ -1732,7 +1736,7 @@ mod tests {
                         } else {
                             NrDirection::with_selector(1, vec![0])
                         },
-                        ul: if direction == "UL" {
+                        ul: if direction == Direction::Ul {
                             NrDirection::with_features(
                                 1,
                                 vec![ShannonFeatureSetUlPerCcNr {
@@ -1777,7 +1781,7 @@ mod tests {
 
     #[test]
     fn unused_palette_row_survives_combo_surgery_without_changing_generated_bytes() {
-        let payload = feature_payload(1..=1, "DL");
+        let payload = feature_payload(1..=1, Direction::Dl);
         let mut baseline = generation_source();
         install_profile_payload(&mut baseline, payload.clone());
         let baseline_bytes = generated_profile_a_bytes(&baseline);
@@ -1804,9 +1808,9 @@ mod tests {
     #[test]
     fn generation_keeps_255_and_256_local_limits_with_a_larger_global_palette() {
         const ANCHOR: u64 = 66_813_533;
-        for direction in ["DL", "UL"] {
+        for direction in [Direction::Dl, Direction::Ul] {
             let mut nr = generation_source();
-            if direction == "DL" {
+            if direction == Direction::Dl {
                 nr.palette
                     .dl
                     .extend((1_001..=1_300).map(|max_bw| ShannonFeatureSetDlPerCcNr {
@@ -1826,7 +1830,7 @@ mod tests {
                 nr.palette.ul.dedup();
             }
             install_profile_payload(&mut nr, feature_payload(1..=255, direction));
-            let global_len = if direction == "DL" {
+            let global_len = if direction == Direction::Dl {
                 nr.palette.dl.len()
             } else {
                 nr.palette.ul.len()
@@ -1845,7 +1849,7 @@ mod tests {
                 .find(|file| file.basename.starts_with("A_"))
                 .unwrap();
             let caps = UeCaps::decode(file.bytes.as_slice()).unwrap();
-            let len = if direction == "DL" {
+            let len = if direction == Direction::Dl {
                 caps.dl_feature_per_cc_list.len()
             } else {
                 caps.ul_feature_per_cc_list.len()
@@ -1862,7 +1866,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-            assert!(error.contains(direction), "{error}");
+            assert!(error.contains(&direction.to_string()), "{error}");
             assert!(error.contains("256 distinct"), "{error}");
             assert!(error.contains("local limit is 255"), "{error}");
         }
@@ -1874,13 +1878,13 @@ mod tests {
         let mut nr = generation_source();
         nr.set_combos(vec![
             ValidatedNrCombo {
-                payload: feature_payload(1..=150, "DL"),
+                payload: feature_payload(1..=150, Direction::Dl),
                 relation: nr
                     .domain
                     .relation(BTreeSet::from([("A".into(), Sku::Legacy)])),
             },
             ValidatedNrCombo {
-                payload: feature_payload(151..=300, "DL"),
+                payload: feature_payload(151..=300, Direction::Dl),
                 relation: nr
                     .domain
                     .relation(BTreeSet::from([("A".into(), Sku::Model("G2YBB".into()))])),

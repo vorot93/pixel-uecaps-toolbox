@@ -1046,8 +1046,8 @@ be stored:
   compiler emitter (`cc_to_node`, `src/compiler/kdl_source.rs`) never surfaces per-CC
   selector bytes at all (the raw `dl-cc-id=`/`ul-cc-id=` fallback was removed), and the
   reader does not reconstruct them either: **the source model carries no selector-byte
-  field.** `NrSourceSubBlock` (`src/compiler/features.rs`) holds only catalog *references*,
-  and `NrSourceSubBlock::resolve` — the single boundary that turns source into a
+  field.** `SourceSubBlock` (`src/compiler/features.rs`) holds only catalog *references*,
+  and `SourceSubBlock::resolve` — the single boundary that turns source into a
   `RawSubBlock` bound for the binary — materializes `[0; cc_count]` via `placeholder_ids`
   when a direction's index list is empty (a bare `A` with no list). `ul_bw_class == 0` (UL
   disabled) short-circuits the UL side to no data at all, never a derived placeholder.
@@ -1064,7 +1064,7 @@ be stored:
   records independently in each direction.
 - Selector-only bytes remain exact, and the only one that can reach generation is the
   all-zero placeholder — the KDL source format cannot express anything else.
-  `NrSourceSubBlock::resolve` (`src/compiler/features.rs`) builds a direction's per-CC ids
+  `SourceSubBlock::resolve` (`src/compiler/features.rs`) builds a direction's per-CC ids
   with `placeholder_ids`, which returns `[0; cc_count]` and nothing else; the removed
   `dl-cc-id`/`ul-cc-id` escape hatches have no replacement, and the strict reader rejects
   any stray property. Generation therefore no longer re-checks the collision case.
@@ -1213,8 +1213,9 @@ features are alternatives, and a flat struct let all three sit side by side:
   `RawNrPayload::from_proto_combo` remains the compiler's wire-to-model path. Reports use typed
   keys with raw bands, optional scalars, observed indexes and every ordered per-CC record; display
   labels are never parsed back into model values. Compiler normalization is not report equality.
-- **Reading.** Code that treats both kinds alike uses the accessors (`band()`, `dl_bw_class()`,
-  `dl_features()`, `dl_selector()`, `dl_feature_index()`). Code that *builds* a component matches
+- **Reading.** Code that treats both kinds alike uses the accessors (`band()`, `bw_class(Direction)`,
+  `dl_features()`, `selector(Direction)`, `feature_index(Direction)`). Concrete DL/UL feature
+  getters remain distinct because their record types differ. Code that *builds* a component matches
   on the variant, so it can only fill fields that kind actually has.
 - **The raw model's ints are its true widths; `i32` is only the wire's.** `band` is `u16`,
   `bw_class` `u8`, and the LTE `feature_index` `u16` — those are the real domains (a plain band
@@ -1224,7 +1225,7 @@ features are alternatives, and a flat struct let all three sit side by side:
   presence check); encode widens back to `i32` for the wire. The narrowing **stops at the model on
   purpose**: report keys and formatters retain the wire's `i32` values. Reports expose observations
   outside the compiler's representable domain rather than truncate or apply compiler constraints.
-- **The source model is a sum too.** `compiler::features::NrSourceSubBlock` — how source spells a
+- **The source model is a sum too.** `compiler::features::SourceSubBlock` — how source spells a
   sub-block — is `enum { Lte(SourceLteSubBlock), Nr(SourceNrSubBlock) }` for the same reason. An
   `lte` node has the scalar proto-4/5 index and no catalog list; an `nr` node has the per-CC list,
   no index (NR derives 4/5), and is the only kind with `srs_tx_switch`. While it was a flat

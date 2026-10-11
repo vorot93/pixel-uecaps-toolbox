@@ -646,7 +646,7 @@ mod tests {
         for (carrier, plmns) in expected.plmns {
             assert_eq!(source.nr.carriers[&carrier].plmns.as_ref(), Some(&plmns));
         }
-        assert_eq!(source.nr.combo.len(), expected.nr_payloads);
+        assert_eq!(source.nr.combos.len(), expected.nr_payloads);
         assert_eq!(
             crate::compiler::decimal_key_entries(&source.lte.files)
                 .into_iter()
@@ -654,7 +654,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected.lte_ids
         );
-        assert_eq!(source.lte.combo.len(), expected.lte_payloads);
+        assert_eq!(source.lte.combos.len(), expected.lte_payloads);
         assert_eq!(to_kdl(&source).unwrap(), expected.source_kdl);
     }
 
